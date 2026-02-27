@@ -51,13 +51,19 @@
 #define WORLD_WALL_TEST_SPRITE_SCALE 2.5f
 #define WORLD_WALL_TEST_SPRITE_GAP 6.0f
 
-#define CAMERA_KEYBOARD_PAN_SPEED 1800.0f
+#define CAMERA_FOLLOW_SPEED 10.0f
+#define CAMERA_FOLLOW_DEADZONE_TILES_X 12.0f
+#define CAMERA_FOLLOW_DEADZONE_TILES_Y 8.0f
 #define CAMERA_FALLBACK_FRAME_TIME (1.0f / 60.0f)
 
 #define DUNGEON_COL_COUNT 50
 #define DUNGEON_ROW_COUNT 30
-#define DUNGEON_TILE_SCALE 2.0f
+#define DUNGEON_TILE_SCALE 4.0f
 #define DUNGEON_PANEL_PADDING 18.0f
+
+#define PLAYER_START_X 6
+#define PLAYER_START_Y 6
+#define PLAYER_START_ORIENTATION 1
 
 #define DUNGEON_MAX_WORLD_FEATURES 12
 #define DUNGEON_MAX_ITEMS 24
@@ -153,6 +159,13 @@ typedef struct {
 
     Dungeon_Unit units[DUNGEON_MAX_UNITS];
     u8 unit_count;
+
+    i16 player_x;
+    i16 player_y;
+    u8 player_orientation;
+
+    bool dungeon_cam_recentering;
+    Vector2 dungeon_cam_recenter_target;
 } Game;
 
 static int game_unit_anim_frame(void)
@@ -331,7 +344,6 @@ static void game_build_test_dungeon(Game *game)
     game_dungeon_add_item(game, 37, 7, ITEM_ART_TORCH_2);
     game_dungeon_add_item(game, 40, 22, ITEM_ART_TORCH_1);
 
-    game_dungeon_add_unit(game, 6, 6, UNIT_ART_ADVENTURER, 1);
     game_dungeon_add_unit(game, 8, 6, UNIT_ART_DOG, 1);
     game_dungeon_add_unit(game, 24, 5, UNIT_ART_GOBLIN_GRUNT, 2);
     game_dungeon_add_unit(game, 30, 9, UNIT_ART_GOBLIN_SHAMAN, 3);
@@ -343,6 +355,11 @@ static void game_build_test_dungeon(Game *game)
     game_dungeon_add_unit(game, 45, 22, UNIT_ART_MIMIC, 0);
     game_dungeon_add_unit(game, 47, 24, UNIT_ART_MINOTAUR, 2);
     game_dungeon_add_unit(game, 42, 24, UNIT_ART_DRAGON, 3);
+
+    game->player_x = PLAYER_START_X;
+    game->player_y = PLAYER_START_Y;
+    game->player_orientation = PLAYER_START_ORIENTATION;
+    assert(game_dungeon_cell_is_floor(game, game->player_x, game->player_y));
 }
 
 static u32 game_dungeon_hash(i32 x, i32 y)
@@ -950,6 +967,48 @@ static Vector2 game_dungeon_get_cell_top_left(Vector2 origin, i32 x, i32 y, floa
     };
 }
 
+static Vector2 game_dungeon_get_player_center(const Game *game, float tile_size)
+{
+    Vector2 origin = game_dungeon_get_origin();
+    return (Vector2){
+        .x = origin.x + ((float)game->player_x + 0.5f) * tile_size,
+        .y = origin.y + ((float)game->player_y + 0.5f) * tile_size,
+    };
+}
+
+static bool game_dungeon_player_outside_camera_deadzone(const Game *game, Vector2 player_center)
+{
+    float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE * game->dungeon_cam.zoom;
+    float deadzone_x = CAMERA_FOLLOW_DEADZONE_TILES_X * tile_size;
+    float deadzone_y = CAMERA_FOLLOW_DEADZONE_TILES_Y * tile_size;
+
+    Vector2 player_screen = GetWorldToScreen2D(player_center, game->dungeon_cam);
+    float delta_x = player_screen.x - game->dungeon_cam.offset.x;
+    float delta_y = player_screen.y - game->dungeon_cam.offset.y;
+
+    return delta_x > deadzone_x || delta_x < -deadzone_x || delta_y > deadzone_y ||
+           delta_y < -deadzone_y;
+}
+
+static void game_update_dungeon_camera_offset(Game *game)
+{
+    game->dungeon_cam.offset = (Vector2){
+        .x = (float)GetScreenWidth() * 0.5f,
+        .y = (float)GetScreenHeight() * 0.5f,
+    };
+}
+
+static void game_center_dungeon_camera_on_player(Game *game)
+{
+    game_update_dungeon_camera_offset(game);
+
+    float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
+    Vector2 player_center = game_dungeon_get_player_center(game, tile_size);
+    game->dungeon_cam.target = player_center;
+    game->dungeon_cam_recentering = false;
+    game->dungeon_cam_recenter_target = game->dungeon_cam.target;
+}
+
 static void game_draw_test_dungeon(Game *game)
 {
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
@@ -1010,31 +1069,77 @@ static void game_draw_test_dungeon(Game *game)
         game_draw_unit_tile(game, unit.kind, unit.orientation, top_left, tile_size,
                             unit_anim_frame);
     }
+
+    Vector2 player_top_left =
+        game_dungeon_get_cell_top_left(origin, game->player_x, game->player_y, tile_size);
+    game_draw_unit_tile(game, UNIT_ART_WARLOCK, game->player_orientation, player_top_left,
+                        tile_size, unit_anim_frame);
+}
+
+static void game_update_player(Game *game)
+{
+    i32 move_x = 0;
+    i32 move_y = 0;
+
+    if (game->input.pressed[INPUT_MOVE_UP]) {
+        move_y = -1;
+        game->player_orientation = 2;
+    } else if (game->input.pressed[INPUT_MOVE_DOWN]) {
+        move_y = 1;
+        game->player_orientation = 1;
+    } else if (game->input.pressed[INPUT_MOVE_LEFT]) {
+        move_x = -1;
+        game->player_orientation = 3;
+    } else if (game->input.pressed[INPUT_MOVE_RIGHT]) {
+        move_x = 1;
+        game->player_orientation = 0;
+    }
+
+    if (move_x == 0 && move_y == 0)
+        return;
+
+    i32 next_x = game->player_x + move_x;
+    i32 next_y = game->player_y + move_y;
+    if (!game_dungeon_cell_is_floor(game, next_x, next_y))
+        return;
+
+    game->player_x = (i16)next_x;
+    game->player_y = (i16)next_y;
 }
 
 static void game_update_camera(Game *game)
 {
-    Camera2D *cam = game->show_dungeon_map ? &game->dungeon_cam : &game->preview_cam;
+    if (!game->show_dungeon_map)
+        return;
+
+    game_update_dungeon_camera_offset(game);
 
     float frame_time = GetFrameTime();
     if (frame_time <= 0.0f)
         frame_time = CAMERA_FALLBACK_FRAME_TIME;
 
-    float camera_step = CAMERA_KEYBOARD_PAN_SPEED * frame_time;
+    float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
+    Vector2 player_center = game_dungeon_get_player_center(game, tile_size);
+    if (!game->dungeon_cam_recentering &&
+        game_dungeon_player_outside_camera_deadzone(game, player_center)) {
+        game->dungeon_cam_recentering = true;
+        game->dungeon_cam_recenter_target = player_center;
+    }
 
-    if (game->input.down[INPUT_MOVE_UP] || IsKeyDown(KEY_W))
-        cam->target.y -= camera_step;
-    if (game->input.down[INPUT_MOVE_DOWN] || IsKeyDown(KEY_S))
-        cam->target.y += camera_step;
-    if (game->input.down[INPUT_MOVE_LEFT] || IsKeyDown(KEY_A))
-        cam->target.x -= camera_step;
-    if (game->input.down[INPUT_MOVE_RIGHT] || IsKeyDown(KEY_D))
-        cam->target.x += camera_step;
+    if (!game->dungeon_cam_recentering)
+        return;
 
-    if (game->input.down[INPUT_MOUSE_MIDDLE]) {
-        Vector2 mouse_delta = GetMouseDelta();
-        cam->target.x -= mouse_delta.x / cam->zoom;
-        cam->target.y -= mouse_delta.y / cam->zoom;
+    Vector2 desired_target = game->dungeon_cam_recenter_target;
+
+    float follow_alpha = clamp(CAMERA_FOLLOW_SPEED * frame_time, 0.0f, 1.0f);
+    game->dungeon_cam.target.x += (desired_target.x - game->dungeon_cam.target.x) * follow_alpha;
+    game->dungeon_cam.target.y += (desired_target.y - game->dungeon_cam.target.y) * follow_alpha;
+
+    float delta_x = desired_target.x - game->dungeon_cam.target.x;
+    float delta_y = desired_target.y - game->dungeon_cam.target.y;
+    if (delta_x < 0.5f && delta_x > -0.5f && delta_y < 0.5f && delta_y > -0.5f) {
+        game->dungeon_cam.target = desired_target;
+        game->dungeon_cam_recentering = false;
     }
 }
 
@@ -1049,11 +1154,15 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->font_spacing = font_spacing;
 
     game->dungeon_cam = (Camera2D){
+        .offset = {(float)VIRTUAL_W * 0.5f, (float)VIRTUAL_H * 0.5f},
+        .target = {0.0f, 0.0f},
+        .zoom = 1.0f,
+    };
+    game->preview_cam = (Camera2D){
         .offset = {0.0f, 0.0f},
         .target = {0.0f, 0.0f},
         .zoom = 1.0f,
     };
-    game->preview_cam = game->dungeon_cam;
 
     game->units_texture = LoadTexture(UNITS_SHEET_PATH);
     assert(game->units_texture.id != 0);
@@ -1070,6 +1179,7 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->show_dungeon_map = true;
     game->dungeon_wall_theme = WORLD_ART_THEME_1;
     game_build_test_dungeon(game);
+    game_center_dungeon_camera_on_player(game);
 }
 
 void game_shutdown(Mem mem)
@@ -1108,6 +1218,14 @@ static void game_input(Game *game)
 
     input->pressed[INPUT_ACTION] =
         IsKeyPressed(KEY_SPACE) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
+    input->pressed[INPUT_MOVE_UP] =
+        IsKeyPressed(KEY_W) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_UP);
+    input->pressed[INPUT_MOVE_DOWN] =
+        IsKeyPressed(KEY_S) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_DOWN);
+    input->pressed[INPUT_MOVE_LEFT] =
+        IsKeyPressed(KEY_A) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_LEFT);
+    input->pressed[INPUT_MOVE_RIGHT] =
+        IsKeyPressed(KEY_D) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
     input->pressed[INPUT_MOUSE_LEFT] = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
     input->pressed[INPUT_MOUSE_RIGHT] = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
     input->pressed[INPUT_MOUSE_MIDDLE] = IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE);
@@ -1141,6 +1259,9 @@ void game_update(Mem mem)
         game->dungeon_wall_theme = WORLD_ART_THEME_3;
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_4])
         game->dungeon_wall_theme = WORLD_ART_THEME_4;
+
+    if (game->show_dungeon_map)
+        game_update_player(game);
 
     game_update_camera(game);
 
