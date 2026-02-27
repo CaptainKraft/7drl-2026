@@ -7,9 +7,11 @@
 #include "game.h"
 #include "item_art.h"
 #include "unit_art.h"
+#include "world_art.h"
 
 #define UNITS_SHEET_PATH "assets/units.png"
 #define ITEMS_SHEET_PATH "assets/items.png"
+#define WORLD_SHEET_PATH "assets/world.png"
 #define PREVIEW_TOP_MARGIN_Y 24.0f
 #define PREVIEW_SECTION_GAP_Y 40.0f
 
@@ -30,6 +32,25 @@
 #define ITEM_PREVIEW_LABEL_SIZE 16.0f
 #define ITEM_PREVIEW_LABEL_GAP 6.0f
 #define ITEM_PREVIEW_SPRITE_SCALE 3.0f
+
+#define WORLD_PREVIEW_CELL_GAP_X 14.0f
+#define WORLD_PREVIEW_CELL_GAP_Y 18.0f
+#define WORLD_PREVIEW_CELL_PADDING_X 10.0f
+#define WORLD_PREVIEW_CELL_PADDING_Y 8.0f
+#define WORLD_PREVIEW_LABEL_SIZE 16.0f
+#define WORLD_PREVIEW_LABEL_GAP 6.0f
+#define WORLD_PREVIEW_SPRITE_SCALE 3.0f
+
+#define WORLD_WALL_TEST_CELL_GAP_X 14.0f
+#define WORLD_WALL_TEST_CELL_GAP_Y 18.0f
+#define WORLD_WALL_TEST_CELL_PADDING_X 10.0f
+#define WORLD_WALL_TEST_CELL_PADDING_Y 8.0f
+#define WORLD_WALL_TEST_LABEL_SIZE 16.0f
+#define WORLD_WALL_TEST_LABEL_GAP 6.0f
+#define WORLD_WALL_TEST_DIRECTION_LABEL_SIZE 13.0f
+#define WORLD_WALL_TEST_DIRECTION_LABEL_GAP 4.0f
+#define WORLD_WALL_TEST_SPRITE_SCALE 2.5f
+#define WORLD_WALL_TEST_SPRITE_GAP 6.0f
 
 #define CAMERA_KEYBOARD_PAN_SPEED 1800.0f
 #define CAMERA_FALLBACK_FRAME_TIME (1.0f / 60.0f)
@@ -61,6 +82,7 @@ typedef struct {
     float font_spacing;
     Texture2D units_texture;
     Texture2D items_texture;
+    Texture2D world_texture;
 } Game;
 
 static int game_preview_anim_frame(void)
@@ -303,10 +325,268 @@ static void game_draw_item_art_preview(Game *game, Vector2 origin)
     }
 }
 
+static void game_draw_world_tile(Game *game, World_Art_Tile tile, Vector2 top_left,
+                                 float sprite_size, float rotation_degrees)
+{
+    Rectangle src = {
+        .x = (float)(tile.x * WORLD_ART_TILE_SIZE),
+        .y = (float)(tile.y * WORLD_ART_TILE_SIZE),
+        .width = (float)WORLD_ART_TILE_SIZE,
+        .height = (float)WORLD_ART_TILE_SIZE,
+    };
+
+    Rectangle dst = {
+        .x = top_left.x + (sprite_size * 0.5f),
+        .y = top_left.y + (sprite_size * 0.5f),
+        .width = sprite_size,
+        .height = sprite_size,
+    };
+
+    Vector2 origin = {sprite_size * 0.5f, sprite_size * 0.5f};
+    DrawTexturePro(game->world_texture, src, dst, origin, rotation_degrees, WHITE);
+}
+
+static Vector2 game_get_world_art_preview_size(Game *game)
+{
+    float sprite_size = WORLD_ART_TILE_SIZE * WORLD_PREVIEW_SPRITE_SCALE;
+
+    float max_name_width = 0.0f;
+    for (i32 kind = WORLD_ART_NONE + 1; kind < NUM_WORLD_ART; kind++) {
+        char display_name[WORLD_ART_DISPLAY_NAME_CAP];
+        world_art_get_display_name((WORLD_ART_KIND)kind, display_name, WORLD_ART_DISPLAY_NAME_CAP);
+
+        Vector2 text_size =
+            MeasureTextEx(game->font, display_name, WORLD_PREVIEW_LABEL_SIZE, game->font_spacing);
+        max_name_width = max(max_name_width, text_size.x);
+    }
+
+    i32 grid_cols = WORLD_ART_COL_COUNT;
+    i32 grid_rows = WORLD_ART_DATA_ROW_COUNT;
+    float cell_w = max(max_name_width, sprite_size) + (WORLD_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (WORLD_PREVIEW_CELL_PADDING_Y * 2.0f) + WORLD_PREVIEW_LABEL_SIZE +
+                   WORLD_PREVIEW_LABEL_GAP + sprite_size;
+
+    return (Vector2){
+        .x = (float)grid_cols * cell_w + (float)(grid_cols - 1) * WORLD_PREVIEW_CELL_GAP_X,
+        .y = (float)grid_rows * cell_h + (float)(grid_rows - 1) * WORLD_PREVIEW_CELL_GAP_Y,
+    };
+}
+
+static void game_draw_world_art_preview(Game *game, Vector2 origin)
+{
+    float sprite_size = WORLD_ART_TILE_SIZE * WORLD_PREVIEW_SPRITE_SCALE;
+
+    float max_name_width = 0.0f;
+    for (i32 kind = WORLD_ART_NONE + 1; kind < NUM_WORLD_ART; kind++) {
+        char display_name[WORLD_ART_DISPLAY_NAME_CAP];
+        world_art_get_display_name((WORLD_ART_KIND)kind, display_name, WORLD_ART_DISPLAY_NAME_CAP);
+
+        Vector2 text_size =
+            MeasureTextEx(game->font, display_name, WORLD_PREVIEW_LABEL_SIZE, game->font_spacing);
+        max_name_width = max(max_name_width, text_size.x);
+    }
+
+    i32 grid_cols = WORLD_ART_COL_COUNT;
+    i32 grid_rows = WORLD_ART_DATA_ROW_COUNT;
+    float cell_w = max(max_name_width, sprite_size) + (WORLD_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (WORLD_PREVIEW_CELL_PADDING_Y * 2.0f) + WORLD_PREVIEW_LABEL_SIZE +
+                   WORLD_PREVIEW_LABEL_GAP + sprite_size;
+
+    Vector2 content_size = game_get_world_art_preview_size(game);
+
+    Rectangle content_panel = {
+        .x = origin.x - WORLD_PREVIEW_CELL_PADDING_X,
+        .y = origin.y - WORLD_PREVIEW_CELL_PADDING_Y,
+        .width = content_size.x + (WORLD_PREVIEW_CELL_PADDING_X * 2.0f),
+        .height = content_size.y + (WORLD_PREVIEW_CELL_PADDING_Y * 2.0f),
+    };
+    DrawRectangleRounded(content_panel, 0.04f, 8, (Color){20, 33, 38, 255});
+    DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
+
+    for (i32 kind = WORLD_ART_NONE + 1; kind < NUM_WORLD_ART; kind++) {
+        i32 draw_idx = kind - 1;
+        i32 col = draw_idx % grid_cols;
+        i32 row = draw_idx / grid_cols;
+
+        float cell_x = origin.x + (float)col * (cell_w + WORLD_PREVIEW_CELL_GAP_X);
+        float cell_y = origin.y + (float)row * (cell_h + WORLD_PREVIEW_CELL_GAP_Y);
+
+        Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
+        DrawRectangleRounded(panel, 0.08f, 4, (Color){32, 47, 52, 255});
+        DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
+
+        char display_name[WORLD_ART_DISPLAY_NAME_CAP];
+        world_art_get_display_name((WORLD_ART_KIND)kind, display_name, WORLD_ART_DISPLAY_NAME_CAP);
+
+        Vector2 text_size =
+            MeasureTextEx(game->font, display_name, WORLD_PREVIEW_LABEL_SIZE, game->font_spacing);
+        Vector2 text_pos = {
+            .x = cell_x + (cell_w - text_size.x) * 0.5f,
+            .y = cell_y + WORLD_PREVIEW_CELL_PADDING_Y,
+        };
+        DrawTextEx(game->font, display_name, text_pos, WORLD_PREVIEW_LABEL_SIZE, game->font_spacing,
+                   RAYWHITE);
+
+        float sprite_y = text_pos.y + text_size.y + WORLD_PREVIEW_LABEL_GAP;
+        float sprite_x = cell_x + (cell_w - sprite_size) * 0.5f;
+
+        game_draw_world_tile(game, world_art_get_tile((WORLD_ART_KIND)kind),
+                             (Vector2){sprite_x, sprite_y}, sprite_size, 0.0f);
+    }
+}
+
+static float game_get_world_wall_test_direction_label_height(Game *game)
+{
+    float label_height = 0.0f;
+    for (i32 direction = 0; direction < NUM_WORLD_WALL_DIRECTIONS; direction++) {
+        const char *direction_name =
+            world_art_get_wall_direction_name((WORLD_WALL_DIRECTION)direction);
+        Vector2 text_size = MeasureTextEx(game->font, direction_name,
+                                          WORLD_WALL_TEST_DIRECTION_LABEL_SIZE, game->font_spacing);
+        label_height = max(label_height, text_size.y);
+    }
+    return label_height;
+}
+
+static Vector2 game_get_world_wall_test_preview_size(Game *game)
+{
+    float sprite_size = WORLD_ART_TILE_SIZE * WORLD_WALL_TEST_SPRITE_SCALE;
+    float sprite_row_width = (sprite_size * NUM_WORLD_WALL_DIRECTIONS) +
+                             ((NUM_WORLD_WALL_DIRECTIONS - 1) * WORLD_WALL_TEST_SPRITE_GAP);
+
+    float max_name_width = 0.0f;
+    for (i32 theme = 0; theme < WORLD_ART_THEME_COUNT; theme++) {
+        for (i32 variation = 0; variation < WORLD_ART_WALL_VARIATION_COUNT; variation++) {
+            World_Art_Tile tile =
+                world_art_get_north_wall_tile((WORLD_ART_THEME)theme, (u8)variation);
+            WORLD_ART_KIND kind = world_art_get_kind_from_tile(tile);
+
+            char display_name[WORLD_ART_DISPLAY_NAME_CAP];
+            world_art_get_display_name(kind, display_name, WORLD_ART_DISPLAY_NAME_CAP);
+
+            Vector2 text_size = MeasureTextEx(game->font, display_name, WORLD_WALL_TEST_LABEL_SIZE,
+                                              game->font_spacing);
+            max_name_width = max(max_name_width, text_size.x);
+        }
+    }
+
+    float direction_label_height = game_get_world_wall_test_direction_label_height(game);
+    i32 grid_cols = WORLD_ART_WALL_VARIATION_COUNT;
+    i32 grid_rows = WORLD_ART_THEME_COUNT;
+    float cell_w = max(max_name_width, sprite_row_width) + (WORLD_WALL_TEST_CELL_PADDING_X * 2.0f);
+    float cell_h = (WORLD_WALL_TEST_CELL_PADDING_Y * 2.0f) + WORLD_WALL_TEST_LABEL_SIZE +
+                   WORLD_WALL_TEST_LABEL_GAP + direction_label_height +
+                   WORLD_WALL_TEST_DIRECTION_LABEL_GAP + sprite_size;
+
+    return (Vector2){
+        .x = (float)grid_cols * cell_w + (float)(grid_cols - 1) * WORLD_WALL_TEST_CELL_GAP_X,
+        .y = (float)grid_rows * cell_h + (float)(grid_rows - 1) * WORLD_WALL_TEST_CELL_GAP_Y,
+    };
+}
+
+static void game_draw_world_wall_test_preview(Game *game, Vector2 origin)
+{
+    float sprite_size = WORLD_ART_TILE_SIZE * WORLD_WALL_TEST_SPRITE_SCALE;
+    float sprite_row_width = (sprite_size * NUM_WORLD_WALL_DIRECTIONS) +
+                             ((NUM_WORLD_WALL_DIRECTIONS - 1) * WORLD_WALL_TEST_SPRITE_GAP);
+
+    float max_name_width = 0.0f;
+    for (i32 theme = 0; theme < WORLD_ART_THEME_COUNT; theme++) {
+        for (i32 variation = 0; variation < WORLD_ART_WALL_VARIATION_COUNT; variation++) {
+            World_Art_Tile tile =
+                world_art_get_north_wall_tile((WORLD_ART_THEME)theme, (u8)variation);
+            WORLD_ART_KIND kind = world_art_get_kind_from_tile(tile);
+
+            char display_name[WORLD_ART_DISPLAY_NAME_CAP];
+            world_art_get_display_name(kind, display_name, WORLD_ART_DISPLAY_NAME_CAP);
+
+            Vector2 text_size = MeasureTextEx(game->font, display_name, WORLD_WALL_TEST_LABEL_SIZE,
+                                              game->font_spacing);
+            max_name_width = max(max_name_width, text_size.x);
+        }
+    }
+
+    float direction_label_height = game_get_world_wall_test_direction_label_height(game);
+    i32 grid_cols = WORLD_ART_WALL_VARIATION_COUNT;
+    i32 grid_rows = WORLD_ART_THEME_COUNT;
+    float cell_w = max(max_name_width, sprite_row_width) + (WORLD_WALL_TEST_CELL_PADDING_X * 2.0f);
+    float cell_h = (WORLD_WALL_TEST_CELL_PADDING_Y * 2.0f) + WORLD_WALL_TEST_LABEL_SIZE +
+                   WORLD_WALL_TEST_LABEL_GAP + direction_label_height +
+                   WORLD_WALL_TEST_DIRECTION_LABEL_GAP + sprite_size;
+
+    Vector2 content_size = game_get_world_wall_test_preview_size(game);
+
+    Rectangle content_panel = {
+        .x = origin.x - WORLD_WALL_TEST_CELL_PADDING_X,
+        .y = origin.y - WORLD_WALL_TEST_CELL_PADDING_Y,
+        .width = content_size.x + (WORLD_WALL_TEST_CELL_PADDING_X * 2.0f),
+        .height = content_size.y + (WORLD_WALL_TEST_CELL_PADDING_Y * 2.0f),
+    };
+    DrawRectangleRounded(content_panel, 0.04f, 8, (Color){20, 33, 38, 255});
+    DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
+
+    for (i32 theme = 0; theme < grid_rows; theme++) {
+        for (i32 variation = 0; variation < grid_cols; variation++) {
+            float cell_x = origin.x + (float)variation * (cell_w + WORLD_WALL_TEST_CELL_GAP_X);
+            float cell_y = origin.y + (float)theme * (cell_h + WORLD_WALL_TEST_CELL_GAP_Y);
+
+            Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
+            DrawRectangleRounded(panel, 0.08f, 4, (Color){32, 47, 52, 255});
+            DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
+
+            World_Art_Tile north_tile =
+                world_art_get_north_wall_tile((WORLD_ART_THEME)theme, (u8)variation);
+            WORLD_ART_KIND north_kind = world_art_get_kind_from_tile(north_tile);
+
+            char display_name[WORLD_ART_DISPLAY_NAME_CAP];
+            world_art_get_display_name(north_kind, display_name, WORLD_ART_DISPLAY_NAME_CAP);
+
+            Vector2 title_size = MeasureTextEx(game->font, display_name, WORLD_WALL_TEST_LABEL_SIZE,
+                                               game->font_spacing);
+            Vector2 title_pos = {
+                .x = cell_x + (cell_w - title_size.x) * 0.5f,
+                .y = cell_y + WORLD_WALL_TEST_CELL_PADDING_Y,
+            };
+            DrawTextEx(game->font, display_name, title_pos, WORLD_WALL_TEST_LABEL_SIZE,
+                       game->font_spacing, RAYWHITE);
+
+            float direction_label_y = title_pos.y + title_size.y + WORLD_WALL_TEST_LABEL_GAP;
+            float sprite_y =
+                direction_label_y + direction_label_height + WORLD_WALL_TEST_DIRECTION_LABEL_GAP;
+            float sprite_row_x = cell_x + (cell_w - sprite_row_width) * 0.5f;
+
+            for (i32 direction = 0; direction < NUM_WORLD_WALL_DIRECTIONS; direction++) {
+                float sprite_x =
+                    sprite_row_x + (float)direction * (sprite_size + WORLD_WALL_TEST_SPRITE_GAP);
+
+                const char *direction_name =
+                    world_art_get_wall_direction_name((WORLD_WALL_DIRECTION)direction);
+                Vector2 direction_size =
+                    MeasureTextEx(game->font, direction_name, WORLD_WALL_TEST_DIRECTION_LABEL_SIZE,
+                                  game->font_spacing);
+                Vector2 direction_pos = {
+                    .x = sprite_x + (sprite_size - direction_size.x) * 0.5f,
+                    .y = direction_label_y,
+                };
+                DrawTextEx(game->font, direction_name, direction_pos,
+                           WORLD_WALL_TEST_DIRECTION_LABEL_SIZE, game->font_spacing,
+                           (Color){181, 211, 220, 255});
+
+                float rotation =
+                    world_art_get_wall_rotation_degrees((WORLD_WALL_DIRECTION)direction);
+                game_draw_world_tile(game, north_tile, (Vector2){sprite_x, sprite_y}, sprite_size,
+                                     rotation);
+            }
+        }
+    }
+}
+
 static void game_draw_art_previews(Game *game)
 {
     Vector2 unit_preview_size = game_get_unit_art_preview_size(game);
     Vector2 item_preview_size = game_get_item_art_preview_size(game);
+    Vector2 world_preview_size = game_get_world_art_preview_size(game);
+    Vector2 wall_test_preview_size = game_get_world_wall_test_preview_size(game);
 
     Vector2 unit_origin = {
         .x = ((float)VIRTUAL_W - unit_preview_size.x) * 0.5f,
@@ -318,8 +598,20 @@ static void game_draw_art_previews(Game *game)
         .y = unit_origin.y + unit_preview_size.y + PREVIEW_SECTION_GAP_Y,
     };
 
+    Vector2 world_origin = {
+        .x = ((float)VIRTUAL_W - world_preview_size.x) * 0.5f,
+        .y = item_origin.y + item_preview_size.y + PREVIEW_SECTION_GAP_Y,
+    };
+
+    Vector2 wall_test_origin = {
+        .x = ((float)VIRTUAL_W - wall_test_preview_size.x) * 0.5f,
+        .y = world_origin.y + world_preview_size.y + PREVIEW_SECTION_GAP_Y,
+    };
+
     game_draw_unit_art_preview(game, unit_origin);
     game_draw_item_art_preview(game, item_origin);
+    game_draw_world_art_preview(game, world_origin);
+    game_draw_world_wall_test_preview(game, wall_test_origin);
 }
 
 static void game_update_camera(Game *game)
@@ -369,6 +661,10 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->items_texture = LoadTexture(ITEMS_SHEET_PATH);
     assert(game->items_texture.id != 0);
     SetTextureFilter(game->items_texture, TEXTURE_FILTER_POINT);
+
+    game->world_texture = LoadTexture(WORLD_SHEET_PATH);
+    assert(game->world_texture.id != 0);
+    SetTextureFilter(game->world_texture, TEXTURE_FILTER_POINT);
 }
 
 void game_shutdown(Mem mem)
@@ -378,6 +674,8 @@ void game_shutdown(Mem mem)
         UnloadTexture(game->units_texture);
     if (game->items_texture.id != 0)
         UnloadTexture(game->items_texture);
+    if (game->world_texture.id != 0)
+        UnloadTexture(game->world_texture);
 }
 
 static void game_input(Game *game)
