@@ -5,11 +5,14 @@
 #include "ck/ck.h"
 
 #include "game.h"
+#include "item_art.h"
 #include "unit_art.h"
 
 #define UNITS_SHEET_PATH "assets/units.png"
-#define UNIT_PREVIEW_MARGIN_X 24.0f
-#define UNIT_PREVIEW_MARGIN_Y 24.0f
+#define ITEMS_SHEET_PATH "assets/items.png"
+#define PREVIEW_TOP_MARGIN_Y 24.0f
+#define PREVIEW_SECTION_GAP_Y 40.0f
+
 #define UNIT_PREVIEW_CELL_GAP_X 14.0f
 #define UNIT_PREVIEW_CELL_GAP_Y 18.0f
 #define UNIT_PREVIEW_CELL_PADDING_X 10.0f
@@ -19,6 +22,17 @@
 #define UNIT_PREVIEW_SPRITE_SCALE 2.0f
 #define UNIT_PREVIEW_SPRITE_GAP 6.0f
 #define UNIT_PREVIEW_ANIM_FPS 5.0f
+
+#define ITEM_PREVIEW_CELL_GAP_X 14.0f
+#define ITEM_PREVIEW_CELL_GAP_Y 18.0f
+#define ITEM_PREVIEW_CELL_PADDING_X 10.0f
+#define ITEM_PREVIEW_CELL_PADDING_Y 8.0f
+#define ITEM_PREVIEW_LABEL_SIZE 16.0f
+#define ITEM_PREVIEW_LABEL_GAP 6.0f
+#define ITEM_PREVIEW_SPRITE_SCALE 3.0f
+
+#define CAMERA_KEYBOARD_PAN_SPEED 1800.0f
+#define CAMERA_FALLBACK_FRAME_TIME (1.0f / 60.0f)
 
 typedef enum {
     INPUT_NONE,
@@ -38,8 +52,6 @@ typedef struct {
     bool down[NUM_INPUTS];
     bool pressed[NUM_INPUTS];
     bool released[NUM_INPUTS];
-    Vector2 mouse_pos;
-    float mouse_wheel;
 } Input;
 
 typedef struct {
@@ -48,6 +60,7 @@ typedef struct {
     Font font;
     float font_spacing;
     Texture2D units_texture;
+    Texture2D items_texture;
 } Game;
 
 static int game_preview_anim_frame(void)
@@ -59,7 +72,16 @@ static int game_preview_anim_frame(void)
     return frame;
 }
 
-static void game_draw_unit_art_preview(Game *game)
+static int game_item_preview_anim_frame(void)
+{
+    int frame = (int)(GetTime() * UNIT_PREVIEW_ANIM_FPS);
+    frame %= ITEM_ART_ANIM_FRAME_COUNT;
+    if (frame < 0)
+        frame += ITEM_ART_ANIM_FRAME_COUNT;
+    return frame;
+}
+
+static Vector2 game_get_unit_art_preview_size(Game *game)
 {
     float sprite_size = UNIT_ART_TILE_SIZE * UNIT_PREVIEW_SPRITE_SCALE;
     float sprite_row_width = (sprite_size * UNIT_ART_ORIENTATION_COUNT) +
@@ -75,34 +97,89 @@ static void game_draw_unit_art_preview(Game *game)
         max_name_width = max(max_name_width, text_size.x);
     }
 
-    i32 unit_count = NUM_UNIT_ART - 1;
-    float min_cell_width =
-        max(max_name_width, sprite_row_width) + (UNIT_PREVIEW_CELL_PADDING_X * 2.0f);
-    float usable_w = (float)VIRTUAL_W - (UNIT_PREVIEW_MARGIN_X * 2.0f);
-    i32 grid_cols =
-        (i32)((usable_w + UNIT_PREVIEW_CELL_GAP_X) / (min_cell_width + UNIT_PREVIEW_CELL_GAP_X));
-    grid_cols = clamp(grid_cols, 1, unit_count);
+    i32 grid_cols = UNIT_ART_COL_COUNT;
+    i32 grid_rows = UNIT_ART_ROW_COUNT;
+    float cell_w = max(max_name_width, sprite_row_width) + (UNIT_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (UNIT_PREVIEW_CELL_PADDING_Y * 2.0f) + UNIT_PREVIEW_LABEL_SIZE +
+                   UNIT_PREVIEW_LABEL_GAP + sprite_size;
 
-    i32 grid_rows = (unit_count + grid_cols - 1) / grid_cols;
-    float total_gap_w = (float)(grid_cols - 1) * UNIT_PREVIEW_CELL_GAP_X;
-    float total_gap_h = (float)(grid_rows - 1) * UNIT_PREVIEW_CELL_GAP_Y;
+    return (Vector2){
+        .x = (float)grid_cols * cell_w + (float)(grid_cols - 1) * UNIT_PREVIEW_CELL_GAP_X,
+        .y = (float)grid_rows * cell_h + (float)(grid_rows - 1) * UNIT_PREVIEW_CELL_GAP_Y,
+    };
+}
 
-    float cell_w = (usable_w - total_gap_w) / (float)grid_cols;
-    float cell_h =
-        ((float)VIRTUAL_H - (UNIT_PREVIEW_MARGIN_Y * 2.0f) - total_gap_h) / (float)grid_rows;
+static Vector2 game_get_item_art_preview_size(Game *game)
+{
+    float sprite_size = ITEM_ART_TILE_SIZE * ITEM_PREVIEW_SPRITE_SCALE;
+
+    float max_name_width = 0.0f;
+    for (i32 kind = ITEM_ART_NONE + 1; kind < NUM_ITEM_ART; kind++) {
+        char display_name[ITEM_ART_DISPLAY_NAME_CAP];
+        item_art_get_display_name((ITEM_ART_KIND)kind, display_name, ITEM_ART_DISPLAY_NAME_CAP);
+
+        Vector2 text_size =
+            MeasureTextEx(game->font, display_name, ITEM_PREVIEW_LABEL_SIZE, game->font_spacing);
+        max_name_width = max(max_name_width, text_size.x);
+    }
+
+    i32 grid_cols = ITEM_ART_COL_COUNT;
+    i32 grid_rows = ITEM_ART_ROW_COUNT;
+    float cell_w = max(max_name_width, sprite_size) + (ITEM_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (ITEM_PREVIEW_CELL_PADDING_Y * 2.0f) + ITEM_PREVIEW_LABEL_SIZE +
+                   ITEM_PREVIEW_LABEL_GAP + sprite_size;
+
+    return (Vector2){
+        .x = (float)grid_cols * cell_w + (float)(grid_cols - 1) * ITEM_PREVIEW_CELL_GAP_X,
+        .y = (float)grid_rows * cell_h + (float)(grid_rows - 1) * ITEM_PREVIEW_CELL_GAP_Y,
+    };
+}
+
+static void game_draw_unit_art_preview(Game *game, Vector2 origin)
+{
+    float sprite_size = UNIT_ART_TILE_SIZE * UNIT_PREVIEW_SPRITE_SCALE;
+    float sprite_row_width = (sprite_size * UNIT_ART_ORIENTATION_COUNT) +
+                             ((UNIT_ART_ORIENTATION_COUNT - 1) * UNIT_PREVIEW_SPRITE_GAP);
+
+    float max_name_width = 0.0f;
+    for (i32 kind = UNIT_ART_NONE + 1; kind < NUM_UNIT_ART; kind++) {
+        char display_name[UNIT_ART_DISPLAY_NAME_CAP];
+        unit_art_get_display_name((UNIT_ART_KIND)kind, display_name, UNIT_ART_DISPLAY_NAME_CAP);
+
+        Vector2 text_size =
+            MeasureTextEx(game->font, display_name, UNIT_PREVIEW_LABEL_SIZE, game->font_spacing);
+        max_name_width = max(max_name_width, text_size.x);
+    }
+
+    i32 grid_cols = UNIT_ART_COL_COUNT;
+    i32 grid_rows = UNIT_ART_ROW_COUNT;
+    float cell_w = max(max_name_width, sprite_row_width) + (UNIT_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (UNIT_PREVIEW_CELL_PADDING_Y * 2.0f) + UNIT_PREVIEW_LABEL_SIZE +
+                   UNIT_PREVIEW_LABEL_GAP + sprite_size;
+
+    Vector2 content_size = game_get_unit_art_preview_size(game);
+
+    Rectangle content_panel = {
+        .x = origin.x - UNIT_PREVIEW_CELL_PADDING_X,
+        .y = origin.y - UNIT_PREVIEW_CELL_PADDING_Y,
+        .width = content_size.x + (UNIT_PREVIEW_CELL_PADDING_X * 2.0f),
+        .height = content_size.y + (UNIT_PREVIEW_CELL_PADDING_Y * 2.0f),
+    };
+    DrawRectangleRounded(content_panel, 0.04f, 8, (Color){20, 33, 38, 255});
+    DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
+
     int anim_frame = game_preview_anim_frame();
-
     for (i32 kind = UNIT_ART_NONE + 1; kind < NUM_UNIT_ART; kind++) {
         i32 draw_idx = kind - 1;
         i32 col = draw_idx % grid_cols;
         i32 row = draw_idx / grid_cols;
 
-        float cell_x = UNIT_PREVIEW_MARGIN_X + (float)col * (cell_w + UNIT_PREVIEW_CELL_GAP_X);
-        float cell_y = UNIT_PREVIEW_MARGIN_Y + (float)row * (cell_h + UNIT_PREVIEW_CELL_GAP_Y);
+        float cell_x = origin.x + (float)col * (cell_w + UNIT_PREVIEW_CELL_GAP_X);
+        float cell_y = origin.y + (float)row * (cell_h + UNIT_PREVIEW_CELL_GAP_Y);
 
         Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
         DrawRectangleRounded(panel, 0.08f, 4, (Color){32, 47, 52, 255});
-        DrawRectangleLinesEx(panel, 1.0f, (Color){71, 95, 104, 255});
+        DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
 
         char display_name[UNIT_ART_DISPLAY_NAME_CAP];
         unit_art_get_display_name((UNIT_ART_KIND)kind, display_name, UNIT_ART_DISPLAY_NAME_CAP);
@@ -141,6 +218,134 @@ static void game_draw_unit_art_preview(Game *game)
     }
 }
 
+static void game_draw_item_art_preview(Game *game, Vector2 origin)
+{
+    float sprite_size = ITEM_ART_TILE_SIZE * ITEM_PREVIEW_SPRITE_SCALE;
+    int anim_frame = game_item_preview_anim_frame();
+
+    float max_name_width = 0.0f;
+    for (i32 kind = ITEM_ART_NONE + 1; kind < NUM_ITEM_ART; kind++) {
+        char display_name[ITEM_ART_DISPLAY_NAME_CAP];
+        item_art_get_display_name((ITEM_ART_KIND)kind, display_name, ITEM_ART_DISPLAY_NAME_CAP);
+
+        Vector2 text_size =
+            MeasureTextEx(game->font, display_name, ITEM_PREVIEW_LABEL_SIZE, game->font_spacing);
+        max_name_width = max(max_name_width, text_size.x);
+    }
+
+    i32 grid_cols = ITEM_ART_COL_COUNT;
+    i32 grid_rows = ITEM_ART_ROW_COUNT;
+    float cell_w = max(max_name_width, sprite_size) + (ITEM_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (ITEM_PREVIEW_CELL_PADDING_Y * 2.0f) + ITEM_PREVIEW_LABEL_SIZE +
+                   ITEM_PREVIEW_LABEL_GAP + sprite_size;
+
+    Vector2 content_size = game_get_item_art_preview_size(game);
+
+    Rectangle content_panel = {
+        .x = origin.x - ITEM_PREVIEW_CELL_PADDING_X,
+        .y = origin.y - ITEM_PREVIEW_CELL_PADDING_Y,
+        .width = content_size.x + (ITEM_PREVIEW_CELL_PADDING_X * 2.0f),
+        .height = content_size.y + (ITEM_PREVIEW_CELL_PADDING_Y * 2.0f),
+    };
+    DrawRectangleRounded(content_panel, 0.04f, 8, (Color){20, 33, 38, 255});
+    DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
+
+    for (i32 kind = ITEM_ART_NONE + 1; kind < NUM_ITEM_ART; kind++) {
+        i32 draw_idx = kind - 1;
+        i32 col = draw_idx % grid_cols;
+        i32 row = draw_idx / grid_cols;
+
+        float cell_x = origin.x + (float)col * (cell_w + ITEM_PREVIEW_CELL_GAP_X);
+        float cell_y = origin.y + (float)row * (cell_h + ITEM_PREVIEW_CELL_GAP_Y);
+
+        Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
+        DrawRectangleRounded(panel, 0.08f, 4, (Color){32, 47, 52, 255});
+        DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
+
+        char display_name[ITEM_ART_DISPLAY_NAME_CAP];
+        item_art_get_display_name((ITEM_ART_KIND)kind, display_name, ITEM_ART_DISPLAY_NAME_CAP);
+
+        Vector2 text_size =
+            MeasureTextEx(game->font, display_name, ITEM_PREVIEW_LABEL_SIZE, game->font_spacing);
+        Vector2 text_pos = {
+            .x = cell_x + (cell_w - text_size.x) * 0.5f,
+            .y = cell_y + ITEM_PREVIEW_CELL_PADDING_Y,
+        };
+        DrawTextEx(game->font, display_name, text_pos, ITEM_PREVIEW_LABEL_SIZE, game->font_spacing,
+                   RAYWHITE);
+
+        float sprite_y = text_pos.y + text_size.y + ITEM_PREVIEW_LABEL_GAP;
+        float sprite_x = cell_x + (cell_w - sprite_size) * 0.5f;
+
+        ITEM_ART_KIND draw_kind = (ITEM_ART_KIND)kind;
+        if (draw_kind == ITEM_ART_TORCH_1 || draw_kind == ITEM_ART_TORCH_2) {
+            bool second_torch = draw_kind == ITEM_ART_TORCH_2;
+            bool use_second_frame = ((anim_frame + (second_torch ? 1 : 0)) % 2) != 0;
+            draw_kind = use_second_frame ? ITEM_ART_TORCH_2 : ITEM_ART_TORCH_1;
+        }
+
+        Item_Art_Pixel pixel = item_art_get_pixel(draw_kind);
+        Rectangle src = {
+            .x = (float)pixel.x,
+            .y = (float)pixel.y,
+            .width = (float)ITEM_ART_TILE_SIZE,
+            .height = (float)ITEM_ART_TILE_SIZE,
+        };
+
+        Rectangle dst = {
+            .x = sprite_x,
+            .y = sprite_y,
+            .width = sprite_size,
+            .height = sprite_size,
+        };
+
+        DrawTexturePro(game->items_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+    }
+}
+
+static void game_draw_art_previews(Game *game)
+{
+    Vector2 unit_preview_size = game_get_unit_art_preview_size(game);
+    Vector2 item_preview_size = game_get_item_art_preview_size(game);
+
+    Vector2 unit_origin = {
+        .x = ((float)VIRTUAL_W - unit_preview_size.x) * 0.5f,
+        .y = PREVIEW_TOP_MARGIN_Y,
+    };
+
+    Vector2 item_origin = {
+        .x = ((float)VIRTUAL_W - item_preview_size.x) * 0.5f,
+        .y = unit_origin.y + unit_preview_size.y + PREVIEW_SECTION_GAP_Y,
+    };
+
+    game_draw_unit_art_preview(game, unit_origin);
+    game_draw_item_art_preview(game, item_origin);
+}
+
+static void game_update_camera(Game *game)
+{
+    float frame_time = GetFrameTime();
+    if (frame_time <= 0.0f)
+        frame_time = CAMERA_FALLBACK_FRAME_TIME;
+
+    float camera_step = CAMERA_KEYBOARD_PAN_SPEED * frame_time;
+
+    if (game->input.down[INPUT_MOVE_UP] || IsKeyDown(KEY_W))
+        game->cam.target.y -= camera_step;
+    if (game->input.down[INPUT_MOVE_DOWN] || IsKeyDown(KEY_S))
+        game->cam.target.y += camera_step;
+    if (game->input.down[INPUT_MOVE_LEFT] || IsKeyDown(KEY_A))
+        game->cam.target.x -= camera_step;
+    if (game->input.down[INPUT_MOVE_RIGHT] || IsKeyDown(KEY_D))
+        game->cam.target.x += camera_step;
+
+    if (game->input.down[INPUT_MOUSE_MIDDLE]) {
+        Vector2 mouse_delta = GetMouseDelta();
+        game->cam.target.x -= mouse_delta.x / game->cam.zoom;
+        game->cam.target.y -= mouse_delta.y / game->cam.zoom;
+    }
+}
+
 void game_init(Mem mem, Font font, float font_spacing)
 {
     Game *game = arena_push(mem.perm, sizeof(Game));
@@ -151,9 +356,8 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->font = font;
     game->font_spacing = font_spacing;
 
-    int screen_w = VIRTUAL_W, screen_h = VIRTUAL_H;
     game->cam = (Camera2D){
-        .offset = {screen_w / 2, screen_h / 2},
+        .offset = {0.0f, 0.0f},
         .target = {0.0f, 0.0f},
         .zoom = 1.0f,
     };
@@ -161,6 +365,10 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->units_texture = LoadTexture(UNITS_SHEET_PATH);
     assert(game->units_texture.id != 0);
     SetTextureFilter(game->units_texture, TEXTURE_FILTER_POINT);
+
+    game->items_texture = LoadTexture(ITEMS_SHEET_PATH);
+    assert(game->items_texture.id != 0);
+    SetTextureFilter(game->items_texture, TEXTURE_FILTER_POINT);
 }
 
 void game_shutdown(Mem mem)
@@ -168,6 +376,8 @@ void game_shutdown(Mem mem)
     Game *game = arena_start(mem.perm, Game);
     if (game->units_texture.id != 0)
         UnloadTexture(game->units_texture);
+    if (game->items_texture.id != 0)
+        UnloadTexture(game->items_texture);
 }
 
 static void game_input(Game *game)
@@ -214,6 +424,7 @@ void game_update(Mem mem)
     arena_clear(mem.tmp);
 
     game_input(game);
+    game_update_camera(game);
     if (game->input.pressed[INPUT_BACK])
         app_quit();
 }
@@ -222,5 +433,7 @@ void game_render(Mem mem)
 {
     Game *game = arena_start(mem.perm, Game);
     ClearBackground((Color){14, 25, 30, 255});
-    game_draw_unit_art_preview(game);
+    BeginMode2D(game->cam);
+    game_draw_art_previews(game);
+    EndMode2D();
 }
