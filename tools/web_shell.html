@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1">
+        <title>Cosmium</title>
+        <style>
+            html, body {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+                background: #000;
+                overflow: hidden;
+            }
+
+            #canvas {
+                width: 100%;
+                height: 100%;
+                display: block;
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+        <script>
+            var Module = {
+                canvas: (function () {
+                    return document.getElementById("canvas");
+                })()
+            };
+        </script>
+        {{{ SCRIPT }}}
+    </body>
+</html>
