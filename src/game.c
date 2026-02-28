@@ -118,16 +118,24 @@
 #define ITEM_KIND_GREEN_HERB ITEM_ART_KIND_AT(9, 5)
 #define ITEM_KIND_MAP ITEM_ART_KIND_AT(15, 5)
 
+#if !defined(NDEBUG)
+#define GAME_DEBUG_FEATURES 1
+#else
+#define GAME_DEBUG_FEATURES 0
+#endif
+
 typedef enum {
     INPUT_NONE,
     INPUT_MOVE_UP,
     INPUT_MOVE_DOWN,
     INPUT_MOVE_LEFT,
     INPUT_MOVE_RIGHT,
-    INPUT_ACTION,
+    INPUT_DEBUG_NEXT_FLOOR,
     INPUT_BACK,
-    INPUT_TOGGLE_VIEW,
-    INPUT_TOGGLE_PATH,
+    INPUT_DEBUG_TOGGLE_VIEW,
+    INPUT_DEBUG_TOGGLE_PATH,
+    INPUT_DEBUG_TOGGLE_REVEAL_MAP,
+    INPUT_DEBUG_TOGGLE_DIJKSTRA_OVERLAY,
     INPUT_SELECT_WALL_THEME_1,
     INPUT_SELECT_WALL_THEME_2,
     INPUT_SELECT_WALL_THEME_3,
@@ -148,6 +156,73 @@ typedef struct {
     bool pressed[NUM_INPUTS];
     bool released[NUM_INPUTS];
 } Input;
+
+typedef enum {
+    DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH,
+    DEBUG_FEATURE_REVEAL_MAP,
+    DEBUG_FEATURE_SHOW_PLAYER_DIJKSTRA,
+    NUM_DEBUG_FEATURES,
+} DEBUG_FEATURE;
+
+typedef struct {
+    DEBUG_FEATURE feature;
+    INPUT toggle_input;
+    const char *name;
+    const char *hotkey;
+    bool default_enabled;
+} Debug_Feature_Def;
+
+static const Debug_Feature_Def game_debug_feature_defs[NUM_DEBUG_FEATURES] = {
+    {
+        .feature = DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH,
+        .toggle_input = INPUT_DEBUG_TOGGLE_PATH,
+        .name = "Spawn->Exit path",
+        .hotkey = "P",
+        .default_enabled = true,
+    },
+    {
+        .feature = DEBUG_FEATURE_REVEAL_MAP,
+        .toggle_input = INPUT_DEBUG_TOGGLE_REVEAL_MAP,
+        .name = "Reveal map",
+        .hotkey = "L",
+        .default_enabled = false,
+    },
+    {
+        .feature = DEBUG_FEATURE_SHOW_PLAYER_DIJKSTRA,
+        .toggle_input = INPUT_DEBUG_TOGGLE_DIJKSTRA_OVERLAY,
+        .name = "Dijkstra overlay",
+        .hotkey = "J",
+        .default_enabled = false,
+    },
+};
+
+typedef enum {
+    DEBUG_ACTION_TOGGLE_VIEW,
+    DEBUG_ACTION_NEXT_FLOOR,
+    NUM_DEBUG_ACTIONS,
+} DEBUG_ACTION;
+
+typedef struct {
+    DEBUG_ACTION action;
+    INPUT action_input;
+    const char *name;
+    const char *hotkey;
+} Debug_Action_Def;
+
+static const Debug_Action_Def game_debug_action_defs[NUM_DEBUG_ACTIONS] = {
+    {
+        .action = DEBUG_ACTION_TOGGLE_VIEW,
+        .action_input = INPUT_DEBUG_TOGGLE_VIEW,
+        .name = "Toggle map/preview",
+        .hotkey = "Tab",
+    },
+    {
+        .action = DEBUG_ACTION_NEXT_FLOOR,
+        .action_input = INPUT_DEBUG_NEXT_FLOOR,
+        .name = "Generate next floor",
+        .hotkey = "Space",
+    },
+};
 
 typedef enum {
     DUNGEON_CELL_EMPTY,
@@ -223,7 +298,7 @@ typedef struct {
     Font font;
     float font_spacing;
     bool show_dungeon_map;
-    bool show_spawn_to_exit_path;
+    u32 debug_feature_mask;
     WORLD_ART_THEME dungeon_wall_theme;
     Texture2D units_texture;
     Texture2D items_texture;
@@ -264,6 +339,9 @@ typedef struct {
 
     i32 spawn_to_exit_path_len;
     u8 spawn_to_exit_path[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+
+    i16 player_dijkstra_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    bool player_dijkstra_distance_valid;
 
 } Game;
 
@@ -338,6 +416,87 @@ static bool game_dungeon_cell_in_bounds(i32 x, i32 y)
     return x >= 0 && x < DUNGEON_COL_COUNT && y >= 0 && y < DUNGEON_ROW_COUNT;
 }
 
+static u32 game_debug_feature_bit(DEBUG_FEATURE feature)
+{
+    return 1u << (u32)feature;
+}
+
+static bool game_debug_feature_is_enabled(const Game *game, DEBUG_FEATURE feature)
+{
+#if GAME_DEBUG_FEATURES
+    return (game->debug_feature_mask & game_debug_feature_bit(feature)) != 0;
+#else
+    (void)game;
+    (void)feature;
+    return false;
+#endif
+}
+
+static void game_debug_set_feature_enabled(Game *game, DEBUG_FEATURE feature, bool enabled)
+{
+#if GAME_DEBUG_FEATURES
+    u32 bit = game_debug_feature_bit(feature);
+    if (enabled)
+        game->debug_feature_mask |= bit;
+    else
+        game->debug_feature_mask &= ~bit;
+#else
+    (void)game;
+    (void)feature;
+    (void)enabled;
+#endif
+}
+
+static void game_debug_reset_feature_defaults(Game *game)
+{
+    game->debug_feature_mask = 0;
+    for (i32 idx = 0; idx < NUM_DEBUG_FEATURES; idx++)
+        game_debug_set_feature_enabled(game, game_debug_feature_defs[idx].feature,
+                                       game_debug_feature_defs[idx].default_enabled);
+}
+
+static void game_debug_handle_feature_toggles(Game *game)
+{
+#if GAME_DEBUG_FEATURES
+    for (i32 idx = 0; idx < NUM_DEBUG_FEATURES; idx++) {
+        const Debug_Feature_Def *def = &game_debug_feature_defs[idx];
+        if (!game->input.pressed[def->toggle_input])
+            continue;
+
+        bool enabled = game_debug_feature_is_enabled(game, def->feature);
+        game_debug_set_feature_enabled(game, def->feature, !enabled);
+    }
+#else
+    (void)game;
+#endif
+}
+
+static void game_debug_handle_actions(Game *game, bool *out_rebuild_floor)
+{
+#if GAME_DEBUG_FEATURES
+    for (i32 idx = 0; idx < NUM_DEBUG_ACTIONS; idx++) {
+        const Debug_Action_Def *def = &game_debug_action_defs[idx];
+        if (!game->input.pressed[def->action_input])
+            continue;
+
+        switch (def->action) {
+        case DEBUG_ACTION_TOGGLE_VIEW:
+            game->show_dungeon_map = !game->show_dungeon_map;
+            break;
+        case DEBUG_ACTION_NEXT_FLOOR:
+            game->dungeon_floor_index++;
+            *out_rebuild_floor = true;
+            break;
+        default:
+            break;
+        }
+    }
+#else
+    (void)game;
+    (void)out_rebuild_floor;
+#endif
+}
+
 static bool game_dungeon_cell_is_floor(const Game *game, i32 x, i32 y)
 {
     if (!game_dungeon_cell_in_bounds(x, y))
@@ -356,6 +515,8 @@ static bool game_dungeon_cell_is_visible(const Game *game, i32 x, i32 y)
 {
     if (!game_dungeon_cell_in_bounds(x, y))
         return false;
+    if (game_debug_feature_is_enabled(game, DEBUG_FEATURE_REVEAL_MAP))
+        return true;
     return game->dungeon_visible[y][x] != 0;
 }
 
@@ -363,6 +524,8 @@ static bool game_dungeon_cell_is_explored(const Game *game, i32 x, i32 y)
 {
     if (!game_dungeon_cell_in_bounds(x, y))
         return false;
+    if (game_debug_feature_is_enabled(game, DEBUG_FEATURE_REVEAL_MAP))
+        return true;
     return game->dungeon_explored[y][x] != 0;
 }
 
@@ -1388,6 +1551,14 @@ static bool game_dungeon_build_dijkstra_map(const Game *game, const i16 *goal_x,
     return true;
 }
 
+static void game_dungeon_rebuild_player_dijkstra_map(Game *game)
+{
+    i16 goal_x[1] = {game->player_x};
+    i16 goal_y[1] = {game->player_y};
+    game->player_dijkstra_distance_valid =
+        game_dungeon_build_dijkstra_map(game, goal_x, goal_y, 1, game->player_dijkstra_distance);
+}
+
 static u8 game_dungeon_get_orientation_from_step(i32 dx, i32 dy, u8 fallback)
 {
     if (dx > 0)
@@ -1406,10 +1577,8 @@ static void game_dungeon_take_enemy_turns(Game *game)
     if (game->unit_count <= 0)
         return;
 
-    i16 goal_x[1] = {game->player_x};
-    i16 goal_y[1] = {game->player_y};
-    i16 distance_to_player[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
-    if (!game_dungeon_build_dijkstra_map(game, goal_x, goal_y, 1, distance_to_player))
+    game_dungeon_rebuild_player_dijkstra_map(game);
+    if (!game->player_dijkstra_distance_valid)
         return;
 
     static const i32 neighbor_offsets[4][2] = {
@@ -1426,7 +1595,7 @@ static void game_dungeon_take_enemy_turns(Game *game)
         if (!game_dungeon_cell_in_bounds(start_x, start_y))
             continue;
 
-        i16 best_distance = distance_to_player[start_y][start_x];
+        i16 best_distance = game->player_dijkstra_distance[start_y][start_x];
         if (best_distance <= 0 || best_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
             continue;
 
@@ -1443,7 +1612,7 @@ static void game_dungeon_take_enemy_turns(Game *game)
             if (game_dungeon_cell_has_unit_excluding(game, nx, ny, unit_idx))
                 continue;
 
-            i16 next_distance = distance_to_player[ny][nx];
+            i16 next_distance = game->player_dijkstra_distance[ny][nx];
             if (next_distance < 0 || next_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
                 continue;
             if (next_distance >= best_distance)
@@ -2035,6 +2204,7 @@ static bool game_build_test_dungeon_candidate(Game *game)
     game->player_x = -1;
     game->player_y = -1;
     game->player_orientation = PLAYER_START_ORIENTATION;
+    game->player_dijkstra_distance_valid = false;
     game->player_spawn_x = -1;
     game->player_spawn_y = -1;
     game_dungeon_clear_spawn_to_exit_path(game);
@@ -2085,7 +2255,8 @@ static bool game_build_test_dungeon_candidate(Game *game)
 
     assert(game_dungeon_cell_is_floor(game, game->player_x, game->player_y));
     game_dungeon_rebuild_line_of_sight(game);
-    return true;
+    game_dungeon_rebuild_player_dijkstra_map(game);
+    return game->player_dijkstra_distance_valid;
 }
 
 static void game_build_test_dungeon(Game *game)
@@ -2775,10 +2946,55 @@ static Camera2D game_get_active_camera(const Game *game)
     return cam;
 }
 
+static void game_draw_dungeon_dijkstra_overlay(Game *game, Vector2 origin, float tile_size)
+{
+    if (!game_debug_feature_is_enabled(game, DEBUG_FEATURE_SHOW_PLAYER_DIJKSTRA))
+        return;
+    if (!game->player_dijkstra_distance_valid)
+        return;
+
+    float text_size = clamp(tile_size * 0.2f, 10.0f, 24.0f);
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_explored(game, x, y))
+                continue;
+
+            i16 distance = game->player_dijkstra_distance[y][x];
+            Color text_color = game_dungeon_cell_is_visible(game, x, y)
+                                   ? (Color){236, 248, 250, 245}
+                                   : (Color){154, 172, 178, 230};
+            char text[8];
+
+            if (distance < 0) {
+                text_color = game_dungeon_cell_is_visible(game, x, y) ? (Color){115, 130, 136, 230}
+                                                                      : (Color){89, 100, 106, 220};
+                snprintf(text, sizeof(text), "##");
+            } else if (distance >= DUNGEON_DIJKSTRA_UNREACHABLE) {
+                text_color = game_dungeon_cell_is_visible(game, x, y) ? (Color){255, 145, 124, 240}
+                                                                      : (Color){188, 112, 98, 230};
+                snprintf(text, sizeof(text), "##");
+            } else {
+                snprintf(text, sizeof(text), "%d", (i32)distance);
+            }
+
+            Vector2 top_left = game_dungeon_get_cell_top_left(origin, x, y, tile_size);
+            Vector2 text_draw_size = MeasureTextEx(game->font, text, text_size, game->font_spacing);
+            Vector2 text_pos = {
+                .x = top_left.x + (tile_size - text_draw_size.x) * 0.5f,
+                .y = top_left.y + (tile_size - text_draw_size.y) * 0.5f,
+            };
+            DrawTextEx(game->font, text, text_pos, text_size, game->font_spacing, text_color);
+        }
+    }
+}
+
 static void game_draw_test_dungeon(Game *game)
 {
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
     Vector2 origin = game_dungeon_get_origin();
+    bool show_spawn_to_exit_path =
+        game_debug_feature_is_enabled(game, DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH);
     Color remembered_tint = (Color){128, 142, 148, 255};
     Color path_visible_tint = (Color){56, 176, 218, 88};
     Color path_remembered_tint = (Color){35, 94, 110, 72};
@@ -2812,7 +3028,7 @@ static void game_draw_test_dungeon(Game *game)
         }
     }
 
-    if (game->show_spawn_to_exit_path) {
+    if (show_spawn_to_exit_path) {
         for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
             for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
                 if (game->spawn_to_exit_path[y][x] == 0)
@@ -2866,7 +3082,7 @@ static void game_draw_test_dungeon(Game *game)
     game_draw_unit_tile(game, UNIT_ART_WARLOCK, game->player_orientation, player_top_left,
                         tile_size, unit_anim_frame);
 
-    if (game->show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
+    if (show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
         game_dungeon_cell_is_explored(game, game->player_spawn_x, game->player_spawn_y)) {
         Color spawn_color =
             game_dungeon_cell_is_visible(game, game->player_spawn_x, game->player_spawn_y)
@@ -2878,7 +3094,7 @@ static void game_draw_test_dungeon(Game *game)
                              3.0f, spawn_color);
     }
 
-    if (game->show_spawn_to_exit_path && game->has_exit &&
+    if (show_spawn_to_exit_path && game->has_exit &&
         game_dungeon_cell_is_explored(game, game->exit_x, game->exit_y)) {
         Color exit_color = game_dungeon_cell_is_visible(game, game->exit_x, game->exit_y)
                                ? (Color){255, 208, 108, 230}
@@ -2888,6 +3104,8 @@ static void game_draw_test_dungeon(Game *game)
         DrawRectangleLinesEx((Rectangle){exit_top_left.x, exit_top_left.y, tile_size, tile_size},
                              3.0f, exit_color);
     }
+
+    game_draw_dungeon_dijkstra_overlay(game, origin, tile_size);
 }
 
 static bool game_update_player(Game *game)
@@ -2921,6 +3139,7 @@ static bool game_update_player(Game *game)
     game->player_y = (i16)next_y;
     game_dungeon_build_spawn_to_exit_path(game);
     game_dungeon_rebuild_line_of_sight(game);
+    game_dungeon_rebuild_player_dijkstra_map(game);
     return true;
 }
 
@@ -3059,6 +3278,8 @@ static void game_draw_dungeon_hud(Game *game)
     Vector2 origin = {18.0f, 14.0f};
     Color text_color = (Color){219, 236, 238, 255};
     Color subtle = (Color){167, 195, 201, 255};
+    bool show_spawn_to_exit_path =
+        game_debug_feature_is_enabled(game, DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH);
 
     char line[256];
     snprintf(line, sizeof(line), "Template [Q/E]: %s (%d/%d)",
@@ -3067,29 +3288,54 @@ static void game_draw_dungeon_hud(Game *game)
     DrawTextEx(game->font, line, origin, label_size, game->font_spacing, text_color);
 
     origin.y += 22.0f;
-    snprintf(line, sizeof(line),
-             "Space: new floor  P: path  Wheel/-/=: zoom  0: reset  Floor: %u  Zoom: %.2fx",
+    snprintf(line, sizeof(line), "Wheel/-/=: zoom  0: reset  Floor: %u  Zoom: %.2fx",
              game->dungeon_floor_index, game->dungeon_cam.zoom);
     DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing, subtle);
 
-    origin.y += 22.0f;
-    if (!game->show_spawn_to_exit_path) {
-        snprintf(line, sizeof(line), "Player -> Exit path: hidden");
-        DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                   (Color){167, 195, 201, 255});
-    } else if (!game->has_exit) {
-        snprintf(line, sizeof(line), "Player -> Exit path: no exit placed");
-        DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                   (Color){250, 185, 90, 255});
-    } else if (game->spawn_to_exit_path_len > 0) {
-        i32 step_count = game->spawn_to_exit_path_len - 1;
-        snprintf(line, sizeof(line), "Player -> Exit path: %d steps remaining", step_count);
-        DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                   (Color){128, 223, 242, 255});
-    } else {
-        snprintf(line, sizeof(line), "Player -> Exit path: no route on this floor");
-        DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                   (Color){250, 185, 90, 255});
+    if (GAME_DEBUG_FEATURES) {
+        origin.y += 22.0f;
+        DrawTextEx(game->font, "Debug controls", origin, label_size - 1.0f, game->font_spacing,
+                   (Color){187, 222, 229, 255});
+
+        for (i32 idx = 0; idx < NUM_DEBUG_ACTIONS; idx++) {
+            const Debug_Action_Def *def = &game_debug_action_defs[idx];
+
+            origin.y += 20.0f;
+            snprintf(line, sizeof(line), "[%s] %s", def->hotkey, def->name);
+            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                       (Color){153, 175, 180, 255});
+        }
+
+        for (i32 idx = 0; idx < NUM_DEBUG_FEATURES; idx++) {
+            const Debug_Feature_Def *def = &game_debug_feature_defs[idx];
+            bool enabled = game_debug_feature_is_enabled(game, def->feature);
+
+            origin.y += 20.0f;
+            snprintf(line, sizeof(line), "[%s] %s: %s", def->hotkey, def->name,
+                     enabled ? "ON" : "off");
+            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                       enabled ? (Color){132, 223, 200, 255} : (Color){153, 175, 180, 255});
+        }
+
+        origin.y += 24.0f;
+        if (!show_spawn_to_exit_path) {
+            snprintf(line, sizeof(line), "Player -> Exit path: hidden");
+            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                       (Color){167, 195, 201, 255});
+        } else if (!game->has_exit) {
+            snprintf(line, sizeof(line), "Player -> Exit path: no exit placed");
+            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                       (Color){250, 185, 90, 255});
+        } else if (game->spawn_to_exit_path_len > 0) {
+            i32 step_count = game->spawn_to_exit_path_len - 1;
+            snprintf(line, sizeof(line), "Player -> Exit path: %d steps remaining", step_count);
+            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                       (Color){128, 223, 242, 255});
+        } else {
+            snprintf(line, sizeof(line), "Player -> Exit path: no route on this floor");
+            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                       (Color){250, 185, 90, 255});
+        }
     }
 
     if (game->dungeon_template_error[0] != '\0') {
@@ -3136,7 +3382,7 @@ void game_init(Mem mem, Font font, float font_spacing)
     SetTextureFilter(game->world_texture, TEXTURE_FILTER_POINT);
 
     game->show_dungeon_map = true;
-    game->show_spawn_to_exit_path = true;
+    game_debug_reset_feature_defaults(game);
     game->dungeon_wall_theme = WORLD_ART_THEME_1;
     game->dungeon_seed = DUNGEON_SEED;
     game->dungeon_floor_index = 0;
@@ -3175,13 +3421,13 @@ static void game_input(Game *game)
         IsKeyDown(KEY_A) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_LEFT);
     input->down[INPUT_MOVE_RIGHT] =
         IsKeyDown(KEY_D) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
-    input->down[INPUT_ACTION] =
+    input->down[INPUT_DEBUG_NEXT_FLOOR] =
         IsKeyDown(KEY_SPACE) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
     input->down[INPUT_MOUSE_LEFT] = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
     input->down[INPUT_MOUSE_RIGHT] = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
     input->down[INPUT_MOUSE_MIDDLE] = IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
 
-    input->pressed[INPUT_ACTION] =
+    input->pressed[INPUT_DEBUG_NEXT_FLOOR] =
         IsKeyPressed(KEY_SPACE) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
     input->pressed[INPUT_MOVE_UP] = IsKeyPressed(KEY_W) || IsKeyPressedRepeat(KEY_W) ||
                                     IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_UP);
@@ -3195,8 +3441,10 @@ static void game_input(Game *game)
     input->pressed[INPUT_MOUSE_RIGHT] = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
     input->pressed[INPUT_MOUSE_MIDDLE] = IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE);
     input->pressed[INPUT_BACK] = IsKeyPressed(KEY_ESCAPE);
-    input->pressed[INPUT_TOGGLE_VIEW] = IsKeyPressed(KEY_TAB);
-    input->pressed[INPUT_TOGGLE_PATH] = IsKeyPressed(KEY_P);
+    input->pressed[INPUT_DEBUG_TOGGLE_VIEW] = IsKeyPressed(KEY_TAB);
+    input->pressed[INPUT_DEBUG_TOGGLE_PATH] = IsKeyPressed(KEY_P);
+    input->pressed[INPUT_DEBUG_TOGGLE_REVEAL_MAP] = IsKeyPressed(KEY_L);
+    input->pressed[INPUT_DEBUG_TOGGLE_DIJKSTRA_OVERLAY] = IsKeyPressed(KEY_J);
     input->pressed[INPUT_SELECT_WALL_THEME_1] = IsKeyPressed(KEY_ONE);
     input->pressed[INPUT_SELECT_WALL_THEME_2] = IsKeyPressed(KEY_TWO);
     input->pressed[INPUT_SELECT_WALL_THEME_3] = IsKeyPressed(KEY_THREE);
@@ -3219,11 +3467,9 @@ void game_update(Mem mem)
 
     game_input(game);
 
-    if (game->input.pressed[INPUT_TOGGLE_VIEW])
-        game->show_dungeon_map = !game->show_dungeon_map;
-
-    if (game->input.pressed[INPUT_TOGGLE_PATH])
-        game->show_spawn_to_exit_path = !game->show_spawn_to_exit_path;
+    bool rebuild_floor = false;
+    game_debug_handle_actions(game, &rebuild_floor);
+    game_debug_handle_feature_toggles(game);
 
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_1])
         game->dungeon_wall_theme = WORLD_ART_THEME_1;
@@ -3233,8 +3479,6 @@ void game_update(Mem mem)
         game->dungeon_wall_theme = WORLD_ART_THEME_3;
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_4])
         game->dungeon_wall_theme = WORLD_ART_THEME_4;
-
-    bool rebuild_floor = false;
 
     i32 template_delta = 0;
     if (game->input.pressed[INPUT_SELECT_TEMPLATE_PREV])
@@ -3250,11 +3494,6 @@ void game_update(Mem mem)
             game->dungeon_floor_index = 0;
             rebuild_floor = true;
         }
-    }
-
-    if (game->input.pressed[INPUT_ACTION]) {
-        game->dungeon_floor_index++;
-        rebuild_floor = true;
     }
 
     if (game->show_dungeon_map) {
