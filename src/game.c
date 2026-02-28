@@ -94,6 +94,14 @@
 #define DUNGEON_MAIN_PATH_CULL_PICK_SAMPLES 4
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 #define DUNGEON_LOS_RADIUS_TILES 12
+#define DUNGEON_SPRITE_ANIM_FPS 3.0f
+
+#define DUNGEON_MINIMAP_MAX_WIDTH 320.0f
+#define DUNGEON_MINIMAP_MAX_HEIGHT 220.0f
+#define DUNGEON_MINIMAP_MARGIN 18.0f
+#define DUNGEON_MINIMAP_PANEL_PADDING 10.0f
+#define DUNGEON_MINIMAP_LABEL_SIZE 16.0f
+#define DUNGEON_MINIMAP_LABEL_GAP 6.0f
 
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
 #define ITEM_KIND_SCROLL ITEM_ART_KIND_AT(6, 0)
@@ -307,7 +315,7 @@ static const char *game_dungeon_active_template_name(const Game *game)
 
 static int game_unit_anim_frame(void)
 {
-    int frame = (int)(GetTime() * 5.0f);
+    int frame = (int)(GetTime() * DUNGEON_SPRITE_ANIM_FPS);
     frame %= UNIT_ART_ANIM_FRAME_COUNT;
     if (frame < 0)
         frame += UNIT_ART_ANIM_FRAME_COUNT;
@@ -316,7 +324,7 @@ static int game_unit_anim_frame(void)
 
 static int game_item_anim_frame(void)
 {
-    int frame = (int)(GetTime() * 5.0f);
+    int frame = (int)(GetTime() * DUNGEON_SPRITE_ANIM_FPS);
     frame %= ITEM_ART_ANIM_FRAME_COUNT;
     if (frame < 0)
         frame += ITEM_ART_ANIM_FRAME_COUNT;
@@ -2524,24 +2532,25 @@ static void game_draw_art_previews(Game *game)
     Vector2 item_preview_size = game_get_item_art_preview_size(game);
     Vector2 world_preview_size = game_get_world_art_preview_size(game);
     Vector2 wall_test_preview_size = game_get_world_wall_test_preview_size(game);
+    float screen_w = (float)GetScreenWidth();
 
     Vector2 unit_origin = {
-        .x = ((float)VIRTUAL_W - unit_preview_size.x) * 0.5f,
+        .x = (screen_w - unit_preview_size.x) * 0.5f,
         .y = PREVIEW_TOP_MARGIN_Y,
     };
 
     Vector2 item_origin = {
-        .x = ((float)VIRTUAL_W - item_preview_size.x) * 0.5f,
+        .x = (screen_w - item_preview_size.x) * 0.5f,
         .y = unit_origin.y + unit_preview_size.y + PREVIEW_SECTION_GAP_Y,
     };
 
     Vector2 world_origin = {
-        .x = ((float)VIRTUAL_W - world_preview_size.x) * 0.5f,
+        .x = (screen_w - world_preview_size.x) * 0.5f,
         .y = item_origin.y + item_preview_size.y + PREVIEW_SECTION_GAP_Y,
     };
 
     Vector2 wall_test_origin = {
-        .x = ((float)VIRTUAL_W - wall_test_preview_size.x) * 0.5f,
+        .x = (screen_w - wall_test_preview_size.x) * 0.5f,
         .y = world_origin.y + world_preview_size.y + PREVIEW_SECTION_GAP_Y,
     };
 
@@ -2553,12 +2562,14 @@ static void game_draw_art_previews(Game *game)
 
 static Vector2 game_dungeon_get_origin(void)
 {
+    float screen_w = (float)GetScreenWidth();
+    float screen_h = (float)GetScreenHeight();
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
     float map_w = (float)DUNGEON_COL_COUNT * tile_size;
     float map_h = (float)DUNGEON_ROW_COUNT * tile_size;
     return (Vector2){
-        .x = ((float)VIRTUAL_W - map_w) * 0.5f,
-        .y = ((float)VIRTUAL_H - map_h) * 0.5f,
+        .x = (screen_w - map_w) * 0.5f,
+        .y = (screen_h - map_h) * 0.5f,
     };
 }
 
@@ -2803,6 +2814,95 @@ static void game_adjust_dungeon_zoom(Game *game, float delta)
         clamp(game->dungeon_cam.zoom + delta, DUNGEON_CAMERA_ZOOM_MIN, DUNGEON_CAMERA_ZOOM_MAX);
 }
 
+static void game_draw_dungeon_minimap(Game *game)
+{
+    float screen_w = (float)GetScreenWidth();
+    float screen_h = (float)GetScreenHeight();
+    float map_max_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f) -
+                                                         (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f));
+    float map_max_h =
+        min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f) -
+                                            (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f) -
+                                            DUNGEON_MINIMAP_LABEL_SIZE - DUNGEON_MINIMAP_LABEL_GAP);
+    map_max_w = max(map_max_w, 1.0f);
+    map_max_h = max(map_max_h, 1.0f);
+
+    i32 minimap_cell_px =
+        (i32)min(map_max_w / (float)DUNGEON_COL_COUNT, map_max_h / (float)DUNGEON_ROW_COUNT);
+    minimap_cell_px = max(minimap_cell_px, 1);
+
+    float cell_size = (float)minimap_cell_px;
+    float map_w = (float)DUNGEON_COL_COUNT * cell_size;
+    float map_h = (float)DUNGEON_ROW_COUNT * cell_size;
+    float panel_w = map_w + (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f);
+    float panel_h = DUNGEON_MINIMAP_LABEL_SIZE + DUNGEON_MINIMAP_LABEL_GAP + map_h +
+                    (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f);
+
+    Rectangle panel = {
+        .x = screen_w - DUNGEON_MINIMAP_MARGIN - panel_w,
+        .y = DUNGEON_MINIMAP_MARGIN,
+        .width = panel_w,
+        .height = panel_h,
+    };
+    panel.x = max(panel.x, DUNGEON_MINIMAP_MARGIN);
+
+    DrawRectangleRounded(panel, 0.06f, 8, (Color){20, 33, 38, 232});
+    DrawRectangleLinesEx(panel, 1.0f, (Color){70, 101, 108, 255});
+
+    Vector2 label_pos = {
+        .x = panel.x + DUNGEON_MINIMAP_PANEL_PADDING,
+        .y = panel.y + DUNGEON_MINIMAP_PANEL_PADDING,
+    };
+    DrawTextEx(game->font, "Minimap", label_pos, DUNGEON_MINIMAP_LABEL_SIZE, game->font_spacing,
+               (Color){190, 217, 223, 255});
+
+    Vector2 map_origin = {
+        .x = panel.x + DUNGEON_MINIMAP_PANEL_PADDING,
+        .y = label_pos.y + DUNGEON_MINIMAP_LABEL_SIZE + DUNGEON_MINIMAP_LABEL_GAP,
+    };
+    DrawRectangleRec((Rectangle){map_origin.x, map_origin.y, map_w, map_h},
+                     (Color){9, 16, 20, 255});
+
+    Color floor_visible = (Color){166, 187, 194, 255};
+    Color floor_explored = (Color){100, 118, 125, 255};
+    Color wall_visible = (Color){123, 139, 146, 255};
+    Color wall_explored = (Color){71, 84, 90, 255};
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_explored(game, x, y))
+                continue;
+
+            u8 cell = game->dungeon_cells[y][x];
+            bool visible = game_dungeon_cell_is_visible(game, x, y);
+            Color tint = floor_explored;
+            if (cell == DUNGEON_CELL_WALL)
+                tint = visible ? wall_visible : wall_explored;
+            else if (cell == DUNGEON_CELL_FLOOR)
+                tint = visible ? floor_visible : floor_explored;
+
+            DrawRectangleRec((Rectangle){map_origin.x + (float)x * cell_size,
+                                         map_origin.y + (float)y * cell_size, cell_size, cell_size},
+                             tint);
+        }
+    }
+
+    DrawRectangleLinesEx((Rectangle){map_origin.x, map_origin.y, map_w, map_h}, 1.0f,
+                         (Color){58, 84, 90, 255});
+
+    if (game_dungeon_cell_in_bounds(game->player_x, game->player_y) &&
+        game_dungeon_cell_is_explored(game, game->player_x, game->player_y)) {
+        Vector2 player_center = {
+            .x = map_origin.x + ((float)game->player_x + 0.5f) * cell_size,
+            .y = map_origin.y + ((float)game->player_y + 0.5f) * cell_size,
+        };
+        float radius = max(2.0f, cell_size * 0.75f);
+        DrawCircleV(player_center, radius, (Color){255, 224, 121, 255});
+        DrawCircleLines((i32)(player_center.x + 0.5f), (i32)(player_center.y + 0.5f), radius,
+                        (Color){101, 63, 24, 255});
+    }
+}
+
 static void game_draw_dungeon_hud(Game *game)
 {
     float label_size = 18.0f;
@@ -2848,6 +2948,8 @@ static void game_draw_dungeon_hud(Game *game)
         DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
                    (Color){250, 185, 90, 255});
     }
+
+    game_draw_dungeon_minimap(game);
 }
 
 void game_init(Mem mem, Font font, float font_spacing)
