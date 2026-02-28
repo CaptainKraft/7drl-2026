@@ -24,3 +24,28 @@ We build raylib from source and copy the static libs into `lib/` during `make in
     - Why: GLFW already reports logical size on macOS with HiDPI, so dividing again shrinks the viewport
 
 After updating raylib, run `make init` to rebuild and copy `libraylib-mac.a` and `libraylib-web.a` into `lib/`
+
+## Dijkstra Maps (AI foundation)
+
+We are using Brogue-style Dijkstra maps as the base for turn-based movement and enemy decision-making.
+
+References:
+
+- https://www.roguebasin.com/index.php/The_Incredible_Power_of_Dijkstra_Maps
+- https://www.roguebasin.com/index.php/Dijkstra_Maps_Visualized
+
+Current implementation:
+
+- Build a Dijkstra distance field from the player position over walkable floor cells.
+- Rebuild this field when the player successfully takes a move turn.
+- Each enemy checks the four cardinal neighbors and steps to the lowest value ("roll downhill").
+- Enemy turns are processed after the player turn, one-by-one, using a shared map for that turn.
+
+Design notes for future features:
+
+- The same map can drive any number of enemies, so scaling actor count is cheap.
+- Multiple goals are supported naturally by seeding several cells as map sources.
+- Weighted behavior comes from combining or offsetting maps (approach, flee, hazards, loot, objectives).
+- Fleeing behavior can be produced with Brogue's rescan method (invert/scale, then rescan).
+
+This keeps AI logic deterministic, simple to debug, and easy to extend into richer behaviors.

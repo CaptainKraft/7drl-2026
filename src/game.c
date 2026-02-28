@@ -95,6 +95,8 @@
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 #define DUNGEON_LOS_RADIUS_TILES 12
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
+#define DUNGEON_GOBLIN_GRUNT_COUNT 7
+#define DUNGEON_DIJKSTRA_UNREACHABLE 0x3fff
 
 #define DUNGEON_MINIMAP_MAX_WIDTH 320.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 220.0f
@@ -1310,6 +1312,158 @@ static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
     return game_dungeon_cell_has_unit(game, x, y);
 }
 
+static bool game_dungeon_cell_has_unit_excluding(const Game *game, i32 x, i32 y, i32 excluded_idx)
+{
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        if ((i32)idx == excluded_idx)
+            continue;
+        if (game->units[idx].x == x && game->units[idx].y == y)
+            return true;
+    }
+
+    return false;
+}
+
+static bool game_dungeon_build_dijkstra_map(const Game *game, const i16 *goal_x, const i16 *goal_y,
+                                            i32 goal_count,
+                                            i16 out_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT])
+{
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            out_distance[y][x] =
+                game_dungeon_cell_is_floor(game, x, y) ? DUNGEON_DIJKSTRA_UNREACHABLE : -1;
+        }
+    }
+
+    if (goal_count <= 0)
+        return false;
+
+    i32 queue[DUNGEON_CELL_COUNT];
+    i32 head = 0;
+    i32 tail = 0;
+
+    for (i32 goal_idx = 0; goal_idx < goal_count; goal_idx++) {
+        i32 x = goal_x[goal_idx];
+        i32 y = goal_y[goal_idx];
+        if (!game_dungeon_cell_is_floor(game, x, y))
+            continue;
+        if (out_distance[y][x] == 0)
+            continue;
+
+        out_distance[y][x] = 0;
+        queue[tail++] = y * DUNGEON_COL_COUNT + x;
+    }
+
+    if (tail <= 0)
+        return false;
+
+    static const i32 neighbor_offsets[4][2] = {
+        {1, 0},
+        {0, 1},
+        {-1, 0},
+        {0, -1},
+    };
+
+    while (head < tail) {
+        i32 idx = queue[head++];
+        i32 x = idx % DUNGEON_COL_COUNT;
+        i32 y = idx / DUNGEON_COL_COUNT;
+        i16 next_distance = (i16)(out_distance[y][x] + 1);
+
+        for (i32 n = 0; n < 4; n++) {
+            i32 nx = x + neighbor_offsets[n][0];
+            i32 ny = y + neighbor_offsets[n][1];
+            if (!game_dungeon_cell_in_bounds(nx, ny))
+                continue;
+            if (out_distance[ny][nx] < 0)
+                continue;
+            if (next_distance >= out_distance[ny][nx])
+                continue;
+
+            out_distance[ny][nx] = next_distance;
+            queue[tail++] = ny * DUNGEON_COL_COUNT + nx;
+        }
+    }
+
+    return true;
+}
+
+static u8 game_dungeon_get_orientation_from_step(i32 dx, i32 dy, u8 fallback)
+{
+    if (dx > 0)
+        return 0;
+    if (dy > 0)
+        return 1;
+    if (dy < 0)
+        return 2;
+    if (dx < 0)
+        return 3;
+    return fallback;
+}
+
+static void game_dungeon_take_enemy_turns(Game *game)
+{
+    if (game->unit_count <= 0)
+        return;
+
+    i16 goal_x[1] = {game->player_x};
+    i16 goal_y[1] = {game->player_y};
+    i16 distance_to_player[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_dijkstra_map(game, goal_x, goal_y, 1, distance_to_player))
+        return;
+
+    static const i32 neighbor_offsets[4][2] = {
+        {1, 0},
+        {0, 1},
+        {-1, 0},
+        {0, -1},
+    };
+
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        i32 start_x = unit->x;
+        i32 start_y = unit->y;
+        if (!game_dungeon_cell_in_bounds(start_x, start_y))
+            continue;
+
+        i16 best_distance = distance_to_player[start_y][start_x];
+        if (best_distance <= 0 || best_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+            continue;
+
+        i32 best_x = start_x;
+        i32 best_y = start_y;
+
+        for (i32 n = 0; n < 4; n++) {
+            i32 nx = start_x + neighbor_offsets[n][0];
+            i32 ny = start_y + neighbor_offsets[n][1];
+            if (!game_dungeon_cell_is_floor(game, nx, ny))
+                continue;
+            if (game->player_x == nx && game->player_y == ny)
+                continue;
+            if (game_dungeon_cell_has_unit_excluding(game, nx, ny, unit_idx))
+                continue;
+
+            i16 next_distance = distance_to_player[ny][nx];
+            if (next_distance < 0 || next_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+                continue;
+            if (next_distance >= best_distance)
+                continue;
+
+            best_distance = next_distance;
+            best_x = nx;
+            best_y = ny;
+        }
+
+        if (best_x == start_x && best_y == start_y)
+            continue;
+
+        unit->x = (i16)best_x;
+        unit->y = (i16)best_y;
+        unit->orientation = game_dungeon_get_orientation_from_step(
+            best_x - start_x, best_y - start_y, unit->orientation);
+    }
+}
+
 static void game_dungeon_clear_spawn_to_exit_path(Game *game)
 {
     memset(game->spawn_to_exit_path, 0, sizeof(game->spawn_to_exit_path));
@@ -1859,23 +2013,15 @@ static void game_dungeon_populate_test_entities(Game *game)
     game_dungeon_add_world_feature(game, game->player_spawn_x, game->player_spawn_y,
                                    world_art_get_up_stairs_tile(up_stairs_theme));
 
-    const UNIT_ART_KIND unit_kinds[] = {
-        UNIT_ART_DOG,      UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN,  UNIT_ART_TROLL,
-        UNIT_ART_MERCHANT, UNIT_ART_SLIME,        UNIT_ART_SKELETON_GRUNT, UNIT_ART_SKELETON_MAGE,
-        UNIT_ART_MIMIC,    UNIT_ART_MINOTAUR,     UNIT_ART_DRAGON,
-    };
-
-    u32 unit_kind_count = sizeof(unit_kinds) / sizeof(unit_kinds[0]);
-    for (u32 unit_idx = 0; unit_idx < unit_kind_count && game->unit_count < DUNGEON_MAX_UNITS;
-         unit_idx++) {
-        if (ck_rand_int(&game->dungeon_populate_rng, 0, 100) < 25)
-            continue;
+    for (i32 grunt_idx = 0;
+         grunt_idx < DUNGEON_GOBLIN_GRUNT_COUNT && game->unit_count < DUNGEON_MAX_UNITS;
+         grunt_idx++) {
         if (!game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y))
             break;
 
         u8 orientation =
             (u8)ck_rand_int(&game->dungeon_populate_rng, 0, UNIT_ART_ORIENTATION_COUNT);
-        game_dungeon_add_unit(game, x, y, unit_kinds[unit_idx], orientation);
+        game_dungeon_add_unit(game, x, y, UNIT_ART_GOBLIN_GRUNT, orientation);
     }
 }
 
@@ -1923,6 +2069,9 @@ static bool game_build_test_dungeon_candidate(Game *game)
         return false;
 
     game_dungeon_populate_test_entities(game);
+    if (game->unit_count != DUNGEON_GOBLIN_GRUNT_COUNT)
+        return false;
+
     game_dungeon_build_spawn_to_exit_path(game);
 
     if (!game->has_exit || game->spawn_to_exit_path_len <= 0)
@@ -2741,7 +2890,7 @@ static void game_draw_test_dungeon(Game *game)
     }
 }
 
-static void game_update_player(Game *game)
+static bool game_update_player(Game *game)
 {
     i32 move_x = 0;
     i32 move_y = 0;
@@ -2761,17 +2910,18 @@ static void game_update_player(Game *game)
     }
 
     if (move_x == 0 && move_y == 0)
-        return;
+        return false;
 
     i32 next_x = game->player_x + move_x;
     i32 next_y = game->player_y + move_y;
     if (!game_dungeon_cell_is_floor(game, next_x, next_y))
-        return;
+        return false;
 
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
     game_dungeon_build_spawn_to_exit_path(game);
     game_dungeon_rebuild_line_of_sight(game);
+    return true;
 }
 
 static void game_update_camera(Game *game)
@@ -3125,8 +3275,12 @@ void game_update(Mem mem)
         game_center_dungeon_camera_on_player(game);
     }
 
+    bool player_took_turn = false;
     if (game->show_dungeon_map)
-        game_update_player(game);
+        player_took_turn = game_update_player(game);
+
+    if (player_took_turn)
+        game_dungeon_take_enemy_turns(game);
 
     game_update_camera(game);
 
