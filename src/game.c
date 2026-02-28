@@ -58,7 +58,7 @@
 #define CAMERA_FALLBACK_FRAME_TIME (1.0f / 60.0f)
 #define CAMERA_SETTLE_SCREEN_PX 0.5f
 
-#define DUNGEON_SIZE_SCALE 4
+#define DUNGEON_SIZE_SCALE 2
 #define DUNGEON_COL_COUNT (50 * DUNGEON_SIZE_SCALE)
 #define DUNGEON_ROW_COUNT (30 * DUNGEON_SIZE_SCALE)
 #define DUNGEON_TILE_SCALE 8.0f
@@ -92,6 +92,7 @@
 #define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
 #define DUNGEON_MAIN_PATH_KEEP_PERCENT 25
 #define DUNGEON_MAIN_PATH_CULL_PICK_SAMPLES 4
+#define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
 #define ITEM_KIND_SCROLL ITEM_ART_KIND_AT(6, 0)
@@ -1218,8 +1219,8 @@ static bool game_dungeon_build_spawn_to_exit_path(Game *game)
     game->exit_x = exit_x;
     game->exit_y = exit_y;
 
-    i32 start_x = game->player_spawn_x;
-    i32 start_y = game->player_spawn_y;
+    i32 start_x = game->player_x;
+    i32 start_y = game->player_y;
     if (!game_dungeon_cell_is_floor(game, start_x, start_y))
         return false;
     if (!game_dungeon_cell_is_floor(game, exit_x, exit_y))
@@ -1725,23 +1726,10 @@ static void game_dungeon_populate_test_entities(Game *game)
             game_dungeon_cull_outside_main_path(game, &game->dungeon_cull_rng);
     }
 
-    if (game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y)) {
-        WORLD_ART_THEME theme =
-            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
-        game_dungeon_add_world_feature(game, x, y, world_art_get_up_stairs_tile(theme));
-    }
-
-    for (i32 feature_idx = 0;
-         feature_idx < 2 && game->world_feature_count < DUNGEON_MAX_WORLD_FEATURES; feature_idx++) {
-        if (!game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y))
-            break;
-
-        WORLD_ART_THEME theme =
-            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
-        World_Art_Tile tile = (feature_idx & 1) == 0 ? world_art_get_misc1_tile(theme)
-                                                     : world_art_get_misc2_tile(theme);
-        game_dungeon_add_world_feature(game, x, y, tile);
-    }
+    WORLD_ART_THEME up_stairs_theme =
+        (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
+    game_dungeon_add_world_feature(game, game->player_spawn_x, game->player_spawn_y,
+                                   world_art_get_up_stairs_tile(up_stairs_theme));
 
     const UNIT_ART_KIND unit_kinds[] = {
         UNIT_ART_DOG,      UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN,  UNIT_ART_TROLL,
@@ -1845,15 +1833,20 @@ static u32 game_dungeon_hash(i32 x, i32 y)
 static u8 game_dungeon_pick_primary_weighted_variation(u32 hash, u8 variation_count)
 {
     assert(variation_count > 0);
+    assert(DUNGEON_PRIMARY_VARIATION_WEIGHT > 0);
+    assert(DUNGEON_PRIMARY_VARIATION_WEIGHT < 100);
     if (variation_count == 1)
         return 0;
 
     u32 secondary_count = (u32)variation_count - 1;
-    u32 bucket = hash % (secondary_count * 2u);
-    if (bucket < secondary_count)
+    u32 secondary_weight = 100u - DUNGEON_PRIMARY_VARIATION_WEIGHT;
+    u32 weighted_range = 100u * secondary_count;
+    u32 primary_threshold = DUNGEON_PRIMARY_VARIATION_WEIGHT * secondary_count;
+    u32 bucket = hash % weighted_range;
+    if (bucket < primary_threshold)
         return 0;
 
-    return (u8)(1u + (bucket - secondary_count));
+    return (u8)(1u + ((bucket - primary_threshold) / secondary_weight));
 }
 
 static u8 game_dungeon_get_variation(i32 x, i32 y, u8 variation_count)
@@ -1862,21 +1855,20 @@ static u8 game_dungeon_get_variation(i32 x, i32 y, u8 variation_count)
     return game_dungeon_pick_primary_weighted_variation(hash, variation_count);
 }
 
-static Dungeon_Floor_Palette game_dungeon_get_floor_palette(const Game *game, i32 x, i32 y)
+static Dungeon_Floor_Palette game_dungeon_get_floor_palette(const Game *game)
 {
-    static const Dungeon_Floor_Palette palettes[] = {
-        {.floor_row = 0, .variation_start = 0, .variation_count = 6},
-        {.floor_row = 0, .variation_start = 8, .variation_count = 6},
-        {.floor_row = 1, .variation_start = 0, .variation_count = 6},
-        {.floor_row = 1, .variation_start = 8, .variation_count = 6},
-    };
-
-    i32 side = max(game->dungeon_tileset.short_side_len, 1);
-    i32 macro_x = x / side;
-    i32 macro_y = y / side;
-    u32 palette_idx =
-        game_dungeon_hash(macro_x, macro_y) % (sizeof(palettes) / sizeof(palettes[0]));
-    return palettes[palette_idx];
+    switch (game->dungeon_wall_theme) {
+    case WORLD_ART_THEME_1:
+        return (Dungeon_Floor_Palette){.floor_row = 0, .variation_start = 0, .variation_count = 6};
+    case WORLD_ART_THEME_2:
+        return (Dungeon_Floor_Palette){.floor_row = 1, .variation_start = 0, .variation_count = 6};
+    case WORLD_ART_THEME_3:
+        return (Dungeon_Floor_Palette){.floor_row = 1, .variation_start = 8, .variation_count = 6};
+    case WORLD_ART_THEME_4:
+        return (Dungeon_Floor_Palette){.floor_row = 0, .variation_start = 8, .variation_count = 6};
+    default:
+        return (Dungeon_Floor_Palette){.floor_row = 0, .variation_start = 0, .variation_count = 6};
+    }
 }
 
 static bool game_dungeon_wall_shows_face(const Game *game, i32 x, i32 y)
@@ -1891,7 +1883,7 @@ static WORLD_WALL_DIRECTION game_get_opposite_wall_direction(WORLD_WALL_DIRECTIO
 
 static World_Art_Tile game_dungeon_get_floor_tile(const Game *game, i32 x, i32 y)
 {
-    Dungeon_Floor_Palette palette = game_dungeon_get_floor_palette(game, x, y);
+    Dungeon_Floor_Palette palette = game_dungeon_get_floor_palette(game);
     u32 hash = game_dungeon_hash(x, y);
     assert(palette.floor_row < WORLD_ART_THEME_COUNT);
     assert(palette.variation_count > 0);
@@ -2608,6 +2600,7 @@ static void game_update_player(Game *game)
 
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
+    game_dungeon_build_spawn_to_exit_path(game);
 }
 
 static void game_update_camera(Game *game)
@@ -2671,29 +2664,20 @@ static void game_draw_dungeon_hud(Game *game)
 
     origin.y += 22.0f;
     if (!game->show_spawn_to_exit_path) {
-        snprintf(line, sizeof(line), "Spawn -> Exit path: hidden");
+        snprintf(line, sizeof(line), "Player -> Exit path: hidden");
         DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
                    (Color){167, 195, 201, 255});
     } else if (!game->has_exit) {
-        snprintf(line, sizeof(line), "Spawn -> Exit path: no exit placed");
+        snprintf(line, sizeof(line), "Player -> Exit path: no exit placed");
         DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
                    (Color){250, 185, 90, 255});
     } else if (game->spawn_to_exit_path_len > 0) {
         i32 step_count = game->spawn_to_exit_path_len - 1;
-        bool meets_target = step_count >= DUNGEON_EXIT_MIN_PATH_STEPS;
-        if (meets_target) {
-            snprintf(line, sizeof(line), "Spawn -> Exit path: %d steps (target >= %d)", step_count,
-                     DUNGEON_EXIT_MIN_PATH_STEPS);
-            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       (Color){128, 223, 242, 255});
-        } else {
-            snprintf(line, sizeof(line), "Spawn -> Exit path: %d steps (target %d unavailable)",
-                     step_count, DUNGEON_EXIT_MIN_PATH_STEPS);
-            DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       (Color){250, 185, 90, 255});
-        }
+        snprintf(line, sizeof(line), "Player -> Exit path: %d steps remaining", step_count);
+        DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                   (Color){128, 223, 242, 255});
     } else {
-        snprintf(line, sizeof(line), "Spawn -> Exit path: no route on this floor");
+        snprintf(line, sizeof(line), "Player -> Exit path: no route on this floor");
         DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
                    (Color){250, 185, 90, 255});
     }
@@ -2787,14 +2771,14 @@ static void game_input(Game *game)
 
     input->pressed[INPUT_ACTION] =
         IsKeyPressed(KEY_SPACE) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
-    input->pressed[INPUT_MOVE_UP] =
-        IsKeyPressed(KEY_W) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_UP);
-    input->pressed[INPUT_MOVE_DOWN] =
-        IsKeyPressed(KEY_S) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_DOWN);
-    input->pressed[INPUT_MOVE_LEFT] =
-        IsKeyPressed(KEY_A) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_LEFT);
-    input->pressed[INPUT_MOVE_RIGHT] =
-        IsKeyPressed(KEY_D) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
+    input->pressed[INPUT_MOVE_UP] = IsKeyPressed(KEY_W) || IsKeyPressedRepeat(KEY_W) ||
+                                    IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_UP);
+    input->pressed[INPUT_MOVE_DOWN] = IsKeyPressed(KEY_S) || IsKeyPressedRepeat(KEY_S) ||
+                                      IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_DOWN);
+    input->pressed[INPUT_MOVE_LEFT] = IsKeyPressed(KEY_A) || IsKeyPressedRepeat(KEY_A) ||
+                                      IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_LEFT);
+    input->pressed[INPUT_MOVE_RIGHT] = IsKeyPressed(KEY_D) || IsKeyPressedRepeat(KEY_D) ||
+                                       IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
     input->pressed[INPUT_MOUSE_LEFT] = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
     input->pressed[INPUT_MOUSE_RIGHT] = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
     input->pressed[INPUT_MOUSE_MIDDLE] = IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE);
