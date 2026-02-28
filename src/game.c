@@ -88,6 +88,7 @@
 #define DUNGEON_MAX_UNITS 24
 #define DUNGEON_CELL_COUNT (DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT)
 #define DUNGEON_EXIT_MIN_PATH_STEPS 80
+#define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
 
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
 #define ITEM_KIND_SCROLL ITEM_ART_KIND_AT(6, 0)
@@ -1364,11 +1365,6 @@ static bool game_dungeon_pick_exit_floor_cell(Game *game, RNG *rng, i32 min_path
     i16 target_x = -1;
     i16 target_y = -1;
 
-    i32 fallback_steps = -1;
-    i32 fallback_count = 0;
-    i16 fallback_x = -1;
-    i16 fallback_y = -1;
-
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
             i16 steps = distance[y][x];
@@ -1384,19 +1380,6 @@ static bool game_dungeon_pick_exit_floor_cell(Game *game, RNG *rng, i32 min_path
                     target_y = (i16)y;
                 }
             }
-
-            if (steps > fallback_steps) {
-                fallback_steps = steps;
-                fallback_count = 1;
-                fallback_x = (i16)x;
-                fallback_y = (i16)y;
-            } else if (steps == fallback_steps) {
-                fallback_count++;
-                if (ck_rand_int(rng, 0, fallback_count) == 0) {
-                    fallback_x = (i16)x;
-                    fallback_y = (i16)y;
-                }
-            }
         }
     }
 
@@ -1406,13 +1389,74 @@ static bool game_dungeon_pick_exit_floor_cell(Game *game, RNG *rng, i32 min_path
         return true;
     }
 
-    if (fallback_steps > 0) {
-        *out_x = fallback_x;
-        *out_y = fallback_y;
-        return true;
+    return false;
+}
+
+static bool game_dungeon_spawn_is_in_largest_component(const Game *game)
+{
+    i32 spawn_x = game->player_spawn_x;
+    i32 spawn_y = game->player_spawn_y;
+    if (!game_dungeon_cell_is_floor(game, spawn_x, spawn_y))
+        return false;
+
+    u8 visited[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    memset(visited, 0, sizeof(visited));
+
+    i32 queue[DUNGEON_CELL_COUNT];
+    i32 spawn_component_size = 0;
+    i32 largest_component_size = 0;
+
+    static const i32 neighbor_offsets[4][2] = {
+        {1, 0},
+        {0, 1},
+        {-1, 0},
+        {0, -1},
+    };
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y) || visited[y][x] != 0)
+                continue;
+
+            i32 head = 0;
+            i32 tail = 0;
+            queue[tail++] = y * DUNGEON_COL_COUNT + x;
+            visited[y][x] = 1;
+
+            i32 component_size = 0;
+            bool contains_spawn = false;
+
+            while (head < tail) {
+                i32 idx = queue[head++];
+                i32 current_x = idx % DUNGEON_COL_COUNT;
+                i32 current_y = idx / DUNGEON_COL_COUNT;
+                component_size++;
+
+                if (current_x == spawn_x && current_y == spawn_y)
+                    contains_spawn = true;
+
+                for (i32 n = 0; n < 4; n++) {
+                    i32 next_x = current_x + neighbor_offsets[n][0];
+                    i32 next_y = current_y + neighbor_offsets[n][1];
+                    if (!game_dungeon_cell_is_floor(game, next_x, next_y))
+                        continue;
+                    if (visited[next_y][next_x] != 0)
+                        continue;
+
+                    visited[next_y][next_x] = 1;
+                    queue[tail++] = next_y * DUNGEON_COL_COUNT + next_x;
+                }
+            }
+
+            if (component_size > largest_component_size)
+                largest_component_size = component_size;
+
+            if (contains_spawn)
+                spawn_component_size = component_size;
+        }
     }
 
-    return false;
+    return spawn_component_size > 0 && spawn_component_size == largest_component_size;
 }
 
 static void game_dungeon_populate_test_entities(Game *game)
@@ -1465,7 +1509,7 @@ static void game_dungeon_populate_test_entities(Game *game)
     }
 }
 
-static void game_build_test_dungeon(Game *game)
+static bool game_build_test_dungeon_candidate(Game *game)
 {
     game_seed_dungeon_rng_streams(game);
 
@@ -1504,10 +1548,35 @@ static void game_build_test_dungeon(Game *game)
     game->player_spawn_x = player_x;
     game->player_spawn_y = player_y;
 
+    if (!game_dungeon_spawn_is_in_largest_component(game))
+        return false;
+
     game_dungeon_populate_test_entities(game);
     game_dungeon_build_spawn_to_exit_path(game);
 
+    if (!game->has_exit || game->spawn_to_exit_path_len <= 0)
+        return false;
+
+    i32 step_count = game->spawn_to_exit_path_len - 1;
+    if (step_count < DUNGEON_EXIT_MIN_PATH_STEPS)
+        return false;
+
     assert(game_dungeon_cell_is_floor(game, game->player_x, game->player_y));
+    return true;
+}
+
+static void game_build_test_dungeon(Game *game)
+{
+    u32 start_floor_index = game->dungeon_floor_index;
+
+    for (i32 attempt = 0; attempt < DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT; attempt++) {
+        game->dungeon_floor_index = start_floor_index + (u32)attempt;
+        if (game_build_test_dungeon_candidate(game))
+            return;
+    }
+
+    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+             "No valid floor found in %d seeds", DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT);
 }
 
 static u32 game_dungeon_hash(i32 x, i32 y)
