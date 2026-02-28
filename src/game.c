@@ -87,6 +87,7 @@
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
 #define DUNGEON_GOBLIN_GRUNT_COUNT 7
 #define DUNGEON_DIJKSTRA_UNREACHABLE 0x3fff
+#define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 
 #define DUNGEON_MINIMAP_MAX_WIDTH 320.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 220.0f
@@ -237,6 +238,8 @@ typedef struct {
     i16 y;
     UNIT_ART_KIND kind;
     u8 orientation;
+    bool is_awake;
+    u8 turns_out_of_player_los;
 } Dungeon_Unit;
 
 typedef struct {
@@ -510,6 +513,13 @@ static bool game_dungeon_cell_is_visible(const Game *game, i32 x, i32 y)
     return game->dungeon_visible[y][x] != 0;
 }
 
+static bool game_dungeon_cell_is_in_player_los(const Game *game, i32 x, i32 y)
+{
+    if (!game_dungeon_cell_in_bounds(x, y))
+        return false;
+    return game->dungeon_visible[y][x] != 0;
+}
+
 static bool game_dungeon_cell_is_explored(const Game *game, i32 x, i32 y)
 {
     if (!game_dungeon_cell_in_bounds(x, y))
@@ -758,6 +768,8 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .y = (i16)y,
         .kind = kind,
         .orientation = orientation,
+        .is_awake = false,
+        .turns_out_of_player_los = 0,
     };
 }
 
@@ -1568,8 +1580,7 @@ static void game_dungeon_take_enemy_turns(Game *game)
         return;
 
     game_dungeon_rebuild_player_dijkstra_map(game);
-    if (!game->player_dijkstra_distance_valid)
-        return;
+    bool has_player_dijkstra = game->player_dijkstra_distance_valid;
 
     static const i32 neighbor_offsets[4][2] = {
         {1, 0},
@@ -1583,6 +1594,22 @@ static void game_dungeon_take_enemy_turns(Game *game)
         i32 start_x = unit->x;
         i32 start_y = unit->y;
         if (!game_dungeon_cell_in_bounds(start_x, start_y))
+            continue;
+
+        bool in_player_los = game_dungeon_cell_is_in_player_los(game, start_x, start_y);
+        if (in_player_los) {
+            unit->is_awake = true;
+            unit->turns_out_of_player_los = 0;
+        } else if (unit->is_awake) {
+            if (unit->turns_out_of_player_los >= DUNGEON_ENEMY_DORMANT_DELAY_TURNS)
+                unit->is_awake = false;
+            else
+                unit->turns_out_of_player_los++;
+        }
+
+        if (!unit->is_awake)
+            continue;
+        if (!has_player_dijkstra)
             continue;
 
         i16 best_distance = game->player_dijkstra_distance[start_y][start_x];
