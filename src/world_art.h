@@ -123,11 +123,11 @@ static const World_Art_Floor_Group world_art_floor_groups[WORLD_ART_FLOOR_GROUP_
 };
 
 static const u8 world_art_north_wall_weights[WORLD_ART_WALL_VARIATION_COUNT] = {
-    40, 24, 14, 10, 7, 5,
+    50, 10, 10, 10, 10, 10,
 };
 
 static const u8 world_art_top_wall_weights[WORLD_ART_WALL_TOP_VARIATION_COUNT] = {
-    40, 24, 14, 10, 7, 5,
+    50, 10, 10, 10, 10, 10,
 };
 
 _Static_assert(WORLD_ART_COL_COUNT <= 255 && WORLD_ART_DATA_ROW_COUNT <= 255,

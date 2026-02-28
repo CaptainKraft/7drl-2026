@@ -1226,24 +1226,6 @@ static void game_dungeon_populate_test_entities(Game *game)
         game_dungeon_add_world_feature(game, x, y, tile);
     }
 
-    const ITEM_ART_KIND item_kinds[] = {
-        ITEM_KIND_SHORT_SWORD, ITEM_KIND_WOODEN_SHIELD, ITEM_KIND_SCROLL,    ITEM_KIND_RED_POTION,
-        ITEM_KIND_GOLD_KEY,    ITEM_KIND_BOW,           ITEM_KIND_BANDAGE,   ITEM_KIND_RED_GEM,
-        ITEM_KIND_GREEN_HERB,  ITEM_KIND_MAP,           ITEM_KIND_GOLD_COIN, ITEM_KIND_HEART,
-        ITEM_ART_TORCH_1,      ITEM_ART_TORCH_2,
-    };
-
-    u32 item_kind_count = sizeof(item_kinds) / sizeof(item_kinds[0]);
-    for (u32 item_idx = 0; item_idx < item_kind_count && game->item_count < DUNGEON_MAX_ITEMS;
-         item_idx++) {
-        if (ck_rand_int(&game->dungeon_populate_rng, 0, 100) < 20)
-            continue;
-        if (!game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y))
-            break;
-
-        game_dungeon_add_item(game, x, y, item_kinds[item_idx]);
-    }
-
     const UNIT_ART_KIND unit_kinds[] = {
         UNIT_ART_DOG,      UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN,  UNIT_ART_TROLL,
         UNIT_ART_MERCHANT, UNIT_ART_SLIME,        UNIT_ART_SKELETON_GRUNT, UNIT_ART_SKELETON_MAGE,
@@ -1310,21 +1292,33 @@ static u32 game_dungeon_hash(i32 x, i32 y)
     return (ux * 73856093u) ^ (uy * 19349663u);
 }
 
-static u8 game_dungeon_get_variation(i32 x, i32 y, u8 variation_count)
+static u8 game_dungeon_pick_primary_weighted_variation(u32 hash, u8 variation_count)
 {
     assert(variation_count > 0);
-    return (u8)(game_dungeon_hash(x, y) % variation_count);
+    if (variation_count == 1)
+        return 0;
+
+    u32 secondary_count = (u32)variation_count - 1;
+    u32 bucket = hash % (secondary_count * 2u);
+    if (bucket < secondary_count)
+        return 0;
+
+    return (u8)(1u + (bucket - secondary_count));
+}
+
+static u8 game_dungeon_get_variation(i32 x, i32 y, u8 variation_count)
+{
+    u32 hash = game_dungeon_hash(x, y);
+    return game_dungeon_pick_primary_weighted_variation(hash, variation_count);
 }
 
 static Dungeon_Floor_Palette game_dungeon_get_floor_palette(const Game *game, i32 x, i32 y)
 {
     static const Dungeon_Floor_Palette palettes[] = {
-        {.floor_row = 0, .variation_start = 0, .variation_count = 8},
-        {.floor_row = 0, .variation_start = 8, .variation_count = 8},
-        {.floor_row = 1, .variation_start = 0, .variation_count = 8},
-        {.floor_row = 1, .variation_start = 8, .variation_count = 8},
-        {.floor_row = 3, .variation_start = 6, .variation_count = 5},
-        {.floor_row = 3, .variation_start = 11, .variation_count = 5},
+        {.floor_row = 0, .variation_start = 0, .variation_count = 6},
+        {.floor_row = 0, .variation_start = 8, .variation_count = 6},
+        {.floor_row = 1, .variation_start = 0, .variation_count = 6},
+        {.floor_row = 1, .variation_start = 8, .variation_count = 6},
     };
 
     i32 side = max(game->dungeon_tileset.short_side_len, 1);
@@ -1352,7 +1346,9 @@ static World_Art_Tile game_dungeon_get_floor_tile(const Game *game, i32 x, i32 y
     assert(palette.floor_row < WORLD_ART_THEME_COUNT);
     assert(palette.variation_count > 0);
 
-    u8 variation = (u8)(palette.variation_start + (u8)(hash % (u32)palette.variation_count));
+    u8 variation_offset =
+        game_dungeon_pick_primary_weighted_variation(hash, palette.variation_count);
+    u8 variation = (u8)(palette.variation_start + variation_offset);
     return world_art_get_floor_tile(palette.floor_row, variation);
 }
 
