@@ -93,6 +93,7 @@
 #define DUNGEON_MAIN_PATH_KEEP_PERCENT 25
 #define DUNGEON_MAIN_PATH_CULL_PICK_SAMPLES 4
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
+#define DUNGEON_LOS_RADIUS_TILES 12
 
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
 #define ITEM_KIND_SCROLL ITEM_ART_KIND_AT(6, 0)
@@ -228,6 +229,8 @@ typedef struct {
     char dungeon_template_error[160];
 
     u8 dungeon_cells[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    u8 dungeon_visible[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    u8 dungeon_explored[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
 
     Dungeon_World_Feature world_features[DUNGEON_MAX_WORLD_FEATURES];
     u8 world_feature_count;
@@ -330,6 +333,123 @@ static bool game_dungeon_cell_is_floor(const Game *game, i32 x, i32 y)
     if (!game_dungeon_cell_in_bounds(x, y))
         return false;
     return game->dungeon_cells[y][x] == DUNGEON_CELL_FLOOR;
+}
+
+static bool game_dungeon_cell_blocks_vision(const Game *game, i32 x, i32 y)
+{
+    if (!game_dungeon_cell_in_bounds(x, y))
+        return true;
+    return game->dungeon_cells[y][x] != DUNGEON_CELL_FLOOR;
+}
+
+static bool game_dungeon_cell_is_visible(const Game *game, i32 x, i32 y)
+{
+    if (!game_dungeon_cell_in_bounds(x, y))
+        return false;
+    return game->dungeon_visible[y][x] != 0;
+}
+
+static bool game_dungeon_cell_is_explored(const Game *game, i32 x, i32 y)
+{
+    if (!game_dungeon_cell_in_bounds(x, y))
+        return false;
+    return game->dungeon_explored[y][x] != 0;
+}
+
+static void game_dungeon_clear_visible_cells(Game *game)
+{
+    memset(game->dungeon_visible, 0, sizeof(game->dungeon_visible));
+}
+
+static void game_dungeon_reset_visibility(Game *game)
+{
+    game_dungeon_clear_visible_cells(game);
+    memset(game->dungeon_explored, 0, sizeof(game->dungeon_explored));
+}
+
+static bool game_dungeon_has_line_of_sight(const Game *game, i32 x0, i32 y0, i32 x1, i32 y1)
+{
+    if (!game_dungeon_cell_in_bounds(x0, y0) || !game_dungeon_cell_in_bounds(x1, y1))
+        return false;
+
+    i32 x = x0;
+    i32 y = y0;
+    i32 dx = x1 - x0;
+    if (dx < 0)
+        dx = -dx;
+    i32 sx = x0 < x1 ? 1 : -1;
+    i32 dy = y1 - y0;
+    if (dy < 0)
+        dy = -dy;
+    dy = -dy;
+    i32 sy = y0 < y1 ? 1 : -1;
+    i32 err = dx + dy;
+
+    while (x != x1 || y != y1) {
+        i32 prev_x = x;
+        i32 prev_y = y;
+        i32 e2 = err * 2;
+        bool moved_x = false;
+        bool moved_y = false;
+
+        if (e2 >= dy) {
+            err += dy;
+            x += sx;
+            moved_x = true;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y += sy;
+            moved_y = true;
+        }
+
+        if (x == x1 && y == y1)
+            break;
+
+        if (moved_x && moved_y && game_dungeon_cell_blocks_vision(game, prev_x + sx, prev_y) &&
+            game_dungeon_cell_blocks_vision(game, prev_x, prev_y + sy)) {
+            return false;
+        }
+
+        if (game_dungeon_cell_blocks_vision(game, x, y))
+            return false;
+    }
+
+    return true;
+}
+
+static void game_dungeon_rebuild_line_of_sight(Game *game)
+{
+    game_dungeon_clear_visible_cells(game);
+
+    i32 origin_x = game->player_x;
+    i32 origin_y = game->player_y;
+    if (!game_dungeon_cell_in_bounds(origin_x, origin_y))
+        return;
+
+    i32 radius = DUNGEON_LOS_RADIUS_TILES;
+    i32 radius_sq = radius * radius;
+    i32 min_x = max(0, origin_x - radius);
+    i32 max_x = min(DUNGEON_COL_COUNT - 1, origin_x + radius);
+    i32 min_y = max(0, origin_y - radius);
+    i32 max_y = min(DUNGEON_ROW_COUNT - 1, origin_y + radius);
+
+    for (i32 y = min_y; y <= max_y; y++) {
+        i32 dy = y - origin_y;
+        for (i32 x = min_x; x <= max_x; x++) {
+            i32 dx = x - origin_x;
+            if (dx * dx + dy * dy > radius_sq)
+                continue;
+            if (!game_dungeon_has_line_of_sight(game, origin_x, origin_y, x, y))
+                continue;
+
+            game->dungeon_visible[y][x] = 1;
+            game->dungeon_explored[y][x] = 1;
+        }
+    }
+
+    game->dungeon_visible[origin_y][origin_x] = 1;
+    game->dungeon_explored[origin_y][origin_x] = 1;
 }
 
 static void game_dungeon_fill(Game *game, DUNGEON_CELL cell)
@@ -1764,6 +1884,7 @@ static bool game_build_test_dungeon_candidate(Game *game)
     game->player_spawn_x = -1;
     game->player_spawn_y = -1;
     game_dungeon_clear_spawn_to_exit_path(game);
+    game_dungeon_reset_visibility(game);
 
     if (game->dungeon_tileset.valid)
         game->dungeon_template_error[0] = '\0';
@@ -1806,6 +1927,7 @@ static bool game_build_test_dungeon_candidate(Game *game)
         return false;
 
     assert(game_dungeon_cell_is_floor(game, game->player_x, game->player_y));
+    game_dungeon_rebuild_line_of_sight(game);
     return true;
 }
 
@@ -1894,8 +2016,8 @@ static World_Art_Tile game_dungeon_get_floor_tile(const Game *game, i32 x, i32 y
     return world_art_get_floor_tile(palette.floor_row, variation);
 }
 
-static void game_draw_world_tile(Game *game, World_Art_Tile tile, Vector2 top_left,
-                                 float sprite_size, float rotation_degrees)
+static void game_draw_world_tile_tinted(Game *game, World_Art_Tile tile, Vector2 top_left,
+                                        float sprite_size, float rotation_degrees, Color tint)
 {
     Rectangle src = {
         .x = (float)(tile.x * WORLD_ART_TILE_SIZE),
@@ -1912,7 +2034,13 @@ static void game_draw_world_tile(Game *game, World_Art_Tile tile, Vector2 top_le
     };
 
     Vector2 origin = {sprite_size * 0.5f, sprite_size * 0.5f};
-    DrawTexturePro(game->world_texture, src, dst, origin, rotation_degrees, WHITE);
+    DrawTexturePro(game->world_texture, src, dst, origin, rotation_degrees, tint);
+}
+
+static void game_draw_world_tile(Game *game, World_Art_Tile tile, Vector2 top_left,
+                                 float sprite_size, float rotation_degrees)
+{
+    game_draw_world_tile_tinted(game, tile, top_left, sprite_size, rotation_degrees, WHITE);
 }
 
 static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left, float sprite_size,
@@ -2491,39 +2619,50 @@ static void game_draw_test_dungeon(Game *game)
 {
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
     Vector2 origin = game_dungeon_get_origin();
+    Color remembered_tint = (Color){128, 142, 148, 255};
+    Color path_visible_tint = (Color){56, 176, 218, 88};
+    Color path_remembered_tint = (Color){35, 94, 110, 72};
 
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_explored(game, x, y))
+                continue;
+
             Vector2 top_left = game_dungeon_get_cell_top_left(origin, x, y, tile_size);
             u8 cell = game->dungeon_cells[y][x];
+            Color tile_tint = game_dungeon_cell_is_visible(game, x, y) ? WHITE : remembered_tint;
 
             if (cell == DUNGEON_CELL_FLOOR) {
-                game_draw_world_tile(game, game_dungeon_get_floor_tile(game, x, y), top_left,
-                                     tile_size, 0.0f);
+                game_draw_world_tile_tinted(game, game_dungeon_get_floor_tile(game, x, y), top_left,
+                                            tile_size, 0.0f, tile_tint);
             } else if (cell == DUNGEON_CELL_WALL) {
                 WORLD_ART_THEME theme = game->dungeon_wall_theme;
                 if (game_dungeon_wall_shows_face(game, x, y)) {
                     u8 variation = game_dungeon_get_variation(x, y, WORLD_ART_WALL_VARIATION_COUNT);
-                    game_draw_world_tile(game, world_art_get_north_wall_tile(theme, variation),
-                                         top_left, tile_size, 0.0f);
+                    game_draw_world_tile_tinted(game,
+                                                world_art_get_north_wall_tile(theme, variation),
+                                                top_left, tile_size, 0.0f, tile_tint);
                 } else {
                     u8 variation =
                         game_dungeon_get_variation(x, y, WORLD_ART_WALL_TOP_VARIATION_COUNT);
-                    game_draw_world_tile(game, world_art_get_top_wall_tile(theme, variation),
-                                         top_left, tile_size, 0.0f);
+                    game_draw_world_tile_tinted(game, world_art_get_top_wall_tile(theme, variation),
+                                                top_left, tile_size, 0.0f, tile_tint);
                 }
             }
         }
     }
 
     if (game->show_spawn_to_exit_path) {
-        Color path_tint = (Color){56, 176, 218, 88};
         for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
             for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
                 if (game->spawn_to_exit_path[y][x] == 0)
                     continue;
+                if (!game_dungeon_cell_is_explored(game, x, y))
+                    continue;
 
                 Vector2 top_left = game_dungeon_get_cell_top_left(origin, x, y, tile_size);
+                Color path_tint = game_dungeon_cell_is_visible(game, x, y) ? path_visible_tint
+                                                                           : path_remembered_tint;
                 DrawRectangleRec((Rectangle){top_left.x, top_left.y, tile_size, tile_size},
                                  path_tint);
             }
@@ -2532,13 +2671,21 @@ static void game_draw_test_dungeon(Game *game)
 
     for (u8 feature_idx = 0; feature_idx < game->world_feature_count; feature_idx++) {
         Dungeon_World_Feature feature = game->world_features[feature_idx];
+        if (!game_dungeon_cell_is_explored(game, feature.x, feature.y))
+            continue;
+
+        Color feature_tint =
+            game_dungeon_cell_is_visible(game, feature.x, feature.y) ? WHITE : remembered_tint;
         Vector2 top_left = game_dungeon_get_cell_top_left(origin, feature.x, feature.y, tile_size);
-        game_draw_world_tile(game, feature.tile, top_left, tile_size, 0.0f);
+        game_draw_world_tile_tinted(game, feature.tile, top_left, tile_size, 0.0f, feature_tint);
     }
 
     int item_anim_frame = game_item_anim_frame();
     for (u8 item_idx = 0; item_idx < game->item_count; item_idx++) {
         Dungeon_Item item = game->items[item_idx];
+        if (!game_dungeon_cell_is_visible(game, item.x, item.y))
+            continue;
+
         Vector2 top_left = game_dungeon_get_cell_top_left(origin, item.x, item.y, tile_size);
         game_draw_item_tile(game, item.kind, top_left, tile_size, item_anim_frame);
     }
@@ -2546,6 +2693,9 @@ static void game_draw_test_dungeon(Game *game)
     int unit_anim_frame = game_unit_anim_frame();
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
         Dungeon_Unit unit = game->units[unit_idx];
+        if (!game_dungeon_cell_is_visible(game, unit.x, unit.y))
+            continue;
+
         Vector2 top_left = game_dungeon_get_cell_top_left(origin, unit.x, unit.y, tile_size);
         game_draw_unit_tile(game, unit.kind, unit.orientation, top_left, tile_size,
                             unit_anim_frame);
@@ -2556,18 +2706,27 @@ static void game_draw_test_dungeon(Game *game)
     game_draw_unit_tile(game, UNIT_ART_WARLOCK, game->player_orientation, player_top_left,
                         tile_size, unit_anim_frame);
 
-    if (game->show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0) {
+    if (game->show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
+        game_dungeon_cell_is_explored(game, game->player_spawn_x, game->player_spawn_y)) {
+        Color spawn_color =
+            game_dungeon_cell_is_visible(game, game->player_spawn_x, game->player_spawn_y)
+                ? (Color){124, 255, 172, 230}
+                : (Color){84, 161, 118, 220};
         Vector2 spawn_top_left = game_dungeon_get_cell_top_left(origin, game->player_spawn_x,
                                                                 game->player_spawn_y, tile_size);
         DrawRectangleLinesEx((Rectangle){spawn_top_left.x, spawn_top_left.y, tile_size, tile_size},
-                             3.0f, (Color){124, 255, 172, 230});
+                             3.0f, spawn_color);
     }
 
-    if (game->show_spawn_to_exit_path && game->has_exit) {
+    if (game->show_spawn_to_exit_path && game->has_exit &&
+        game_dungeon_cell_is_explored(game, game->exit_x, game->exit_y)) {
+        Color exit_color = game_dungeon_cell_is_visible(game, game->exit_x, game->exit_y)
+                               ? (Color){255, 208, 108, 230}
+                               : (Color){171, 133, 72, 220};
         Vector2 exit_top_left =
             game_dungeon_get_cell_top_left(origin, game->exit_x, game->exit_y, tile_size);
         DrawRectangleLinesEx((Rectangle){exit_top_left.x, exit_top_left.y, tile_size, tile_size},
-                             3.0f, (Color){255, 208, 108, 230});
+                             3.0f, exit_color);
     }
 }
 
@@ -2601,6 +2760,7 @@ static void game_update_player(Game *game)
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
     game_dungeon_build_spawn_to_exit_path(game);
+    game_dungeon_rebuild_line_of_sight(game);
 }
 
 static void game_update_camera(Game *game)
