@@ -57,8 +57,9 @@
 #define CAMERA_FOLLOW_ACCEL_DISTANCE_TILES 10.0f
 #define CAMERA_FALLBACK_FRAME_TIME (1.0f / 60.0f)
 
-#define DUNGEON_COL_COUNT 50
-#define DUNGEON_ROW_COUNT 30
+#define DUNGEON_SIZE_SCALE 4
+#define DUNGEON_COL_COUNT (50 * DUNGEON_SIZE_SCALE)
+#define DUNGEON_ROW_COUNT (30 * DUNGEON_SIZE_SCALE)
 #define DUNGEON_TILE_SCALE 8.0f
 #define DUNGEON_PANEL_PADDING 18.0f
 
@@ -233,6 +234,12 @@ typedef struct {
 } Game;
 
 static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
+    {.path = "assets/herringbone_templates/template_horizontal_corridors_v3.png",
+     .name = "Horizontal Corridors V3"},
+    {.path = "assets/herringbone_templates/template_rooms_and_corridors_2_wide_diagonal_bias.png",
+     .name = "Diagonal Bias Rooms"},
+    {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
+     .name = "Simple Caves 2 Wide"},
     {.path = "assets/herringbone_templates/template_sean_dungeon.png", .name = "Sean Dungeon"},
     {.path = "assets/herringbone_templates/template_rooms_and_corridors.png",
      .name = "Rooms And Corridors"},
@@ -242,11 +249,7 @@ static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
      .name = "Horizontal Corridors V1"},
     {.path = "assets/herringbone_templates/template_horizontal_corridors_v2.png",
      .name = "Horizontal Corridors V2"},
-    {.path = "assets/herringbone_templates/template_horizontal_corridors_v3.png",
-     .name = "Horizontal Corridors V3"},
     {.path = "assets/herringbone_templates/template_open_areas.png", .name = "Open Areas"},
-    {.path = "assets/herringbone_templates/template_rooms_and_corridors_2_wide_diagonal_bias.png",
-     .name = "Diagonal Bias Rooms"},
     {.path = "assets/herringbone_templates/template_round_rooms_diagonal_corridors.png",
      .name = "Round Rooms"},
     {.path = "assets/herringbone_templates/template_caves_limit_connectivity.png",
@@ -256,8 +259,6 @@ static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     {.path = "assets/herringbone_templates/template_corner_caves.png", .name = "Corner Caves"},
     {.path = "assets/herringbone_templates/template_ref2_corner_caves.png",
      .name = "Corner Caves Ref2"},
-    {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
-     .name = "Simple Caves 2 Wide"},
     {.path = "assets/herringbone_templates/template_maze_2_wide.png", .name = "Maze 2 Wide"},
     {.path = "assets/herringbone_templates/template_maze_plus_2_wide.png",
      .name = "Maze Plus 2 Wide"},
@@ -383,6 +384,19 @@ static void game_dungeon_build_walls(Game *game)
                 }
             }
         }
+    }
+}
+
+static void game_dungeon_enforce_edge_walls(Game *game)
+{
+    for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+        game->dungeon_cells[0][x] = DUNGEON_CELL_WALL;
+        game->dungeon_cells[DUNGEON_ROW_COUNT - 1][x] = DUNGEON_CELL_WALL;
+    }
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        game->dungeon_cells[y][0] = DUNGEON_CELL_WALL;
+        game->dungeon_cells[y][DUNGEON_COL_COUNT - 1] = DUNGEON_CELL_WALL;
     }
 }
 
@@ -1270,6 +1284,7 @@ static void game_build_test_dungeon(Game *game)
     if (!generated || !game_dungeon_find_first_floor_cell(game, &first_floor_x, &first_floor_y))
         game_dungeon_carve_rect(game, 2, 2, DUNGEON_COL_COUNT - 4, DUNGEON_ROW_COUNT - 4);
     game_dungeon_build_walls(game);
+    game_dungeon_enforce_edge_walls(game);
 
     i16 player_x = 0;
     i16 player_y = 0;
