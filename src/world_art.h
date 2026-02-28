@@ -356,40 +356,6 @@ static inline u8 world_art_get_top_wall_weight(u8 variation)
     return world_art_top_wall_weights[variation];
 }
 
-static inline float world_art_get_wall_rotation_degrees(WORLD_WALL_DIRECTION direction)
-{
-    switch (direction) {
-    case WORLD_WALL_DIRECTION_NORTH:
-        return 0.0f;
-    case WORLD_WALL_DIRECTION_EAST:
-        return 90.0f;
-    case WORLD_WALL_DIRECTION_SOUTH:
-        return 180.0f;
-    case WORLD_WALL_DIRECTION_WEST:
-        return -90.0f;
-    default:
-        assert(0 && "Invalid WORLD_WALL_DIRECTION");
-        return 0.0f;
-    }
-}
-
-static inline const char *world_art_get_wall_direction_name(WORLD_WALL_DIRECTION direction)
-{
-    switch (direction) {
-    case WORLD_WALL_DIRECTION_NORTH:
-        return "North";
-    case WORLD_WALL_DIRECTION_EAST:
-        return "East";
-    case WORLD_WALL_DIRECTION_SOUTH:
-        return "South";
-    case WORLD_WALL_DIRECTION_WEST:
-        return "West";
-    default:
-        assert(0 && "Invalid WORLD_WALL_DIRECTION");
-        return "Unknown";
-    }
-}
-
 static inline u32 world_art_append_text(char *buffer, u32 buffer_cap, u32 write_idx,
                                         const char *text)
 {
@@ -440,14 +406,14 @@ static inline void world_art_get_display_name(WORLD_ART_KIND kind, char *buffer,
         write_idx = world_art_append_text(buffer, buffer_cap, write_idx,
                                           world_art_wall_theme_display_names[wall_theme]);
         write_idx = world_art_append_text(buffer, buffer_cap, write_idx, " ");
-        write_idx = world_art_append_text(buffer, buffer_cap, write_idx, "North Wall ");
+        write_idx = world_art_append_text(buffer, buffer_cap, write_idx, "Wall ");
         write_idx = world_art_append_u32(buffer, buffer_cap, write_idx, (u32)variation + 1);
         break;
     case WORLD_ART_ROLE_WALL_TOP:
         write_idx = world_art_append_text(buffer, buffer_cap, write_idx,
                                           world_art_wall_theme_display_names[wall_theme]);
         write_idx = world_art_append_text(buffer, buffer_cap, write_idx, " ");
-        write_idx = world_art_append_text(buffer, buffer_cap, write_idx, "Top Wall ");
+        write_idx = world_art_append_text(buffer, buffer_cap, write_idx, "Wall Top ");
         write_idx = world_art_append_u32(buffer, buffer_cap, write_idx, (u32)variation + 1);
         break;
     case WORLD_ART_ROLE_STAIRS_DOWN:
