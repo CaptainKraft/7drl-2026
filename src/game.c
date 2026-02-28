@@ -82,6 +82,7 @@
 
 #define DUNGEON_RNG_STREAM_LAYOUT 0x4c41594f5554ull
 #define DUNGEON_RNG_STREAM_POPULATE 0x504f50554c415445ull
+#define DUNGEON_RNG_STREAM_CULL 0x43554c4cull
 
 #define DUNGEON_MAX_WORLD_FEATURES 12
 #define DUNGEON_MAX_ITEMS 24
@@ -89,6 +90,8 @@
 #define DUNGEON_CELL_COUNT (DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT)
 #define DUNGEON_EXIT_MIN_PATH_STEPS 80
 #define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
+#define DUNGEON_MAIN_PATH_KEEP_PERCENT 25
+#define DUNGEON_MAIN_PATH_CULL_PICK_SAMPLES 4
 
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
 #define ITEM_KIND_SCROLL ITEM_ART_KIND_AT(6, 0)
@@ -219,6 +222,7 @@ typedef struct {
     i32 dungeon_template_index;
     RNG dungeon_layout_rng;
     RNG dungeon_populate_rng;
+    RNG dungeon_cull_rng;
     Dungeon_HBW_Tileset dungeon_tileset;
     char dungeon_template_error[160];
 
@@ -403,16 +407,30 @@ static void game_dungeon_build_walls(Game *game)
     }
 }
 
+static void game_dungeon_clear_walls(Game *game)
+{
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (game->dungeon_cells[y][x] == DUNGEON_CELL_WALL)
+                game->dungeon_cells[y][x] = DUNGEON_CELL_EMPTY;
+        }
+    }
+}
+
 static void game_dungeon_enforce_edge_walls(Game *game)
 {
     for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
-        game->dungeon_cells[0][x] = DUNGEON_CELL_WALL;
-        game->dungeon_cells[DUNGEON_ROW_COUNT - 1][x] = DUNGEON_CELL_WALL;
+        if (game->dungeon_cells[0][x] == DUNGEON_CELL_FLOOR)
+            game->dungeon_cells[0][x] = DUNGEON_CELL_WALL;
+        if (game->dungeon_cells[DUNGEON_ROW_COUNT - 1][x] == DUNGEON_CELL_FLOOR)
+            game->dungeon_cells[DUNGEON_ROW_COUNT - 1][x] = DUNGEON_CELL_WALL;
     }
 
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
-        game->dungeon_cells[y][0] = DUNGEON_CELL_WALL;
-        game->dungeon_cells[y][DUNGEON_COL_COUNT - 1] = DUNGEON_CELL_WALL;
+        if (game->dungeon_cells[y][0] == DUNGEON_CELL_FLOOR)
+            game->dungeon_cells[y][0] = DUNGEON_CELL_WALL;
+        if (game->dungeon_cells[y][DUNGEON_COL_COUNT - 1] == DUNGEON_CELL_FLOOR)
+            game->dungeon_cells[y][DUNGEON_COL_COUNT - 1] = DUNGEON_CELL_WALL;
     }
 }
 
@@ -471,6 +489,7 @@ static void game_seed_dungeon_rng_streams(Game *game)
     RNG floor_rng = {.seed = game_make_seed128(floor_seed)};
     game->dungeon_layout_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_LAYOUT);
     game->dungeon_populate_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_POPULATE);
+    game->dungeon_cull_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_CULL);
 }
 
 static bool game_dungeon_hbw_pixel_is_floor(u8 r, u8 g, u8 b)
@@ -1265,6 +1284,238 @@ static bool game_dungeon_build_spawn_to_exit_path(Game *game)
     return game->spawn_to_exit_path_len > 0;
 }
 
+static bool game_dungeon_cell_is_on_spawn_to_exit_path(const Game *game, i32 x, i32 y)
+{
+    return game_dungeon_cell_in_bounds(x, y) && game->spawn_to_exit_path[y][x] != 0;
+}
+
+static bool
+game_dungeon_build_distance_from_main_path(const Game *game,
+                                           i16 distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT])
+{
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++)
+            distance[y][x] = -1;
+    }
+
+    i32 queue[DUNGEON_CELL_COUNT];
+    i32 head = 0;
+    i32 tail = 0;
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y))
+                continue;
+            if (!game_dungeon_cell_is_on_spawn_to_exit_path(game, x, y))
+                continue;
+
+            distance[y][x] = 0;
+            queue[tail++] = y * DUNGEON_COL_COUNT + x;
+        }
+    }
+
+    if (tail <= 0)
+        return false;
+
+    static const i32 neighbor_offsets[4][2] = {
+        {1, 0},
+        {0, 1},
+        {-1, 0},
+        {0, -1},
+    };
+
+    while (head < tail) {
+        i32 idx = queue[head++];
+        i32 x = idx % DUNGEON_COL_COUNT;
+        i32 y = idx / DUNGEON_COL_COUNT;
+        i32 next_distance = (i32)distance[y][x] + 1;
+
+        for (i32 n = 0; n < 4; n++) {
+            i32 nx = x + neighbor_offsets[n][0];
+            i32 ny = y + neighbor_offsets[n][1];
+            if (!game_dungeon_cell_is_floor(game, nx, ny))
+                continue;
+            if (distance[ny][nx] >= 0)
+                continue;
+
+            distance[ny][nx] = (i16)next_distance;
+            queue[tail++] = ny * DUNGEON_COL_COUNT + nx;
+        }
+    }
+
+    return true;
+}
+
+static void game_dungeon_cull_outside_main_path(Game *game, RNG *rng)
+{
+    i32 floor_count = 0;
+    i32 main_path_floor_count = 0;
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y))
+                continue;
+
+            floor_count++;
+            if (game_dungeon_cell_is_on_spawn_to_exit_path(game, x, y))
+                main_path_floor_count++;
+        }
+    }
+
+    if (floor_count <= 0 || main_path_floor_count <= 0)
+        return;
+
+    i32 keep_target = (floor_count * DUNGEON_MAIN_PATH_KEEP_PERCENT + 99) / 100;
+    keep_target = max(keep_target, main_path_floor_count);
+    if (keep_target >= floor_count)
+        return;
+
+    i16 path_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_distance_from_main_path(game, path_distance))
+        return;
+
+    u8 keep_state[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    memset(keep_state, 0, sizeof(keep_state));
+
+    i32 frontier[DUNGEON_CELL_COUNT];
+    i32 frontier_count = 0;
+    i32 kept_count = 0;
+
+    static const i32 neighbor_offsets[4][2] = {
+        {1, 0},
+        {0, 1},
+        {-1, 0},
+        {0, -1},
+    };
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y))
+                continue;
+
+            bool must_keep = game_dungeon_cell_is_on_spawn_to_exit_path(game, x, y) ||
+                             game_dungeon_cell_is_occupied(game, x, y);
+            if (must_keep) {
+                keep_state[y][x] = 3;
+                kept_count++;
+            } else {
+                keep_state[y][x] = 1;
+            }
+        }
+    }
+
+    if (kept_count <= 0)
+        return;
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (keep_state[y][x] != 3)
+                continue;
+
+            for (i32 n = 0; n < 4; n++) {
+                i32 nx = x + neighbor_offsets[n][0];
+                i32 ny = y + neighbor_offsets[n][1];
+                if (!game_dungeon_cell_in_bounds(nx, ny))
+                    continue;
+                if (keep_state[ny][nx] != 1)
+                    continue;
+
+                keep_state[ny][nx] = 2;
+                frontier[frontier_count++] = ny * DUNGEON_COL_COUNT + nx;
+            }
+        }
+    }
+
+    while (kept_count < keep_target && frontier_count > 0) {
+        i32 best_slot = ck_rand_int(rng, 0, frontier_count);
+        i32 best_score = -1000000;
+
+        for (i32 sample = 0; sample < DUNGEON_MAIN_PATH_CULL_PICK_SAMPLES; sample++) {
+            i32 slot = ck_rand_int(rng, 0, frontier_count);
+            i32 idx = frontier[slot];
+            i32 x = idx % DUNGEON_COL_COUNT;
+            i32 y = idx / DUNGEON_COL_COUNT;
+            if (keep_state[y][x] != 2)
+                continue;
+
+            i32 distance = path_distance[y][x];
+            i32 kept_neighbor_count = 0;
+            i32 floor_neighbor_count = 0;
+            for (i32 n = 0; n < 4; n++) {
+                i32 nx = x + neighbor_offsets[n][0];
+                i32 ny = y + neighbor_offsets[n][1];
+                if (!game_dungeon_cell_is_floor(game, nx, ny))
+                    continue;
+
+                floor_neighbor_count++;
+                if (game_dungeon_cell_in_bounds(nx, ny) && keep_state[ny][nx] == 3)
+                    kept_neighbor_count++;
+            }
+
+            i32 score = ck_rand_int(rng, 0, 24);
+            if (distance >= 0)
+                score += max(0, 36 - distance * 4);
+
+            if (kept_neighbor_count <= 1)
+                score += 10;
+            else if (kept_neighbor_count == 2)
+                score += 4;
+            else
+                score -= 8;
+
+            if (floor_neighbor_count <= 2)
+                score += 6;
+
+            if (score > best_score) {
+                best_score = score;
+                best_slot = slot;
+            }
+        }
+
+        i32 chosen_idx = frontier[best_slot];
+        frontier[best_slot] = frontier[frontier_count - 1];
+        frontier_count--;
+
+        i32 chosen_x = chosen_idx % DUNGEON_COL_COUNT;
+        i32 chosen_y = chosen_idx / DUNGEON_COL_COUNT;
+        if (keep_state[chosen_y][chosen_x] != 2)
+            continue;
+
+        keep_state[chosen_y][chosen_x] = 3;
+        kept_count++;
+
+        for (i32 n = 0; n < 4; n++) {
+            i32 nx = chosen_x + neighbor_offsets[n][0];
+            i32 ny = chosen_y + neighbor_offsets[n][1];
+            if (!game_dungeon_cell_in_bounds(nx, ny))
+                continue;
+            if (keep_state[ny][nx] != 1)
+                continue;
+
+            keep_state[ny][nx] = 2;
+            frontier[frontier_count++] = ny * DUNGEON_COL_COUNT + nx;
+        }
+    }
+
+    i32 removed_count = 0;
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y))
+                continue;
+            if (keep_state[y][x] == 3)
+                continue;
+
+            game->dungeon_cells[y][x] = DUNGEON_CELL_EMPTY;
+            removed_count++;
+        }
+    }
+
+    if (removed_count > 0) {
+        game_dungeon_clear_walls(game);
+        game_dungeon_build_walls(game);
+        game_dungeon_enforce_edge_walls(game);
+    }
+}
+
 static bool game_dungeon_find_first_floor_cell(const Game *game, i16 *out_x, i16 *out_y)
 {
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
@@ -1464,17 +1715,20 @@ static void game_dungeon_populate_test_entities(Game *game)
     i16 x = 0;
     i16 y = 0;
 
-    if (game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y)) {
-        WORLD_ART_THEME theme =
-            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
-        game_dungeon_add_world_feature(game, x, y, world_art_get_up_stairs_tile(theme));
-    }
-
     if (game_dungeon_pick_exit_floor_cell(game, &game->dungeon_populate_rng,
                                           DUNGEON_EXIT_MIN_PATH_STEPS, &x, &y)) {
         WORLD_ART_THEME theme =
             (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
         game_dungeon_add_world_feature(game, x, y, world_art_get_down_stairs_tile(theme));
+
+        if (game_dungeon_build_spawn_to_exit_path(game))
+            game_dungeon_cull_outside_main_path(game, &game->dungeon_cull_rng);
+    }
+
+    if (game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y)) {
+        WORLD_ART_THEME theme =
+            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
+        game_dungeon_add_world_feature(game, x, y, world_art_get_up_stairs_tile(theme));
     }
 
     for (i32 feature_idx = 0;
@@ -1555,6 +1809,8 @@ static bool game_build_test_dungeon_candidate(Game *game)
     game_dungeon_build_spawn_to_exit_path(game);
 
     if (!game->has_exit || game->spawn_to_exit_path_len <= 0)
+        return false;
+    if (!game_dungeon_spawn_is_in_largest_component(game))
         return false;
 
     i32 step_count = game->spawn_to_exit_path_len - 1;
@@ -2242,19 +2498,7 @@ static Camera2D game_get_active_camera(const Game *game)
 static void game_draw_test_dungeon(Game *game)
 {
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
-    float map_w = (float)DUNGEON_COL_COUNT * tile_size;
-    float map_h = (float)DUNGEON_ROW_COUNT * tile_size;
     Vector2 origin = game_dungeon_get_origin();
-
-    Rectangle panel = {
-        .x = origin.x - DUNGEON_PANEL_PADDING,
-        .y = origin.y - DUNGEON_PANEL_PADDING,
-        .width = map_w + (DUNGEON_PANEL_PADDING * 2.0f),
-        .height = map_h + (DUNGEON_PANEL_PADDING * 2.0f),
-    };
-
-    DrawRectangleRec(panel, (Color){20, 33, 38, 255});
-    DrawRectangleLinesEx(panel, 1.0f, (Color){57, 82, 89, 255});
 
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
