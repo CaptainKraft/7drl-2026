@@ -22,7 +22,7 @@
 #define UNIT_PREVIEW_CELL_PADDING_Y 8.0f
 #define UNIT_PREVIEW_LABEL_SIZE 16.0f
 #define UNIT_PREVIEW_LABEL_GAP 6.0f
-#define UNIT_PREVIEW_SPRITE_SCALE 2.0f
+#define UNIT_PREVIEW_SPRITE_SCALE 3.0f
 #define UNIT_PREVIEW_SPRITE_GAP 6.0f
 
 #define ITEM_PREVIEW_CELL_GAP_X 14.0f
@@ -57,11 +57,12 @@
 #define CAMERA_FOLLOW_ACCEL_DISTANCE_TILES 10.0f
 #define CAMERA_FALLBACK_FRAME_TIME (1.0f / 60.0f)
 #define CAMERA_SETTLE_SCREEN_PX 0.5f
+#define PREVIEW_CAMERA_PAN_SPEED 900.0f
 
 #define DUNGEON_SIZE_SCALE 2
 #define DUNGEON_COL_COUNT (50 * DUNGEON_SIZE_SCALE)
 #define DUNGEON_ROW_COUNT (30 * DUNGEON_SIZE_SCALE)
-#define DUNGEON_TILE_SCALE 8.0f
+#define DUNGEON_TILE_SCALE 4.0f
 #define DUNGEON_PANEL_PADDING 18.0f
 
 #define PLAYER_START_ORIENTATION 1
@@ -2371,8 +2372,7 @@ static void game_draw_world_tile(Game *game, World_Art_Tile tile, Vector2 top_le
     game_draw_world_tile_tinted(game, tile, top_left, sprite_size, rotation_degrees, WHITE);
 }
 
-static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left, float sprite_size,
-                                int anim_frame)
+static ITEM_ART_KIND game_get_item_draw_kind(ITEM_ART_KIND kind, int anim_frame)
 {
     ITEM_ART_KIND draw_kind = kind;
     if (draw_kind == ITEM_ART_TORCH_1 || draw_kind == ITEM_ART_TORCH_2) {
@@ -2380,6 +2380,14 @@ static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left
         bool use_second_frame = ((anim_frame + (second_torch ? 1 : 0)) % 2) != 0;
         draw_kind = use_second_frame ? ITEM_ART_TORCH_2 : ITEM_ART_TORCH_1;
     }
+
+    return draw_kind;
+}
+
+static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left, float sprite_size,
+                                int anim_frame)
+{
+    ITEM_ART_KIND draw_kind = game_get_item_draw_kind(kind, anim_frame);
 
     Item_Art_Pixel pixel = item_art_get_pixel(draw_kind);
     Rectangle src = {
@@ -2392,6 +2400,31 @@ static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left
     Rectangle dst = {
         .x = top_left.x,
         .y = top_left.y,
+        .width = sprite_size,
+        .height = sprite_size,
+    };
+
+    DrawTexturePro(game->items_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+}
+
+static void game_draw_item_tile_with_anchor(Game *game, ITEM_ART_KIND kind, Vector2 anchor_position,
+                                            float sprite_size, int anim_frame)
+{
+    ITEM_ART_KIND draw_kind = game_get_item_draw_kind(kind, anim_frame);
+    Item_Art_Pixel pixel = item_art_get_pixel(draw_kind);
+    Item_Art_Anchor anchor = item_art_get_anchor(draw_kind);
+    float source_to_dest_scale = sprite_size / (float)ITEM_ART_TILE_SIZE;
+
+    Rectangle src = {
+        .x = (float)pixel.x,
+        .y = (float)pixel.y,
+        .width = (float)ITEM_ART_TILE_SIZE,
+        .height = (float)ITEM_ART_TILE_SIZE,
+    };
+
+    Rectangle dst = {
+        .x = anchor_position.x - (anchor.x * source_to_dest_scale),
+        .y = anchor_position.y - (anchor.y * source_to_dest_scale),
         .width = sprite_size,
         .height = sprite_size,
     };
@@ -2418,6 +2451,43 @@ static void game_draw_unit_tile(Game *game, UNIT_ART_KIND kind, u8 orientation, 
     };
 
     DrawTexturePro(game->units_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+}
+
+static void game_draw_unit_tile_with_feet_anchor(Game *game, UNIT_ART_KIND kind, u8 orientation,
+                                                 Vector2 feet_position, float sprite_size,
+                                                 int anim_frame)
+{
+    Unit_Art_Pixel pixel = unit_art_get_pixel(kind, (u8)anim_frame, orientation);
+    Unit_Art_Anchor anchor = unit_art_get_anchor(kind, orientation);
+    float source_to_dest_scale = sprite_size / (float)UNIT_ART_TILE_SIZE;
+
+    Rectangle src = {
+        .x = (float)pixel.x,
+        .y = (float)pixel.y,
+        .width = (float)UNIT_ART_TILE_SIZE,
+        .height = (float)UNIT_ART_TILE_SIZE,
+    };
+
+    Rectangle dst = {
+        .x = feet_position.x - (anchor.x * source_to_dest_scale),
+        .y = feet_position.y - (anchor.y * source_to_dest_scale),
+        .width = sprite_size,
+        .height = sprite_size,
+    };
+
+    DrawTexturePro(game->units_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+}
+
+static void game_draw_anchor_cross(Vector2 anchor_position, float cross_half)
+{
+    Vector2 horizontal_start = {anchor_position.x - cross_half, anchor_position.y};
+    Vector2 horizontal_end = {anchor_position.x + cross_half, anchor_position.y};
+    Vector2 vertical_start = {anchor_position.x, anchor_position.y - cross_half};
+    Vector2 vertical_end = {anchor_position.x, anchor_position.y + cross_half};
+    DrawLineEx(horizontal_start, horizontal_end, 3.0f, (Color){8, 20, 24, 230});
+    DrawLineEx(vertical_start, vertical_end, 3.0f, (Color){8, 20, 24, 230});
+    DrawLineEx(horizontal_start, horizontal_end, 1.0f, (Color){255, 107, 94, 255});
+    DrawLineEx(vertical_start, vertical_end, 1.0f, (Color){255, 107, 94, 255});
 }
 
 static Vector2 game_get_unit_art_preview_size(Game *game)
@@ -2542,6 +2612,15 @@ static void game_draw_unit_art_preview(Game *game, Vector2 origin)
             };
             game_draw_unit_tile(game, (UNIT_ART_KIND)kind, (u8)orientation, top_left, sprite_size,
                                 anim_frame);
+
+            Unit_Art_Anchor anchor = unit_art_get_anchor((UNIT_ART_KIND)kind, (u8)orientation);
+            float sprite_scale = sprite_size / (float)UNIT_ART_TILE_SIZE;
+            Vector2 anchor_pos = {
+                .x = top_left.x + anchor.x * sprite_scale,
+                .y = top_left.y + anchor.y * sprite_scale,
+            };
+            float cross_half = max(1.0f, sprite_size * 0.08f);
+            game_draw_anchor_cross(anchor_pos, cross_half);
         }
     }
 }
@@ -2604,9 +2683,19 @@ static void game_draw_item_art_preview(Game *game, Vector2 origin)
 
         float sprite_y = text_pos.y + text_size.y + ITEM_PREVIEW_LABEL_GAP;
         float sprite_x = cell_x + (cell_w - sprite_size) * 0.5f;
+        Vector2 top_left = {sprite_x, sprite_y};
 
-        game_draw_item_tile(game, (ITEM_ART_KIND)kind, (Vector2){sprite_x, sprite_y}, sprite_size,
-                            anim_frame);
+        game_draw_item_tile(game, (ITEM_ART_KIND)kind, top_left, sprite_size, anim_frame);
+
+        ITEM_ART_KIND draw_kind = game_get_item_draw_kind((ITEM_ART_KIND)kind, anim_frame);
+        Item_Art_Anchor anchor = item_art_get_anchor(draw_kind);
+        float sprite_scale = sprite_size / (float)ITEM_ART_TILE_SIZE;
+        Vector2 anchor_pos = {
+            .x = top_left.x + anchor.x * sprite_scale,
+            .y = top_left.y + anchor.y * sprite_scale,
+        };
+        float cross_half = max(1.0f, sprite_size * 0.08f);
+        game_draw_anchor_cross(anchor_pos, cross_half);
     }
 }
 
@@ -2901,13 +2990,18 @@ static Vector2 game_dungeon_get_cell_top_left(Vector2 origin, i32 x, i32 y, floa
     };
 }
 
+static Vector2 game_dungeon_get_cell_center(Vector2 origin, i32 x, i32 y, float tile_size)
+{
+    return (Vector2){
+        .x = origin.x + ((float)x + 0.5f) * tile_size,
+        .y = origin.y + ((float)y + 0.5f) * tile_size,
+    };
+}
+
 static Vector2 game_dungeon_get_player_center(const Game *game, float tile_size)
 {
     Vector2 origin = game_dungeon_get_origin();
-    return (Vector2){
-        .x = origin.x + ((float)game->player_x + 0.5f) * tile_size,
-        .y = origin.y + ((float)game->player_y + 0.5f) * tile_size,
-    };
+    return game_dungeon_get_cell_center(origin, game->player_x, game->player_y, tile_size);
 }
 
 static void game_update_dungeon_camera_offset(Game *game)
@@ -3062,8 +3156,9 @@ static void game_draw_test_dungeon(Game *game)
         if (!game_dungeon_cell_is_visible(game, item.x, item.y))
             continue;
 
-        Vector2 top_left = game_dungeon_get_cell_top_left(origin, item.x, item.y, tile_size);
-        game_draw_item_tile(game, item.kind, top_left, tile_size, item_anim_frame);
+        Vector2 anchor_position = game_dungeon_get_cell_center(origin, item.x, item.y, tile_size);
+        game_draw_item_tile_with_anchor(game, item.kind, anchor_position, tile_size,
+                                        item_anim_frame);
     }
 
     int unit_anim_frame = game_unit_anim_frame();
@@ -3072,15 +3167,15 @@ static void game_draw_test_dungeon(Game *game)
         if (!game_dungeon_cell_is_visible(game, unit.x, unit.y))
             continue;
 
-        Vector2 top_left = game_dungeon_get_cell_top_left(origin, unit.x, unit.y, tile_size);
-        game_draw_unit_tile(game, unit.kind, unit.orientation, top_left, tile_size,
-                            unit_anim_frame);
+        Vector2 feet_position = game_dungeon_get_cell_center(origin, unit.x, unit.y, tile_size);
+        game_draw_unit_tile_with_feet_anchor(game, unit.kind, unit.orientation, feet_position,
+                                             tile_size, unit_anim_frame);
     }
 
-    Vector2 player_top_left =
-        game_dungeon_get_cell_top_left(origin, game->player_x, game->player_y, tile_size);
-    game_draw_unit_tile(game, UNIT_ART_WARLOCK, game->player_orientation, player_top_left,
-                        tile_size, unit_anim_frame);
+    Vector2 player_feet =
+        game_dungeon_get_cell_center(origin, game->player_x, game->player_y, tile_size);
+    game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
+                                         player_feet, tile_size, unit_anim_frame);
 
     if (show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
         game_dungeon_cell_is_explored(game, game->player_spawn_x, game->player_spawn_y)) {
@@ -3189,10 +3284,8 @@ static void game_draw_dungeon_minimap(Game *game)
     float screen_h = (float)GetScreenHeight();
     float map_max_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f) -
                                                          (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f));
-    float map_max_h =
-        min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f) -
-                                            (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f) -
-                                            DUNGEON_MINIMAP_LABEL_SIZE - DUNGEON_MINIMAP_LABEL_GAP);
+    float map_max_h = min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f) -
+                                                          (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f));
     map_max_w = max(map_max_w, 1.0f);
     map_max_h = max(map_max_h, 1.0f);
 
@@ -3204,8 +3297,7 @@ static void game_draw_dungeon_minimap(Game *game)
     float map_w = (float)DUNGEON_COL_COUNT * cell_size;
     float map_h = (float)DUNGEON_ROW_COUNT * cell_size;
     float panel_w = map_w + (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f);
-    float panel_h = DUNGEON_MINIMAP_LABEL_SIZE + DUNGEON_MINIMAP_LABEL_GAP + map_h +
-                    (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f);
+    float panel_h = map_h + (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f);
 
     Rectangle panel = {
         .x = screen_w - DUNGEON_MINIMAP_MARGIN - panel_w,
@@ -3218,16 +3310,9 @@ static void game_draw_dungeon_minimap(Game *game)
     DrawRectangleRounded(panel, 0.06f, 8, (Color){20, 33, 38, 232});
     DrawRectangleLinesEx(panel, 1.0f, (Color){70, 101, 108, 255});
 
-    Vector2 label_pos = {
-        .x = panel.x + DUNGEON_MINIMAP_PANEL_PADDING,
-        .y = panel.y + DUNGEON_MINIMAP_PANEL_PADDING,
-    };
-    DrawTextEx(game->font, "Minimap", label_pos, DUNGEON_MINIMAP_LABEL_SIZE, game->font_spacing,
-               (Color){190, 217, 223, 255});
-
     Vector2 map_origin = {
         .x = panel.x + DUNGEON_MINIMAP_PANEL_PADDING,
-        .y = label_pos.y + DUNGEON_MINIMAP_LABEL_SIZE + DUNGEON_MINIMAP_LABEL_GAP,
+        .y = panel.y + DUNGEON_MINIMAP_PANEL_PADDING,
     };
     DrawRectangleRec((Rectangle){map_origin.x, map_origin.y, map_w, map_h},
                      (Color){9, 16, 20, 255});
@@ -3259,6 +3344,25 @@ static void game_draw_dungeon_minimap(Game *game)
     DrawRectangleLinesEx((Rectangle){map_origin.x, map_origin.y, map_w, map_h}, 1.0f,
                          (Color){58, 84, 90, 255});
 
+    float enemy_radius = max(1.0f, cell_size * 0.5f);
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        Dungeon_Unit unit = game->units[unit_idx];
+        if (!game_dungeon_cell_in_bounds(unit.x, unit.y))
+            continue;
+        if (!game_dungeon_cell_is_visible(game, unit.x, unit.y))
+            continue;
+
+        Vector2 enemy_center = {
+            .x = map_origin.x + ((float)unit.x + 0.5f) * cell_size,
+            .y = map_origin.y + ((float)unit.y + 0.5f) * cell_size,
+        };
+        DrawCircleV(enemy_center, enemy_radius, (Color){230, 104, 92, 255});
+        if (enemy_radius > 1.5f) {
+            DrawCircleLines((i32)(enemy_center.x + 0.5f), (i32)(enemy_center.y + 0.5f),
+                            enemy_radius, (Color){87, 32, 31, 255});
+        }
+    }
+
     if (game_dungeon_cell_in_bounds(game->player_x, game->player_y) &&
         game_dungeon_cell_is_explored(game, game->player_x, game->player_y)) {
         Vector2 player_center = {
@@ -3282,15 +3386,20 @@ static void game_draw_dungeon_hud(Game *game)
         game_debug_feature_is_enabled(game, DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH);
 
     char line[256];
-    snprintf(line, sizeof(line), "Template [Q/E]: %s (%d/%d)",
-             game_dungeon_active_template_name(game), game->dungeon_template_index + 1,
-             DUNGEON_HBW_TEMPLATE_COUNT);
-    DrawTextEx(game->font, line, origin, label_size, game->font_spacing, text_color);
+    if (GAME_DEBUG_FEATURES) {
+        snprintf(line, sizeof(line), "Template [Q/E]: %s (%d/%d)",
+                 game_dungeon_active_template_name(game), game->dungeon_template_index + 1,
+                 DUNGEON_HBW_TEMPLATE_COUNT);
+        DrawTextEx(game->font, line, origin, label_size, game->font_spacing, text_color);
 
-    origin.y += 22.0f;
-    snprintf(line, sizeof(line), "Wheel/-/=: zoom  0: reset  Floor: %u  Zoom: %.2fx",
-             game->dungeon_floor_index, game->dungeon_cam.zoom);
-    DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing, subtle);
+        origin.y += 22.0f;
+    }
+
+    if (GAME_DEBUG_FEATURES) {
+        snprintf(line, sizeof(line), "Wheel/-/=: zoom  0: reset  Zoom: %.2fx",
+                 game->dungeon_cam.zoom);
+        DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing, subtle);
+    }
 
     if (GAME_DEBUG_FEATURES) {
         origin.y += 22.0f;
@@ -3480,33 +3589,58 @@ void game_update(Mem mem)
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_4])
         game->dungeon_wall_theme = WORLD_ART_THEME_4;
 
-    i32 template_delta = 0;
-    if (game->input.pressed[INPUT_SELECT_TEMPLATE_PREV])
-        template_delta -= 1;
-    if (game->input.pressed[INPUT_SELECT_TEMPLATE_NEXT])
-        template_delta += 1;
+    if (GAME_DEBUG_FEATURES) {
+        i32 template_delta = 0;
+        if (game->input.pressed[INPUT_SELECT_TEMPLATE_PREV])
+            template_delta -= 1;
+        if (game->input.pressed[INPUT_SELECT_TEMPLATE_NEXT])
+            template_delta += 1;
 
-    if (template_delta != 0) {
-        i32 next_template =
-            (game->dungeon_template_index + template_delta + DUNGEON_HBW_TEMPLATE_COUNT) %
-            DUNGEON_HBW_TEMPLATE_COUNT;
-        if (game_dungeon_load_template(game, next_template)) {
-            game->dungeon_floor_index = 0;
-            rebuild_floor = true;
+        if (template_delta != 0) {
+            i32 next_template =
+                (game->dungeon_template_index + template_delta + DUNGEON_HBW_TEMPLATE_COUNT) %
+                DUNGEON_HBW_TEMPLATE_COUNT;
+            if (game_dungeon_load_template(game, next_template)) {
+                game->dungeon_floor_index = 0;
+                rebuild_floor = true;
+            }
         }
     }
 
     if (game->show_dungeon_map) {
-        if (game->input.pressed[INPUT_ZOOM_IN])
-            game_adjust_dungeon_zoom(game, DUNGEON_CAMERA_ZOOM_STEP);
-        if (game->input.pressed[INPUT_ZOOM_OUT])
-            game_adjust_dungeon_zoom(game, -DUNGEON_CAMERA_ZOOM_STEP);
-        if (game->input.pressed[INPUT_ZOOM_RESET])
-            game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
+        if (GAME_DEBUG_FEATURES) {
+            if (game->input.pressed[INPUT_ZOOM_IN])
+                game_adjust_dungeon_zoom(game, DUNGEON_CAMERA_ZOOM_STEP);
+            if (game->input.pressed[INPUT_ZOOM_OUT])
+                game_adjust_dungeon_zoom(game, -DUNGEON_CAMERA_ZOOM_STEP);
+            if (game->input.pressed[INPUT_ZOOM_RESET])
+                game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
 
-        float wheel = GetMouseWheelMove();
-        if (wheel != 0.0f)
-            game_adjust_dungeon_zoom(game, wheel * DUNGEON_CAMERA_ZOOM_STEP);
+            float wheel = GetMouseWheelMove();
+            if (wheel != 0.0f)
+                game_adjust_dungeon_zoom(game, wheel * DUNGEON_CAMERA_ZOOM_STEP);
+        }
+    } else {
+        float frame_time = GetFrameTime();
+        if (frame_time <= 0.0f)
+            frame_time = CAMERA_FALLBACK_FRAME_TIME;
+
+        float zoom = max(game->preview_cam.zoom, 0.001f);
+        float pan_delta = PREVIEW_CAMERA_PAN_SPEED * frame_time / zoom;
+        if (game->input.down[INPUT_MOVE_LEFT])
+            game->preview_cam.target.x -= pan_delta;
+        if (game->input.down[INPUT_MOVE_RIGHT])
+            game->preview_cam.target.x += pan_delta;
+        if (game->input.down[INPUT_MOVE_UP])
+            game->preview_cam.target.y -= pan_delta;
+        if (game->input.down[INPUT_MOVE_DOWN])
+            game->preview_cam.target.y += pan_delta;
+
+        if (game->input.down[INPUT_MOUSE_MIDDLE]) {
+            Vector2 drag = GetMouseDelta();
+            game->preview_cam.target.x -= drag.x / zoom;
+            game->preview_cam.target.y -= drag.y / zoom;
+        }
     }
 
     if (rebuild_floor) {

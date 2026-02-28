@@ -28,6 +28,11 @@ typedef struct {
     Unit_Art_Tile base_tile;
 } Unit_Art_Def;
 
+typedef struct {
+    float x;
+    float y;
+} Unit_Art_Anchor;
+
 // clang-format off
 #define UNIT_ART_LIST \
     UNIT_ART_ENTRY(FIGHTER, "fighter", 0, 0) \
@@ -114,12 +119,82 @@ static const Unit_Art_Def unit_art_defs[NUM_UNIT_ART] = {[UNIT_ART_NONE] = {0},
 #undef UNIT_ART_ENTRY
 };
 
+static const Unit_Art_Anchor unit_art_anchor_defs[NUM_UNIT_ART] = {
+    [UNIT_ART_NONE] = {0},
+    [UNIT_ART_FIGHTER] = {8.000000f, 15.500000f},
+    [UNIT_ART_BARBARIAN] = {8.000000f, 15.500000f},
+    [UNIT_ART_ROGUE] = {8.000000f, 15.500000f},
+    [UNIT_ART_PALADIN] = {8.000000f, 15.500000f},
+    [UNIT_ART_ASSASSIN] = {8.000000f, 15.500000f},
+    [UNIT_ART_PYROMANCER] = {8.500000f, 15.500000f},
+    [UNIT_ART_SORCERER] = {8.500000f, 15.500000f},
+    [UNIT_ART_CLERIC] = {8.500000f, 15.500000f},
+    [UNIT_ART_DRUID] = {8.500000f, 15.500000f},
+    [UNIT_ART_WARLOCK] = {8.500000f, 15.500000f},
+    [UNIT_ART_ARCHER] = {8.000000f, 15.500000f},
+    [UNIT_ART_BARD] = {8.000000f, 15.500000f},
+    [UNIT_ART_GOBLIN_GRUNT] = {8.500000f, 15.500000f},
+    [UNIT_ART_GOBLIN_SHAMAN] = {9.000000f, 15.500000f},
+    [UNIT_ART_GOBLIN_WARRIOR] = {9.000000f, 15.500000f},
+    [UNIT_ART_TROLL] = {8.500000f, 15.500000f},
+    [UNIT_ART_SKELETON_GRUNT] = {8.000000f, 15.500000f},
+    [UNIT_ART_SKELTON_WARRIOR] = {8.000000f, 15.500000f},
+    [UNIT_ART_SKELETON_MAGE] = {8.500000f, 15.500000f},
+    [UNIT_ART_SKELETON_KING] = {7.500000f, 15.500000f},
+    [UNIT_ART_VAMPIRE] = {8.500000f, 15.500000f},
+    [UNIT_ART_ZOMBIE] = {8.000000f, 15.500000f},
+    [UNIT_ART_BEHOLDER] = {8.000000f, 12.000000f},
+    [UNIT_ART_DEATH_KNIGHT] = {7.500000f, 15.500000f},
+    [UNIT_ART_IMP] = {8.000000f, 15.500000f},
+    [UNIT_ART_SPIRIT] = {7.500000f, 15.500000f},
+    [UNIT_ART_FAIRY] = {7.500000f, 15.500000f},
+    [UNIT_ART_ELEMENTAL] = {7.500000f, 15.500000f},
+    [UNIT_ART_DOG] = {7.500000f, 15.500000f},
+    [UNIT_ART_CAT] = {7.500000f, 15.500000f},
+    [UNIT_ART_BAT] = {7.500000f, 15.500000f},
+    [UNIT_ART_COBRA] = {8.000000f, 15.500000f},
+    [UNIT_ART_SPIDER] = {8.000000f, 15.500000f},
+    [UNIT_ART_RAT] = {8.000000f, 15.500000f},
+    [UNIT_ART_SLIME] = {8.000000f, 15.500000f},
+    [UNIT_ART_MOTH] = {7.000000f, 15.500000f},
+    [UNIT_ART_ADVENTURER] = {7.500000f, 15.500000f},
+    [UNIT_ART_LADY] = {7.500000f, 15.500000f},
+    [UNIT_ART_MERCHANT] = {7.081081f, 12.500000f},
+    [UNIT_ART_DRAGON] = {9.500000f, 15.500000f},
+    [UNIT_ART_KING] = {7.184877f, 13.000000f},
+    [UNIT_ART_QUEEN] = {7.184877f, 13.000000f},
+    [UNIT_ART_REAPER] = {8.000000f, 15.500000f},
+    [UNIT_ART_MINOTAUR] = {8.227273f, 14.000000f},
+    [UNIT_ART_PHOENIX] = {7.500000f, 15.500000f},
+    [UNIT_ART_MIMIC] = {8.000000f, 14.500000f},
+    [UNIT_ART_CENTAUR] = {9.000000f, 15.500000f},
+    [UNIT_ART_SATYR] = {8.000000f, 15.500000f},
+    [UNIT_ART_ANGEL] = {7.500000f, 15.500000f},
+    [UNIT_ART_DWARF] = {8.000000f, 15.500000f},
+    [UNIT_ART_HALFLING] = {8.000000f, 15.500000f},
+    [UNIT_ART_GRIFFON] = {7.900776f, 14.500000f},
+    [UNIT_ART_MAN_EATER] = {7.500000f, 11.500000f},
+    [UNIT_ART_BEETLE] = {8.000000f, 15.500000f},
+    [UNIT_ART_HORSE] = {8.250000f, 15.500000f},
+    [UNIT_ART_UNICORN] = {8.250000f, 15.500000f},
+    [UNIT_ART_MUMMY] = {8.000000f, 15.500000f},
+    [UNIT_ART_GELATINOUS_CUBE] = {8.000000f, 15.500000f},
+    [UNIT_ART_VOID_ORB] = {8.000000f, 11.500000f},
+    [UNIT_ART_FIREBALL] = {8.000000f, 11.500000f},
+    [UNIT_ART_GIANT] = {8.500000f, 15.500000f},
+    [UNIT_ART_TREANT] = {8.000000f, 15.500000f},
+    [UNIT_ART_YETI] = {8.500000f, 15.500000f},
+    [UNIT_ART_FLIES] = {11.500000f, 15.500000f},
+};
+
 #undef UNIT_ART_LIST
 
 _Static_assert((UNIT_ART_ROW_COUNT * UNIT_ART_COL_COUNT) + 1 == NUM_UNIT_ART,
                "units.png layout and UNIT_ART_KIND are out of sync");
 _Static_assert((sizeof(unit_art_defs) / sizeof(unit_art_defs[0])) == NUM_UNIT_ART,
                "unit_art_defs must contain every UNIT_ART_KIND");
+_Static_assert((sizeof(unit_art_anchor_defs) / sizeof(unit_art_anchor_defs[0])) == NUM_UNIT_ART,
+               "unit_art_anchor_defs must contain every UNIT_ART_KIND");
 
 static inline const char *unit_art_get_id(UNIT_ART_KIND kind) {
     assert(kind > UNIT_ART_NONE && kind < NUM_UNIT_ART);
@@ -171,4 +246,11 @@ static inline Unit_Art_Pixel unit_art_get_pixel(UNIT_ART_KIND kind, u8 anim_fram
         .x = (u16)(tile.x * UNIT_ART_TILE_SIZE),
         .y = (u16)(tile.y * UNIT_ART_TILE_SIZE),
     };
+}
+
+static inline Unit_Art_Anchor unit_art_get_anchor(UNIT_ART_KIND kind, u8 orientation) {
+    assert(kind > UNIT_ART_NONE && kind < NUM_UNIT_ART);
+    assert(orientation < UNIT_ART_ORIENTATION_COUNT);
+    (void)orientation;
+    return unit_art_anchor_defs[kind];
 }
