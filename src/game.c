@@ -56,6 +56,7 @@
 #define CAMERA_FOLLOW_SPEED_FAR 20.0f
 #define CAMERA_FOLLOW_ACCEL_DISTANCE_TILES 10.0f
 #define CAMERA_FALLBACK_FRAME_TIME (1.0f / 60.0f)
+#define CAMERA_SETTLE_SCREEN_PX 0.5f
 
 #define DUNGEON_SIZE_SCALE 4
 #define DUNGEON_COL_COUNT (50 * DUNGEON_SIZE_SCALE)
@@ -1929,6 +1930,25 @@ static void game_center_dungeon_camera_on_player(Game *game)
     game->dungeon_cam.target = player_center;
 }
 
+static float game_round_camera_value_to_screen_px(float value, float zoom)
+{
+    float safe_zoom = zoom > 0.0f ? zoom : 1.0f;
+    return roundf(value * safe_zoom) / safe_zoom;
+}
+
+static Camera2D game_get_active_camera(const Game *game)
+{
+    Camera2D cam = game->show_dungeon_map ? game->dungeon_cam : game->preview_cam;
+    if (!game->show_dungeon_map)
+        return cam;
+
+    cam.offset.x = roundf(cam.offset.x);
+    cam.offset.y = roundf(cam.offset.y);
+    cam.target.x = game_round_camera_value_to_screen_px(cam.target.x, cam.zoom);
+    cam.target.y = game_round_camera_value_to_screen_px(cam.target.y, cam.zoom);
+    return cam;
+}
+
 static void game_draw_test_dungeon(Game *game)
 {
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
@@ -2054,6 +2074,12 @@ static void game_update_camera(Game *game)
 
     game->dungeon_cam.target.x += delta_x * follow_alpha;
     game->dungeon_cam.target.y += delta_y * follow_alpha;
+
+    float settle_distance = CAMERA_SETTLE_SCREEN_PX / max(game->dungeon_cam.zoom, 0.001f);
+    if (abs_delta_x <= settle_distance)
+        game->dungeon_cam.target.x = desired_target.x;
+    if (abs_delta_y <= settle_distance)
+        game->dungeon_cam.target.y = desired_target.y;
 }
 
 static void game_adjust_dungeon_zoom(Game *game, float delta)
@@ -2269,7 +2295,7 @@ void game_update(Mem mem)
 void game_render(Mem mem)
 {
     Game *game = arena_start(mem.perm, Game);
-    Camera2D active_cam = game->show_dungeon_map ? game->dungeon_cam : game->preview_cam;
+    Camera2D active_cam = game_get_active_camera(game);
 
     ClearBackground((Color){14, 25, 30, 255});
     BeginMode2D(active_cam);
