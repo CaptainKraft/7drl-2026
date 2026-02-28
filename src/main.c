@@ -53,8 +53,6 @@ static bool game_app_init(void *user)
         .perm = arena_alloc(MB(16)),
     };
 
-    SetRandomSeed((unsigned int)(GetTime() * 10000));
-
     ctx->font = LoadFontEx(GAME_FONT_PATH, GAME_FONT_SIZE, 0, 0);
     SetTextureFilter(ctx->font.texture, TEXTURE_FILTER_BILINEAR);
 

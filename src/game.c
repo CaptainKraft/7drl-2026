@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "app_config.h"
@@ -61,9 +62,24 @@
 #define DUNGEON_TILE_SCALE 8.0f
 #define DUNGEON_PANEL_PADDING 18.0f
 
-#define PLAYER_START_X 6
-#define PLAYER_START_Y 6
 #define PLAYER_START_ORIENTATION 1
+
+#define DUNGEON_SEED 0x7d2602a5f3d91c4bull
+
+#define DUNGEON_HBW_MAX_SHORT_SIDE 16
+#define DUNGEON_HBW_MAX_H_TILES 512
+#define DUNGEON_HBW_MAX_V_TILES 512
+#define DUNGEON_HBW_MAX_TILE_PIXELS (DUNGEON_HBW_MAX_SHORT_SIDE * DUNGEON_HBW_MAX_SHORT_SIDE * 2)
+#define DUNGEON_HBW_GEN_MAX_X (DUNGEON_COL_COUNT + 8)
+#define DUNGEON_HBW_GEN_MAX_Y (DUNGEON_ROW_COUNT + 8)
+
+#define DUNGEON_CAMERA_ZOOM_MIN 0.15f
+#define DUNGEON_CAMERA_ZOOM_MAX 2.25f
+#define DUNGEON_CAMERA_ZOOM_STEP 0.1f
+#define DUNGEON_CAMERA_ZOOM_RESET 1.0f
+
+#define DUNGEON_RNG_STREAM_LAYOUT 0x4c41594f5554ull
+#define DUNGEON_RNG_STREAM_POPULATE 0x504f50554c415445ull
 
 #define DUNGEON_MAX_WORLD_FEATURES 12
 #define DUNGEON_MAX_ITEMS 24
@@ -95,6 +111,11 @@ typedef enum {
     INPUT_SELECT_WALL_THEME_2,
     INPUT_SELECT_WALL_THEME_3,
     INPUT_SELECT_WALL_THEME_4,
+    INPUT_SELECT_TEMPLATE_PREV,
+    INPUT_SELECT_TEMPLATE_NEXT,
+    INPUT_ZOOM_IN,
+    INPUT_ZOOM_OUT,
+    INPUT_ZOOM_RESET,
     INPUT_MOUSE_LEFT,
     INPUT_MOUSE_RIGHT,
     INPUT_MOUSE_MIDDLE,
@@ -139,6 +160,42 @@ typedef struct {
 } Dungeon_Floor_Palette;
 
 typedef struct {
+    const char *path;
+    const char *name;
+} Dungeon_HBW_Template_Def;
+
+typedef struct {
+    i8 a;
+    i8 b;
+    i8 c;
+    i8 d;
+    i8 e;
+    i8 f;
+    u8 floor_mask[DUNGEON_HBW_MAX_TILE_PIXELS];
+} Dungeon_HBW_Tile;
+
+typedef struct {
+    bool valid;
+    bool is_corner;
+    i32 short_side_len;
+    i32 num_color[6];
+    i32 num_vary_x;
+    i32 num_vary_y;
+    i32 num_h_tiles;
+    i32 num_v_tiles;
+    Dungeon_HBW_Tile h_tiles[DUNGEON_HBW_MAX_H_TILES];
+    Dungeon_HBW_Tile v_tiles[DUNGEON_HBW_MAX_V_TILES];
+} Dungeon_HBW_Tileset;
+
+typedef struct {
+    bool is_corner;
+    i32 short_side_len;
+    i32 num_color[6];
+    i32 num_vary_x;
+    i32 num_vary_y;
+} Dungeon_HBW_Config;
+
+typedef struct {
     Input input;
     Camera2D dungeon_cam;
     Camera2D preview_cam;
@@ -149,6 +206,14 @@ typedef struct {
     Texture2D units_texture;
     Texture2D items_texture;
     Texture2D world_texture;
+
+    u64 dungeon_seed;
+    u32 dungeon_floor_index;
+    i32 dungeon_template_index;
+    RNG dungeon_layout_rng;
+    RNG dungeon_populate_rng;
+    Dungeon_HBW_Tileset dungeon_tileset;
+    char dungeon_template_error[160];
 
     u8 dungeon_cells[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
 
@@ -166,6 +231,54 @@ typedef struct {
     u8 player_orientation;
 
 } Game;
+
+static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
+    {.path = "assets/herringbone_templates/template_sean_dungeon.png", .name = "Sean Dungeon"},
+    {.path = "assets/herringbone_templates/template_rooms_and_corridors.png",
+     .name = "Rooms And Corridors"},
+    {.path = "assets/herringbone_templates/template_rooms_limit_connectivity.png",
+     .name = "Rooms Limit Connectivity"},
+    {.path = "assets/herringbone_templates/template_horizontal_corridors_v1.png",
+     .name = "Horizontal Corridors V1"},
+    {.path = "assets/herringbone_templates/template_horizontal_corridors_v2.png",
+     .name = "Horizontal Corridors V2"},
+    {.path = "assets/herringbone_templates/template_horizontal_corridors_v3.png",
+     .name = "Horizontal Corridors V3"},
+    {.path = "assets/herringbone_templates/template_open_areas.png", .name = "Open Areas"},
+    {.path = "assets/herringbone_templates/template_rooms_and_corridors_2_wide_diagonal_bias.png",
+     .name = "Diagonal Bias Rooms"},
+    {.path = "assets/herringbone_templates/template_round_rooms_diagonal_corridors.png",
+     .name = "Round Rooms"},
+    {.path = "assets/herringbone_templates/template_caves_limit_connectivity.png",
+     .name = "Caves Limit Connectivity"},
+    {.path = "assets/herringbone_templates/template_caves_tiny_corridors.png",
+     .name = "Caves Tiny Corridors"},
+    {.path = "assets/herringbone_templates/template_corner_caves.png", .name = "Corner Caves"},
+    {.path = "assets/herringbone_templates/template_ref2_corner_caves.png",
+     .name = "Corner Caves Ref2"},
+    {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
+     .name = "Simple Caves 2 Wide"},
+    {.path = "assets/herringbone_templates/template_maze_2_wide.png", .name = "Maze 2 Wide"},
+    {.path = "assets/herringbone_templates/template_maze_plus_2_wide.png",
+     .name = "Maze Plus 2 Wide"},
+    {.path = "assets/herringbone_templates/template_limited_connectivity.png",
+     .name = "Limited Connectivity"},
+    {.path = "assets/herringbone_templates/template_limit_connectivity_fat.png",
+     .name = "Limit Connectivity Fat"},
+    {.path = "assets/herringbone_templates/template_square_rooms_with_random_rects.png",
+     .name = "Square Rooms Random Rects"},
+};
+
+#define DUNGEON_HBW_TEMPLATE_COUNT                                                                 \
+    ((i32)(sizeof(game_dungeon_hbw_templates) / sizeof(game_dungeon_hbw_templates[0])))
+
+static const char *game_dungeon_active_template_name(const Game *game)
+{
+    if (game->dungeon_template_index < 0 ||
+        game->dungeon_template_index >= DUNGEON_HBW_TEMPLATE_COUNT)
+        return "Unknown";
+    return game_dungeon_hbw_templates[game->dungeon_template_index].name;
+}
 
 static int game_unit_anim_frame(void)
 {
@@ -316,72 +429,861 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
     };
 }
 
+static __uint128_t game_make_seed128(u64 seed)
+{
+    return ((__uint128_t)seed << 64) | (seed ^ 0x9e3779b97f4a7c15ull);
+}
+
+static void game_seed_dungeon_rng_streams(Game *game)
+{
+    u64 floor_seed = game->dungeon_seed ^ ((u64)game->dungeon_floor_index * 0xd1342543de82ef95ull);
+    floor_seed ^= (u64)(game->dungeon_template_index + 1) * 0x9e3779b97f4a7c15ull;
+    RNG floor_rng = {.seed = game_make_seed128(floor_seed)};
+    game->dungeon_layout_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_LAYOUT);
+    game->dungeon_populate_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_POPULATE);
+}
+
+static bool game_dungeon_hbw_pixel_is_floor(u8 r, u8 g, u8 b)
+{
+    return !(r == 255 && g == 255 && b == 255);
+}
+
+static void game_dungeon_hbw_get_template_info(const Dungeon_HBW_Config *config, i32 *out_w,
+                                               i32 *out_h, i32 *out_h_count, i32 *out_v_count)
+{
+    i32 size_x = 0;
+    i32 size_y = 0;
+    i32 horz_count = 0;
+    i32 vert_count = 0;
+    i32 side = config->short_side_len;
+
+    if (config->is_corner) {
+        i32 horz_w =
+            config->num_color[1] * config->num_color[2] * config->num_color[3] * config->num_vary_x;
+        i32 horz_h =
+            config->num_color[0] * config->num_color[1] * config->num_color[2] * config->num_vary_y;
+        i32 vert_w =
+            config->num_color[0] * config->num_color[3] * config->num_color[2] * config->num_vary_y;
+        i32 vert_h =
+            config->num_color[1] * config->num_color[0] * config->num_color[3] * config->num_vary_x;
+
+        i32 horz_x = horz_w * (2 * side + 3);
+        i32 horz_y = horz_h * (side + 3);
+        i32 vert_x = vert_w * (side + 3);
+        i32 vert_y = vert_h * (2 * side + 3);
+
+        horz_count = horz_w * horz_h;
+        vert_count = vert_w * vert_h;
+
+        size_x = max(horz_x, vert_x);
+        size_y = 2 + horz_y + 2 + vert_y;
+    } else {
+        i32 horz_w =
+            config->num_color[0] * config->num_color[1] * config->num_color[2] * config->num_vary_x;
+        i32 horz_h =
+            config->num_color[3] * config->num_color[4] * config->num_color[2] * config->num_vary_y;
+        i32 vert_w =
+            config->num_color[0] * config->num_color[5] * config->num_color[1] * config->num_vary_y;
+        i32 vert_h =
+            config->num_color[3] * config->num_color[4] * config->num_color[5] * config->num_vary_x;
+
+        i32 horz_x = horz_w * (2 * side + 3);
+        i32 horz_y = horz_h * (side + 3);
+        i32 vert_x = vert_w * (side + 3);
+        i32 vert_y = vert_h * (2 * side + 3);
+
+        horz_count = horz_w * horz_h;
+        vert_count = vert_w * vert_h;
+
+        size_x = max(horz_x, vert_x);
+        size_y = 2 + horz_y + 2 + vert_y;
+    }
+
+    if (out_w)
+        *out_w = size_x;
+    if (out_h)
+        *out_h = size_y;
+    if (out_h_count)
+        *out_h_count = horz_count;
+    if (out_v_count)
+        *out_v_count = vert_count;
+}
+
+static bool game_dungeon_hbw_read_config(const u8 *pixels, i32 width,
+                                         Dungeon_HBW_Config *out_config, char *error, i32 error_cap)
+{
+    if (width <= 0) {
+        snprintf(error, (size_t)error_cap, "template has invalid width");
+        return false;
+    }
+
+    u8 header[9];
+    for (i32 i = 0; i < 9; i++) {
+        i32 idx = width * 3 - 1 - i;
+        header[i] = (u8)(pixels[idx] ^ (u8)(i * 55));
+    }
+
+    memset(out_config, 0, sizeof(*out_config));
+
+    if (header[7] == 0xc0) {
+        out_config->is_corner = true;
+        out_config->num_color[0] = header[0];
+        out_config->num_color[1] = header[1];
+        out_config->num_color[2] = header[2];
+        out_config->num_color[3] = header[3];
+        out_config->num_vary_x = header[4];
+        out_config->num_vary_y = header[5];
+        out_config->short_side_len = header[6];
+    } else {
+        out_config->is_corner = false;
+        out_config->num_color[0] = header[0];
+        out_config->num_color[1] = header[1];
+        out_config->num_color[2] = header[2];
+        out_config->num_color[3] = header[3];
+        out_config->num_color[4] = header[4];
+        out_config->num_color[5] = header[5];
+        out_config->num_vary_x = header[6];
+        out_config->num_vary_y = header[7];
+        out_config->short_side_len = header[8];
+    }
+
+    if (out_config->num_vary_x <= 0 || out_config->num_vary_y <= 0) {
+        snprintf(error, (size_t)error_cap, "template variation counts are invalid");
+        return false;
+    }
+
+    if (out_config->short_side_len <= 0 ||
+        out_config->short_side_len > DUNGEON_HBW_MAX_SHORT_SIDE) {
+        snprintf(error, (size_t)error_cap, "template side %d unsupported (max %d)",
+                 out_config->short_side_len, DUNGEON_HBW_MAX_SHORT_SIDE);
+        return false;
+    }
+
+    i32 color_count = out_config->is_corner ? 4 : 6;
+    for (i32 i = 0; i < color_count; i++) {
+        if (out_config->num_color[i] <= 0) {
+            snprintf(error, (size_t)error_cap, "template color count %d is invalid", i);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool game_dungeon_hbw_store_h_tile(Dungeon_HBW_Tileset *tileset, const u8 *pixels,
+                                          i32 image_w, i32 image_h, i32 xpos, i32 ypos, i8 a, i8 b,
+                                          i8 c, i8 d, i8 e, i8 f)
+{
+    if (tileset->num_h_tiles >= DUNGEON_HBW_MAX_H_TILES)
+        return false;
+
+    i32 side = tileset->short_side_len;
+    i32 src_x0 = xpos + 1;
+    i32 src_y0 = ypos + 1;
+    if (src_x0 < 0 || src_y0 < 0 || src_x0 + side * 2 > image_w || src_y0 + side > image_h)
+        return false;
+
+    Dungeon_HBW_Tile *tile = &tileset->h_tiles[tileset->num_h_tiles++];
+    tile->a = a;
+    tile->b = b;
+    tile->c = c;
+    tile->d = d;
+    tile->e = e;
+    tile->f = f;
+
+    i32 dst = 0;
+    for (i32 y = 0; y < side; y++) {
+        for (i32 x = 0; x < side * 2; x++) {
+            i32 src_idx = ((src_y0 + y) * image_w + (src_x0 + x)) * 3;
+            tile->floor_mask[dst++] = game_dungeon_hbw_pixel_is_floor(
+                                          pixels[src_idx], pixels[src_idx + 1], pixels[src_idx + 2])
+                                          ? 1
+                                          : 0;
+        }
+    }
+
+    return true;
+}
+
+static bool game_dungeon_hbw_store_v_tile(Dungeon_HBW_Tileset *tileset, const u8 *pixels,
+                                          i32 image_w, i32 image_h, i32 xpos, i32 ypos, i8 a, i8 b,
+                                          i8 c, i8 d, i8 e, i8 f)
+{
+    if (tileset->num_v_tiles >= DUNGEON_HBW_MAX_V_TILES)
+        return false;
+
+    i32 side = tileset->short_side_len;
+    i32 src_x0 = xpos + 1;
+    i32 src_y0 = ypos + 1;
+    if (src_x0 < 0 || src_y0 < 0 || src_x0 + side > image_w || src_y0 + side * 2 > image_h)
+        return false;
+
+    Dungeon_HBW_Tile *tile = &tileset->v_tiles[tileset->num_v_tiles++];
+    tile->a = a;
+    tile->b = b;
+    tile->c = c;
+    tile->d = d;
+    tile->e = e;
+    tile->f = f;
+
+    i32 dst = 0;
+    for (i32 y = 0; y < side * 2; y++) {
+        for (i32 x = 0; x < side; x++) {
+            i32 src_idx = ((src_y0 + y) * image_w + (src_x0 + x)) * 3;
+            tile->floor_mask[dst++] = game_dungeon_hbw_pixel_is_floor(
+                                          pixels[src_idx], pixels[src_idx + 1], pixels[src_idx + 2])
+                                          ? 1
+                                          : 0;
+        }
+    }
+
+    return true;
+}
+
+static bool game_dungeon_hbw_parse_h_row(Dungeon_HBW_Tileset *tileset, const u8 *pixels,
+                                         i32 image_w, i32 image_h, i32 xpos, i32 ypos, i32 a0,
+                                         i32 a1, i32 b0, i32 b1, i32 c0, i32 c1, i32 d0, i32 d1,
+                                         i32 e0, i32 e1, i32 f0, i32 f1, i32 variants)
+{
+    i32 side = tileset->short_side_len;
+    for (i32 v = 0; v < variants; v++) {
+        for (i32 f = f0; f <= f1; f++) {
+            for (i32 e = e0; e <= e1; e++) {
+                for (i32 d = d0; d <= d1; d++) {
+                    for (i32 c = c0; c <= c1; c++) {
+                        for (i32 b = b0; b <= b1; b++) {
+                            for (i32 a = a0; a <= a1; a++) {
+                                if (!game_dungeon_hbw_store_h_tile(
+                                        tileset, pixels, image_w, image_h, xpos, ypos, (i8)a, (i8)b,
+                                        (i8)c, (i8)d, (i8)e, (i8)f)) {
+                                    return false;
+                                }
+                                xpos += 2 * side + 3;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool game_dungeon_hbw_parse_v_row(Dungeon_HBW_Tileset *tileset, const u8 *pixels,
+                                         i32 image_w, i32 image_h, i32 xpos, i32 ypos, i32 a0,
+                                         i32 a1, i32 b0, i32 b1, i32 c0, i32 c1, i32 d0, i32 d1,
+                                         i32 e0, i32 e1, i32 f0, i32 f1, i32 variants)
+{
+    i32 side = tileset->short_side_len;
+    for (i32 v = 0; v < variants; v++) {
+        for (i32 f = f0; f <= f1; f++) {
+            for (i32 e = e0; e <= e1; e++) {
+                for (i32 d = d0; d <= d1; d++) {
+                    for (i32 c = c0; c <= c1; c++) {
+                        for (i32 b = b0; b <= b1; b++) {
+                            for (i32 a = a0; a <= a1; a++) {
+                                if (!game_dungeon_hbw_store_v_tile(
+                                        tileset, pixels, image_w, image_h, xpos, ypos, (i8)a, (i8)b,
+                                        (i8)c, (i8)d, (i8)e, (i8)f)) {
+                                    return false;
+                                }
+                                xpos += side + 3;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool game_dungeon_hbw_parse_tileset(Dungeon_HBW_Tileset *tileset, const u8 *pixels,
+                                           i32 image_w, i32 image_h, char *error, i32 error_cap)
+{
+    Dungeon_HBW_Config config = {0};
+    memset(tileset, 0, sizeof(*tileset));
+
+    if (!game_dungeon_hbw_read_config(pixels, image_w, &config, error, error_cap))
+        return false;
+
+    i32 expected_w = 0;
+    i32 expected_h = 0;
+    i32 expected_h_count = 0;
+    i32 expected_v_count = 0;
+    game_dungeon_hbw_get_template_info(&config, &expected_w, &expected_h, &expected_h_count,
+                                       &expected_v_count);
+
+    if (image_w < expected_w || image_h < expected_h) {
+        snprintf(error, (size_t)error_cap, "template image too small for encoded layout");
+        return false;
+    }
+
+    if (expected_h_count > DUNGEON_HBW_MAX_H_TILES || expected_v_count > DUNGEON_HBW_MAX_V_TILES) {
+        snprintf(error, (size_t)error_cap, "template has too many tiles (%d h, %d v)",
+                 expected_h_count, expected_v_count);
+        return false;
+    }
+
+    tileset->is_corner = config.is_corner;
+    tileset->short_side_len = config.short_side_len;
+    tileset->num_vary_x = config.num_vary_x;
+    tileset->num_vary_y = config.num_vary_y;
+    memcpy(tileset->num_color, config.num_color, sizeof(tileset->num_color));
+
+    i32 ypos = 2;
+    if (config.is_corner) {
+        for (i32 k = 0; k < config.num_color[2]; k++) {
+            for (i32 j = 0; j < config.num_color[1]; j++) {
+                for (i32 i = 0; i < config.num_color[0]; i++) {
+                    for (i32 q = 0; q < config.num_vary_y; q++) {
+                        if (!game_dungeon_hbw_parse_h_row(
+                                tileset, pixels, image_w, image_h, 0, ypos, 0,
+                                config.num_color[1] - 1, 0, config.num_color[2] - 1, 0,
+                                config.num_color[3] - 1, i, i, j, j, k, k, config.num_vary_x)) {
+                            snprintf(error, (size_t)error_cap,
+                                     "failed while parsing horizontal corner tiles");
+                            return false;
+                        }
+                        ypos += config.short_side_len + 3;
+                    }
+                }
+            }
+        }
+
+        ypos += 2;
+        for (i32 k = 0; k < config.num_color[3]; k++) {
+            for (i32 j = 0; j < config.num_color[0]; j++) {
+                for (i32 i = 0; i < config.num_color[1]; i++) {
+                    for (i32 q = 0; q < config.num_vary_x; q++) {
+                        if (!game_dungeon_hbw_parse_v_row(
+                                tileset, pixels, image_w, image_h, 0, ypos, 0,
+                                config.num_color[0] - 1, 0, config.num_color[3] - 1, 0,
+                                config.num_color[2] - 1, i, i, j, j, k, k, config.num_vary_y)) {
+                            snprintf(error, (size_t)error_cap,
+                                     "failed while parsing vertical corner tiles");
+                            return false;
+                        }
+                        ypos += config.short_side_len * 2 + 3;
+                    }
+                }
+            }
+        }
+    } else {
+        for (i32 k = 0; k < config.num_color[3]; k++) {
+            for (i32 j = 0; j < config.num_color[4]; j++) {
+                for (i32 i = 0; i < config.num_color[2]; i++) {
+                    for (i32 q = 0; q < config.num_vary_y; q++) {
+                        if (!game_dungeon_hbw_parse_h_row(
+                                tileset, pixels, image_w, image_h, 0, ypos, 0,
+                                config.num_color[2] - 1, k, k, 0, config.num_color[1] - 1, j, j, 0,
+                                config.num_color[0] - 1, i, i, config.num_vary_x)) {
+                            snprintf(error, (size_t)error_cap,
+                                     "failed while parsing horizontal edge tiles");
+                            return false;
+                        }
+                        ypos += config.short_side_len + 3;
+                    }
+                }
+            }
+        }
+
+        ypos += 2;
+        for (i32 k = 0; k < config.num_color[3]; k++) {
+            for (i32 j = 0; j < config.num_color[4]; j++) {
+                for (i32 i = 0; i < config.num_color[5]; i++) {
+                    for (i32 q = 0; q < config.num_vary_x; q++) {
+                        if (!game_dungeon_hbw_parse_v_row(
+                                tileset, pixels, image_w, image_h, 0, ypos, 0,
+                                config.num_color[0] - 1, i, i, 0, config.num_color[1] - 1, j, j, 0,
+                                config.num_color[5] - 1, k, k, config.num_vary_y)) {
+                            snprintf(error, (size_t)error_cap,
+                                     "failed while parsing vertical edge tiles");
+                            return false;
+                        }
+                        ypos += config.short_side_len * 2 + 3;
+                    }
+                }
+            }
+        }
+    }
+
+    if (tileset->num_h_tiles <= 0 || tileset->num_v_tiles <= 0) {
+        snprintf(error, (size_t)error_cap, "template did not produce any tiles");
+        return false;
+    }
+
+    tileset->valid = true;
+    return true;
+}
+
+static bool game_dungeon_load_template(Game *game, i32 template_index)
+{
+    assert(template_index >= 0 && template_index < DUNGEON_HBW_TEMPLATE_COUNT);
+    memset(game->dungeon_template_error, 0, sizeof(game->dungeon_template_error));
+
+    const Dungeon_HBW_Template_Def *def = &game_dungeon_hbw_templates[template_index];
+    const char *template_path = def->path;
+    char fallback_path[256] = {0};
+    if (!FileExists(template_path)) {
+        snprintf(fallback_path, sizeof(fallback_path), "../%s", def->path);
+        if (FileExists(fallback_path))
+            template_path = fallback_path;
+    }
+
+    Image image = LoadImage(template_path);
+    if (image.data == NULL) {
+        snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                 "failed to load %s", template_path);
+        game->dungeon_tileset.valid = false;
+        return false;
+    }
+
+    ImageFormat(&image, PIXELFORMAT_UNCOMPRESSED_R8G8B8);
+    bool ok = game_dungeon_hbw_parse_tileset(
+        &game->dungeon_tileset, (const u8 *)image.data, image.width, image.height,
+        game->dungeon_template_error, (i32)sizeof(game->dungeon_template_error));
+    UnloadImage(image);
+
+    if (!ok) {
+        game->dungeon_tileset.valid = false;
+        return false;
+    }
+
+    game->dungeon_template_index = template_index;
+    return true;
+}
+
+static bool game_dungeon_hbw_tile_matches(const Dungeon_HBW_Tile *tile, const i8 *a, const i8 *b,
+                                          const i8 *c, const i8 *d, const i8 *e, const i8 *f)
+{
+    return (*a < 0 || *a == tile->a) && (*b < 0 || *b == tile->b) && (*c < 0 || *c == tile->c) &&
+           (*d < 0 || *d == tile->d) && (*e < 0 || *e == tile->e) && (*f < 0 || *f == tile->f);
+}
+
+static const Dungeon_HBW_Tile *game_dungeon_hbw_choose_tile(Game *game,
+                                                            const Dungeon_HBW_Tile *tiles,
+                                                            i32 tile_count, i8 *a, i8 *b, i8 *c,
+                                                            i8 *d, i8 *e, i8 *f)
+{
+    const Dungeon_HBW_Tile *choice = NULL;
+    i32 match_count = 0;
+
+    for (i32 i = 0; i < tile_count; i++) {
+        const Dungeon_HBW_Tile *tile = &tiles[i];
+        if (!game_dungeon_hbw_tile_matches(tile, a, b, c, d, e, f))
+            continue;
+
+        match_count++;
+        if (ck_rand_int(&game->dungeon_layout_rng, 0, match_count) == 0)
+            choice = tile;
+    }
+
+    if (!choice)
+        return NULL;
+
+    *a = choice->a;
+    *b = choice->b;
+    *c = choice->c;
+    *d = choice->d;
+    *e = choice->e;
+    *f = choice->f;
+    return choice;
+}
+
+static void game_dungeon_hbw_stamp_h_tile(Game *game, const Dungeon_HBW_Tile *tile, i32 xpos,
+                                          i32 ypos, i32 side)
+{
+    i32 src = 0;
+    for (i32 y = 0; y < side; y++) {
+        for (i32 x = 0; x < side * 2; x++, src++) {
+            i32 map_x = xpos + x;
+            i32 map_y = ypos + y;
+            if (!game_dungeon_cell_in_bounds(map_x, map_y))
+                continue;
+            game->dungeon_cells[map_y][map_x] =
+                tile->floor_mask[src] ? DUNGEON_CELL_FLOOR : DUNGEON_CELL_EMPTY;
+        }
+    }
+}
+
+static void game_dungeon_hbw_stamp_v_tile(Game *game, const Dungeon_HBW_Tile *tile, i32 xpos,
+                                          i32 ypos, i32 side)
+{
+    i32 src = 0;
+    for (i32 y = 0; y < side * 2; y++) {
+        for (i32 x = 0; x < side; x++, src++) {
+            i32 map_x = xpos + x;
+            i32 map_y = ypos + y;
+            if (!game_dungeon_cell_in_bounds(map_x, map_y))
+                continue;
+            game->dungeon_cells[map_y][map_x] =
+                tile->floor_mask[src] ? DUNGEON_CELL_FLOOR : DUNGEON_CELL_EMPTY;
+        }
+    }
+}
+
+static bool game_dungeon_hbw_generate_edge_layout(Game *game)
+{
+    Dungeon_HBW_Tileset *tileset = &game->dungeon_tileset;
+    i32 side = tileset->short_side_len;
+    i8 h_color[DUNGEON_HBW_GEN_MAX_Y][DUNGEON_HBW_GEN_MAX_X];
+    i8 v_color[DUNGEON_HBW_GEN_MAX_Y][DUNGEON_HBW_GEN_MAX_X];
+    memset(h_color, -1, sizeof(h_color));
+    memset(v_color, -1, sizeof(v_color));
+
+    i32 ypos = -side;
+    for (i32 j = -1; ypos < DUNGEON_ROW_COUNT; j++, ypos += side) {
+        i32 phase = j & 3;
+        i32 i = (phase == 0) ? 0 : (phase - 4);
+        for (;; i += 4) {
+            i32 xpos = i * side;
+            if (xpos >= DUNGEON_COL_COUNT)
+                break;
+
+            if (xpos + side * 2 >= 0 && ypos >= 0) {
+                if (j + 3 < 0 || j + 3 >= DUNGEON_HBW_GEN_MAX_Y || i + 4 < 0 ||
+                    i + 4 >= DUNGEON_HBW_GEN_MAX_X) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "edge layout grid overflow");
+                    return false;
+                }
+
+                i8 *a = &h_color[j + 2][i + 2];
+                i8 *b = &h_color[j + 2][i + 3];
+                i8 *c = &v_color[j + 2][i + 2];
+                i8 *d = &v_color[j + 2][i + 4];
+                i8 *e = &h_color[j + 3][i + 2];
+                i8 *f = &h_color[j + 3][i + 3];
+                const Dungeon_HBW_Tile *tile = game_dungeon_hbw_choose_tile(
+                    game, tileset->h_tiles, tileset->num_h_tiles, a, b, c, d, e, f);
+                if (!tile) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "no matching horizontal tile for edge constraints");
+                    return false;
+                }
+                game_dungeon_hbw_stamp_h_tile(game, tile, xpos, ypos, side);
+            }
+
+            xpos += side * 3;
+            if (xpos < DUNGEON_COL_COUNT) {
+                if (j + 4 < 0 || j + 4 >= DUNGEON_HBW_GEN_MAX_Y || i + 6 < 0 ||
+                    i + 6 >= DUNGEON_HBW_GEN_MAX_X) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "edge layout grid overflow");
+                    return false;
+                }
+
+                i8 *a = &h_color[j + 2][i + 5];
+                i8 *b = &v_color[j + 2][i + 5];
+                i8 *c = &v_color[j + 2][i + 6];
+                i8 *d = &v_color[j + 3][i + 5];
+                i8 *e = &v_color[j + 3][i + 6];
+                i8 *f = &h_color[j + 4][i + 5];
+                const Dungeon_HBW_Tile *tile = game_dungeon_hbw_choose_tile(
+                    game, tileset->v_tiles, tileset->num_v_tiles, a, b, c, d, e, f);
+                if (!tile) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "no matching vertical tile for edge constraints");
+                    return false;
+                }
+                game_dungeon_hbw_stamp_v_tile(game, tile, xpos, ypos, side);
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool game_dungeon_hbw_generate_corner_layout(Game *game)
+{
+    Dungeon_HBW_Tileset *tileset = &game->dungeon_tileset;
+    i32 side = tileset->short_side_len;
+    i8 c_color[DUNGEON_HBW_GEN_MAX_Y][DUNGEON_HBW_GEN_MAX_X];
+    memset(c_color, 0, sizeof(c_color));
+
+    i32 xmax = DUNGEON_COL_COUNT / side + 6;
+    i32 ymax = DUNGEON_ROW_COUNT / side + 6;
+    if (xmax > DUNGEON_HBW_GEN_MAX_X || ymax > DUNGEON_HBW_GEN_MAX_Y) {
+        snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                 "corner layout grid exceeds capacity");
+        return false;
+    }
+
+    for (i32 y = 0; y < ymax; y++) {
+        for (i32 x = 0; x < xmax; x++) {
+            i32 corner_type = (x - y + 1) & 3;
+            i32 color_count = max(tileset->num_color[corner_type], 1);
+            c_color[y][x] = (i8)ck_rand_int(&game->dungeon_layout_rng, 0, color_count);
+        }
+    }
+
+    i32 ypos = -side;
+    for (i32 j = -1; ypos < DUNGEON_ROW_COUNT; j++, ypos += side) {
+        i32 phase = j & 3;
+        i32 i = (phase == 0) ? 0 : (phase - 4);
+        for (;; i += 4) {
+            i32 xpos = i * side;
+            if (xpos >= DUNGEON_COL_COUNT)
+                break;
+
+            if (xpos + side * 2 >= 0 && ypos >= 0) {
+                if (j + 3 < 0 || j + 3 >= DUNGEON_HBW_GEN_MAX_Y || i + 4 < 0 ||
+                    i + 4 >= DUNGEON_HBW_GEN_MAX_X) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "corner layout grid overflow");
+                    return false;
+                }
+
+                i8 *a = &c_color[j + 2][i + 2];
+                i8 *b = &c_color[j + 2][i + 3];
+                i8 *c = &c_color[j + 2][i + 4];
+                i8 *d = &c_color[j + 3][i + 2];
+                i8 *e = &c_color[j + 3][i + 3];
+                i8 *f = &c_color[j + 3][i + 4];
+                const Dungeon_HBW_Tile *tile = game_dungeon_hbw_choose_tile(
+                    game, tileset->h_tiles, tileset->num_h_tiles, a, b, c, d, e, f);
+                if (!tile) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "no matching horizontal tile for corner constraints");
+                    return false;
+                }
+                game_dungeon_hbw_stamp_h_tile(game, tile, xpos, ypos, side);
+            }
+
+            xpos += side * 3;
+            if (xpos < DUNGEON_COL_COUNT) {
+                if (j + 4 < 0 || j + 4 >= DUNGEON_HBW_GEN_MAX_Y || i + 6 < 0 ||
+                    i + 6 >= DUNGEON_HBW_GEN_MAX_X) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "corner layout grid overflow");
+                    return false;
+                }
+
+                i8 *a = &c_color[j + 2][i + 5];
+                i8 *b = &c_color[j + 3][i + 5];
+                i8 *c = &c_color[j + 4][i + 5];
+                i8 *d = &c_color[j + 2][i + 6];
+                i8 *e = &c_color[j + 3][i + 6];
+                i8 *f = &c_color[j + 4][i + 6];
+                const Dungeon_HBW_Tile *tile = game_dungeon_hbw_choose_tile(
+                    game, tileset->v_tiles, tileset->num_v_tiles, a, b, c, d, e, f);
+                if (!tile) {
+                    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                             "no matching vertical tile for corner constraints");
+                    return false;
+                }
+                game_dungeon_hbw_stamp_v_tile(game, tile, xpos, ypos, side);
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool game_dungeon_generate_herringbone_layout(Game *game)
+{
+    if (!game->dungeon_tileset.valid)
+        return false;
+
+    if (game->dungeon_tileset.is_corner)
+        return game_dungeon_hbw_generate_corner_layout(game);
+
+    return game_dungeon_hbw_generate_edge_layout(game);
+}
+
+static bool game_dungeon_cell_has_world_feature(const Game *game, i32 x, i32 y)
+{
+    for (u8 idx = 0; idx < game->world_feature_count; idx++) {
+        if (game->world_features[idx].x == x && game->world_features[idx].y == y)
+            return true;
+    }
+    return false;
+}
+
+static bool game_dungeon_cell_has_item(const Game *game, i32 x, i32 y)
+{
+    for (u8 idx = 0; idx < game->item_count; idx++) {
+        if (game->items[idx].x == x && game->items[idx].y == y)
+            return true;
+    }
+    return false;
+}
+
+static bool game_dungeon_cell_has_unit(const Game *game, i32 x, i32 y)
+{
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        if (game->units[idx].x == x && game->units[idx].y == y)
+            return true;
+    }
+    return false;
+}
+
+static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
+{
+    if (game->player_x == x && game->player_y == y)
+        return true;
+    if (game_dungeon_cell_has_world_feature(game, x, y))
+        return true;
+    if (game_dungeon_cell_has_item(game, x, y))
+        return true;
+    return game_dungeon_cell_has_unit(game, x, y);
+}
+
+static bool game_dungeon_find_first_floor_cell(const Game *game, i16 *out_x, i16 *out_y)
+{
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y))
+                continue;
+            *out_x = (i16)x;
+            *out_y = (i16)y;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool game_dungeon_pick_random_floor_cell(Game *game, RNG *rng, bool require_empty,
+                                                i16 *out_x, i16 *out_y)
+{
+    for (i32 attempt = 0; attempt < 512; attempt++) {
+        i32 x = ck_rand_int(rng, 0, DUNGEON_COL_COUNT);
+        i32 y = ck_rand_int(rng, 0, DUNGEON_ROW_COUNT);
+        if (!game_dungeon_cell_is_floor(game, x, y))
+            continue;
+        if (require_empty && game_dungeon_cell_is_occupied(game, x, y))
+            continue;
+
+        *out_x = (i16)x;
+        *out_y = (i16)y;
+        return true;
+    }
+
+    i32 total_cells = DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT;
+    i32 start_cell = ck_rand_int(rng, 0, total_cells);
+    for (i32 step = 0; step < total_cells; step++) {
+        i32 idx = (start_cell + step) % total_cells;
+        i32 x = idx % DUNGEON_COL_COUNT;
+        i32 y = idx / DUNGEON_COL_COUNT;
+        if (!game_dungeon_cell_is_floor(game, x, y))
+            continue;
+        if (require_empty && game_dungeon_cell_is_occupied(game, x, y))
+            continue;
+
+        *out_x = (i16)x;
+        *out_y = (i16)y;
+        return true;
+    }
+
+    return false;
+}
+
+static void game_dungeon_populate_test_entities(Game *game)
+{
+    i16 x = 0;
+    i16 y = 0;
+
+    if (game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y)) {
+        WORLD_ART_THEME theme =
+            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
+        game_dungeon_add_world_feature(game, x, y, world_art_get_up_stairs_tile(theme));
+    }
+
+    if (game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y)) {
+        WORLD_ART_THEME theme =
+            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
+        game_dungeon_add_world_feature(game, x, y, world_art_get_down_stairs_tile(theme));
+    }
+
+    for (i32 feature_idx = 0;
+         feature_idx < 2 && game->world_feature_count < DUNGEON_MAX_WORLD_FEATURES; feature_idx++) {
+        if (!game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y))
+            break;
+
+        WORLD_ART_THEME theme =
+            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
+        World_Art_Tile tile = (feature_idx & 1) == 0 ? world_art_get_misc1_tile(theme)
+                                                     : world_art_get_misc2_tile(theme);
+        game_dungeon_add_world_feature(game, x, y, tile);
+    }
+
+    const ITEM_ART_KIND item_kinds[] = {
+        ITEM_KIND_SHORT_SWORD, ITEM_KIND_WOODEN_SHIELD, ITEM_KIND_SCROLL,    ITEM_KIND_RED_POTION,
+        ITEM_KIND_GOLD_KEY,    ITEM_KIND_BOW,           ITEM_KIND_BANDAGE,   ITEM_KIND_RED_GEM,
+        ITEM_KIND_GREEN_HERB,  ITEM_KIND_MAP,           ITEM_KIND_GOLD_COIN, ITEM_KIND_HEART,
+        ITEM_ART_TORCH_1,      ITEM_ART_TORCH_2,
+    };
+
+    u32 item_kind_count = sizeof(item_kinds) / sizeof(item_kinds[0]);
+    for (u32 item_idx = 0; item_idx < item_kind_count && game->item_count < DUNGEON_MAX_ITEMS;
+         item_idx++) {
+        if (ck_rand_int(&game->dungeon_populate_rng, 0, 100) < 20)
+            continue;
+        if (!game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y))
+            break;
+
+        game_dungeon_add_item(game, x, y, item_kinds[item_idx]);
+    }
+
+    const UNIT_ART_KIND unit_kinds[] = {
+        UNIT_ART_DOG,      UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN,  UNIT_ART_TROLL,
+        UNIT_ART_MERCHANT, UNIT_ART_SLIME,        UNIT_ART_SKELETON_GRUNT, UNIT_ART_SKELETON_MAGE,
+        UNIT_ART_MIMIC,    UNIT_ART_MINOTAUR,     UNIT_ART_DRAGON,
+    };
+
+    u32 unit_kind_count = sizeof(unit_kinds) / sizeof(unit_kinds[0]);
+    for (u32 unit_idx = 0; unit_idx < unit_kind_count && game->unit_count < DUNGEON_MAX_UNITS;
+         unit_idx++) {
+        if (ck_rand_int(&game->dungeon_populate_rng, 0, 100) < 25)
+            continue;
+        if (!game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y))
+            break;
+
+        u8 orientation =
+            (u8)ck_rand_int(&game->dungeon_populate_rng, 0, UNIT_ART_ORIENTATION_COUNT);
+        game_dungeon_add_unit(game, x, y, unit_kinds[unit_idx], orientation);
+    }
+}
+
 static void game_build_test_dungeon(Game *game)
 {
+    game_seed_dungeon_rng_streams(game);
+
     game->world_feature_count = 0;
     game->item_count = 0;
     game->unit_count = 0;
+    game->player_x = -1;
+    game->player_y = -1;
+    game->player_orientation = PLAYER_START_ORIENTATION;
+
+    if (game->dungeon_tileset.valid)
+        game->dungeon_template_error[0] = '\0';
 
     game_dungeon_fill(game, DUNGEON_CELL_EMPTY);
-
-    game_dungeon_carve_rect(game, 2, 2, 12, 8);   // entry
-    game_dungeon_carve_rect(game, 20, 3, 14, 10); // hall
-    game_dungeon_carve_rect(game, 38, 4, 12, 9);  // barracks
-
-    game_dungeon_carve_rect(game, 4, 17, 10, 10); // kennels
-    game_dungeon_carve_rect(game, 18, 18, 16, 9); // crypt
-    game_dungeon_carve_rect(game, 40, 19, 10, 8); // treasury
-
-    game_dungeon_carve_h_tunnel(game, 13, 20, 5);
-    game_dungeon_carve_h_tunnel(game, 33, 38, 7);
-
-    game_dungeon_carve_v_tunnel(game, 27, 12, 18);
-    game_dungeon_carve_h_tunnel(game, 13, 18, 22);
-    game_dungeon_carve_h_tunnel(game, 33, 40, 22);
-
-    game_dungeon_carve_v_tunnel(game, 9, 9, 17);
-    game_dungeon_carve_h_tunnel(game, 9, 18, 17);
-    game_dungeon_carve_v_tunnel(game, 44, 12, 19);
-
+    bool generated = game_dungeon_generate_herringbone_layout(game);
+    i16 first_floor_x = 0;
+    i16 first_floor_y = 0;
+    if (!generated || !game_dungeon_find_first_floor_cell(game, &first_floor_x, &first_floor_y))
+        game_dungeon_carve_rect(game, 2, 2, DUNGEON_COL_COUNT - 4, DUNGEON_ROW_COUNT - 4);
     game_dungeon_build_walls(game);
 
-    game_dungeon_add_world_feature(game, 5, 5, world_art_get_up_stairs_tile(WORLD_ART_THEME_1));
-    game_dungeon_add_world_feature(game, 46, 23, world_art_get_down_stairs_tile(WORLD_ART_THEME_2));
-    game_dungeon_add_world_feature(game, 26, 7, world_art_get_misc1_tile(WORLD_ART_THEME_1));
-    game_dungeon_add_world_feature(game, 27, 7, world_art_get_misc2_tile(WORLD_ART_THEME_1));
-    game_dungeon_add_world_feature(game, 45, 9, world_art_get_misc1_tile(WORLD_ART_THEME_2));
+    i16 player_x = 0;
+    i16 player_y = 0;
+    bool found_player_cell = game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng,
+                                                                 true, &player_x, &player_y);
+    if (!found_player_cell)
+        found_player_cell = game_dungeon_find_first_floor_cell(game, &player_x, &player_y);
 
-    game_dungeon_add_item(game, 7, 5, ITEM_KIND_SHORT_SWORD);
-    game_dungeon_add_item(game, 8, 5, ITEM_KIND_WOODEN_SHIELD);
-    game_dungeon_add_item(game, 24, 6, ITEM_KIND_SCROLL);
-    game_dungeon_add_item(game, 25, 8, ITEM_KIND_RED_POTION);
-    game_dungeon_add_item(game, 45, 7, ITEM_KIND_GOLD_KEY);
-    game_dungeon_add_item(game, 42, 10, ITEM_KIND_BOW);
-    game_dungeon_add_item(game, 10, 21, ITEM_KIND_BANDAGE);
-    game_dungeon_add_item(game, 30, 23, ITEM_KIND_RED_GEM);
-    game_dungeon_add_item(game, 23, 20, ITEM_KIND_GREEN_HERB);
-    game_dungeon_add_item(game, 41, 21, ITEM_KIND_MAP);
-    game_dungeon_add_item(game, 47, 22, ITEM_KIND_GOLD_COIN);
-    game_dungeon_add_item(game, 29, 20, ITEM_KIND_HEART);
-    game_dungeon_add_item(game, 15, 5, ITEM_ART_TORCH_1);
-    game_dungeon_add_item(game, 37, 7, ITEM_ART_TORCH_2);
-    game_dungeon_add_item(game, 40, 22, ITEM_ART_TORCH_1);
+    assert(found_player_cell);
+    game->player_x = player_x;
+    game->player_y = player_y;
 
-    game_dungeon_add_unit(game, 8, 6, UNIT_ART_DOG, 1);
-    game_dungeon_add_unit(game, 24, 5, UNIT_ART_GOBLIN_GRUNT, 2);
-    game_dungeon_add_unit(game, 30, 9, UNIT_ART_GOBLIN_SHAMAN, 3);
-    game_dungeon_add_unit(game, 43, 7, UNIT_ART_TROLL, 2);
-    game_dungeon_add_unit(game, 10, 23, UNIT_ART_MERCHANT, 0);
-    game_dungeon_add_unit(game, 6, 20, UNIT_ART_SLIME, 1);
-    game_dungeon_add_unit(game, 21, 22, UNIT_ART_SKELETON_GRUNT, 2);
-    game_dungeon_add_unit(game, 27, 24, UNIT_ART_SKELETON_MAGE, 3);
-    game_dungeon_add_unit(game, 45, 22, UNIT_ART_MIMIC, 0);
-    game_dungeon_add_unit(game, 47, 24, UNIT_ART_MINOTAUR, 2);
-    game_dungeon_add_unit(game, 42, 24, UNIT_ART_DRAGON, 3);
+    game_dungeon_populate_test_entities(game);
 
-    game->player_x = PLAYER_START_X;
-    game->player_y = PLAYER_START_Y;
-    game->player_orientation = PLAYER_START_ORIENTATION;
     assert(game_dungeon_cell_is_floor(game, game->player_x, game->player_y));
 }
 
@@ -398,27 +1300,23 @@ static u8 game_dungeon_get_variation(i32 x, i32 y, u8 variation_count)
     return (u8)(game_dungeon_hash(x, y) % variation_count);
 }
 
-static bool game_dungeon_cell_in_rect(i32 x, i32 y, i32 rx, i32 ry, i32 rw, i32 rh)
+static Dungeon_Floor_Palette game_dungeon_get_floor_palette(const Game *game, i32 x, i32 y)
 {
-    return x >= rx && x < (rx + rw) && y >= ry && y < (ry + rh);
-}
+    static const Dungeon_Floor_Palette palettes[] = {
+        {.floor_row = 0, .variation_start = 0, .variation_count = 8},
+        {.floor_row = 0, .variation_start = 8, .variation_count = 8},
+        {.floor_row = 1, .variation_start = 0, .variation_count = 8},
+        {.floor_row = 1, .variation_start = 8, .variation_count = 8},
+        {.floor_row = 3, .variation_start = 6, .variation_count = 5},
+        {.floor_row = 3, .variation_start = 11, .variation_count = 5},
+    };
 
-static Dungeon_Floor_Palette game_dungeon_get_floor_palette(i32 x, i32 y)
-{
-    if (game_dungeon_cell_in_rect(x, y, 2, 2, 12, 8))
-        return (Dungeon_Floor_Palette){.floor_row = 0, .variation_start = 0, .variation_count = 8};
-    if (game_dungeon_cell_in_rect(x, y, 20, 3, 14, 10))
-        return (Dungeon_Floor_Palette){.floor_row = 0, .variation_start = 8, .variation_count = 8};
-    if (game_dungeon_cell_in_rect(x, y, 38, 4, 12, 9))
-        return (Dungeon_Floor_Palette){.floor_row = 1, .variation_start = 0, .variation_count = 8};
-    if (game_dungeon_cell_in_rect(x, y, 4, 17, 10, 10))
-        return (Dungeon_Floor_Palette){.floor_row = 1, .variation_start = 8, .variation_count = 8};
-    if (game_dungeon_cell_in_rect(x, y, 18, 18, 16, 9))
-        return (Dungeon_Floor_Palette){.floor_row = 3, .variation_start = 6, .variation_count = 5};
-    if (game_dungeon_cell_in_rect(x, y, 40, 19, 10, 8))
-        return (Dungeon_Floor_Palette){.floor_row = 3, .variation_start = 11, .variation_count = 5};
-
-    return (Dungeon_Floor_Palette){.floor_row = 0, .variation_start = 0, .variation_count = 8};
+    i32 side = max(game->dungeon_tileset.short_side_len, 1);
+    i32 macro_x = x / side;
+    i32 macro_y = y / side;
+    u32 palette_idx =
+        game_dungeon_hash(macro_x, macro_y) % (sizeof(palettes) / sizeof(palettes[0]));
+    return palettes[palette_idx];
 }
 
 static bool game_dungeon_wall_shows_face(const Game *game, i32 x, i32 y)
@@ -431,9 +1329,9 @@ static WORLD_WALL_DIRECTION game_get_opposite_wall_direction(WORLD_WALL_DIRECTIO
     return (WORLD_WALL_DIRECTION)((direction + 2) % NUM_WORLD_WALL_DIRECTIONS);
 }
 
-static World_Art_Tile game_dungeon_get_floor_tile(i32 x, i32 y)
+static World_Art_Tile game_dungeon_get_floor_tile(const Game *game, i32 x, i32 y)
 {
-    Dungeon_Floor_Palette palette = game_dungeon_get_floor_palette(x, y);
+    Dungeon_Floor_Palette palette = game_dungeon_get_floor_palette(game, x, y);
     u32 hash = game_dungeon_hash(x, y);
     assert(palette.floor_row < WORLD_ART_THEME_COUNT);
     assert(palette.variation_count > 0);
@@ -1039,8 +1937,8 @@ static void game_draw_test_dungeon(Game *game)
             u8 cell = game->dungeon_cells[y][x];
 
             if (cell == DUNGEON_CELL_FLOOR) {
-                game_draw_world_tile(game, game_dungeon_get_floor_tile(x, y), top_left, tile_size,
-                                     0.0f);
+                game_draw_world_tile(game, game_dungeon_get_floor_tile(game, x, y), top_left,
+                                     tile_size, 0.0f);
             } else if (cell == DUNGEON_CELL_WALL) {
                 WORLD_ART_THEME theme = game->dungeon_wall_theme;
                 if (game_dungeon_wall_shows_face(game, x, y)) {
@@ -1143,6 +2041,39 @@ static void game_update_camera(Game *game)
     game->dungeon_cam.target.y += delta_y * follow_alpha;
 }
 
+static void game_adjust_dungeon_zoom(Game *game, float delta)
+{
+    game->dungeon_cam.zoom =
+        clamp(game->dungeon_cam.zoom + delta, DUNGEON_CAMERA_ZOOM_MIN, DUNGEON_CAMERA_ZOOM_MAX);
+}
+
+static void game_draw_dungeon_hud(Game *game)
+{
+    float label_size = 18.0f;
+    Vector2 origin = {18.0f, 14.0f};
+    Color text_color = (Color){219, 236, 238, 255};
+    Color subtle = (Color){167, 195, 201, 255};
+
+    char line[256];
+    snprintf(line, sizeof(line), "Template [Q/E]: %s (%d/%d)",
+             game_dungeon_active_template_name(game), game->dungeon_template_index + 1,
+             DUNGEON_HBW_TEMPLATE_COUNT);
+    DrawTextEx(game->font, line, origin, label_size, game->font_spacing, text_color);
+
+    origin.y += 22.0f;
+    snprintf(line, sizeof(line),
+             "Space: new floor  Wheel/-/=: zoom  0: reset  Floor: %u  Zoom: %.2fx",
+             game->dungeon_floor_index, game->dungeon_cam.zoom);
+    DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing, subtle);
+
+    if (game->dungeon_template_error[0] != '\0') {
+        origin.y += 22.0f;
+        snprintf(line, sizeof(line), "Template warning: %s", game->dungeon_template_error);
+        DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
+                   (Color){250, 185, 90, 255});
+    }
+}
+
 void game_init(Mem mem, Font font, float font_spacing)
 {
     Game *game = arena_push(mem.perm, sizeof(Game));
@@ -1178,6 +2109,11 @@ void game_init(Mem mem, Font font, float font_spacing)
 
     game->show_dungeon_map = true;
     game->dungeon_wall_theme = WORLD_ART_THEME_1;
+    game->dungeon_seed = DUNGEON_SEED;
+    game->dungeon_floor_index = 0;
+    game->dungeon_template_index = 0;
+    game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
+    game_dungeon_load_template(game, game->dungeon_template_index);
     game_build_test_dungeon(game);
     game_center_dungeon_camera_on_player(game);
 }
@@ -1235,6 +2171,11 @@ static void game_input(Game *game)
     input->pressed[INPUT_SELECT_WALL_THEME_2] = IsKeyPressed(KEY_TWO);
     input->pressed[INPUT_SELECT_WALL_THEME_3] = IsKeyPressed(KEY_THREE);
     input->pressed[INPUT_SELECT_WALL_THEME_4] = IsKeyPressed(KEY_FOUR);
+    input->pressed[INPUT_SELECT_TEMPLATE_PREV] = IsKeyPressed(KEY_Q);
+    input->pressed[INPUT_SELECT_TEMPLATE_NEXT] = IsKeyPressed(KEY_E);
+    input->pressed[INPUT_ZOOM_IN] = IsKeyPressed(KEY_EQUAL);
+    input->pressed[INPUT_ZOOM_OUT] = IsKeyPressed(KEY_MINUS);
+    input->pressed[INPUT_ZOOM_RESET] = IsKeyPressed(KEY_ZERO);
 
     input->released[INPUT_MOUSE_LEFT] = IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
     input->released[INPUT_MOUSE_RIGHT] = IsMouseButtonReleased(MOUSE_BUTTON_RIGHT);
@@ -1260,6 +2201,47 @@ void game_update(Mem mem)
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_4])
         game->dungeon_wall_theme = WORLD_ART_THEME_4;
 
+    bool rebuild_floor = false;
+
+    i32 template_delta = 0;
+    if (game->input.pressed[INPUT_SELECT_TEMPLATE_PREV])
+        template_delta -= 1;
+    if (game->input.pressed[INPUT_SELECT_TEMPLATE_NEXT])
+        template_delta += 1;
+
+    if (template_delta != 0) {
+        i32 next_template =
+            (game->dungeon_template_index + template_delta + DUNGEON_HBW_TEMPLATE_COUNT) %
+            DUNGEON_HBW_TEMPLATE_COUNT;
+        if (game_dungeon_load_template(game, next_template)) {
+            game->dungeon_floor_index = 0;
+            rebuild_floor = true;
+        }
+    }
+
+    if (game->input.pressed[INPUT_ACTION]) {
+        game->dungeon_floor_index++;
+        rebuild_floor = true;
+    }
+
+    if (game->show_dungeon_map) {
+        if (game->input.pressed[INPUT_ZOOM_IN])
+            game_adjust_dungeon_zoom(game, DUNGEON_CAMERA_ZOOM_STEP);
+        if (game->input.pressed[INPUT_ZOOM_OUT])
+            game_adjust_dungeon_zoom(game, -DUNGEON_CAMERA_ZOOM_STEP);
+        if (game->input.pressed[INPUT_ZOOM_RESET])
+            game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
+
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f)
+            game_adjust_dungeon_zoom(game, wheel * DUNGEON_CAMERA_ZOOM_STEP);
+    }
+
+    if (rebuild_floor) {
+        game_build_test_dungeon(game);
+        game_center_dungeon_camera_on_player(game);
+    }
+
     if (game->show_dungeon_map)
         game_update_player(game);
 
@@ -1281,4 +2263,7 @@ void game_render(Mem mem)
     else
         game_draw_art_previews(game);
     EndMode2D();
+
+    if (game->show_dungeon_map)
+        game_draw_dungeon_hud(game);
 }
