@@ -73,6 +73,7 @@
 
 #define DUNGEON_RNG_STREAM_LAYOUT 0x4c41594f5554ull
 #define DUNGEON_RNG_STREAM_POPULATE 0x504f50554c415445ull
+#define DUNGEON_RNG_STREAM_SCROLL_KIND 0x5343524c4b494e44ull
 #define DUNGEON_RNG_STREAM_CULL 0x43554c4cull
 #define DUNGEON_RNG_STREAM_DISEASED 0x4449534541534544ull
 #define DUNGEON_RNG_STREAM_RUN_SEED 0x52554e53454544ull
@@ -90,7 +91,7 @@
 #define DUNGEON_LOS_RADIUS_TILES 12
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
 #define DUNGEON_GOBLIN_GRUNT_COUNT 7
-#define DUNGEON_SCROLLS_PER_FLOOR 5
+#define DUNGEON_SCROLLS_PER_FLOOR 10
 #define DUNGEON_DIJKSTRA_UNREACHABLE 0x3fff
 #define DUNGEON_THREAT_PRIORITY_STEP 256
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
@@ -437,6 +438,7 @@ typedef struct {
     RNG dungeon_run_seed_rng;
     RNG dungeon_layout_rng;
     RNG dungeon_populate_rng;
+    RNG dungeon_scroll_kind_rng;
     RNG dungeon_cull_rng;
     RNG dungeon_diseased_particle_rng;
     Dungeon_HBW_Tileset dungeon_tileset;
@@ -1240,6 +1242,7 @@ static void game_seed_dungeon_rng_streams(Game *game)
     RNG floor_rng = {.seed = game_make_seed128(floor_seed)};
     game->dungeon_layout_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_LAYOUT);
     game->dungeon_populate_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_POPULATE);
+    game->dungeon_scroll_kind_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_SCROLL_KIND);
     game->dungeon_cull_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_CULL);
     game->dungeon_diseased_particle_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_DISEASED);
 }
@@ -3656,10 +3659,11 @@ static bool game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
     return true;
 }
 
-static bool game_dungeon_spawn_scrolls(Game *game, RNG *rng, i32 entrance_x, i32 entrance_y,
-                                       UNIT_ART_KIND summon_unit_kind)
+static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summon_kind_rng,
+                                       i32 entrance_x, i32 entrance_y)
 {
-    assert(game_scroll_summon_unit_is_valid(summon_unit_kind));
+    assert(position_rng != 0);
+    assert(summon_kind_rng != 0);
 
     i16 distance_map[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
     i32 max_distance = 0;
@@ -3683,18 +3687,20 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *rng, i32 entrance_x, i32
         i16 x = -1;
         i16 y = -1;
         bool found = game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
-            game, rng, distance_map, band_min, band_max, &x, &y);
+            game, position_rng, distance_map, band_min, band_max, &x, &y);
         if (!found) {
             found = game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
-                game, rng, distance_map, band_min, max_distance, &x, &y);
+                game, position_rng, distance_map, band_min, max_distance, &x, &y);
         }
         if (!found) {
             found = game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
-                game, rng, distance_map, 1, max_distance, &x, &y);
+                game, position_rng, distance_map, 1, max_distance, &x, &y);
         }
         if (!found)
             return false;
 
+        UNIT_ART_KIND summon_unit_kind =
+            ck_rand_int(summon_kind_rng, 0, 2) == 0 ? UNIT_ART_RAT : UNIT_ART_COBRA;
         game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, summon_unit_kind);
     }
 
@@ -3787,9 +3793,9 @@ static bool game_dungeon_populate_test_entities(Game *game, bool include_up_stai
                                        world_art_get_up_stairs_tile(stairs_theme));
     }
 
-    UNIT_ART_KIND scroll_summon_unit_kind = include_up_stairs ? UNIT_ART_RAT : UNIT_ART_COBRA;
-    if (!game_dungeon_spawn_scrolls(game, &game->dungeon_populate_rng, game->player_spawn_x,
-                                    game->player_spawn_y, scroll_summon_unit_kind)) {
+    if (!game_dungeon_spawn_scrolls(game, &game->dungeon_populate_rng,
+                                    &game->dungeon_scroll_kind_rng, game->player_spawn_x,
+                                    game->player_spawn_y)) {
         return false;
     }
 
