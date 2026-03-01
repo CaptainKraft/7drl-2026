@@ -92,8 +92,7 @@
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
 #define DUNGEON_GOBLIN_GRUNT_COUNT 7
 #define DUNGEON_SCROLLS_PER_FLOOR 10
-#define DUNGEON_DIJKSTRA_UNREACHABLE 0x3fff
-#define DUNGEON_THREAT_PRIORITY_STEP 256
+#define DUNGEON_PATH_UNREACHABLE 0x3fff
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
 #define DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE 2
@@ -198,29 +197,8 @@ typedef enum {
 } FAMILIAR_TURN_COMMAND;
 
 typedef enum {
-    DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER,
-    DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER,
-    NUM_DUNGEON_DIJKSTRA_MAPS,
-} DUNGEON_DIJKSTRA_MAP;
-
-typedef enum {
-    DEBUG_DIJKSTRA_OVERLAY_OFF = 0,
-    DEBUG_DIJKSTRA_OVERLAY_SHORTEST_PATH_TO_PLAYER =
-        DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER + 1,
-    DEBUG_DIJKSTRA_OVERLAY_BIGGEST_THREAT_TO_PLAYER =
-        DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER + 1,
-    NUM_DEBUG_DIJKSTRA_OVERLAY_MODES,
-} DEBUG_DIJKSTRA_OVERLAY_MODE;
-
-static const char *game_dungeon_dijkstra_map_names[NUM_DUNGEON_DIJKSTRA_MAPS] = {
-    [DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER] = "shortest path to player",
-    [DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER] = "biggest threat to player",
-};
-
-typedef enum {
     DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH,
     DEBUG_FEATURE_REVEAL_MAP,
-    DEBUG_FEATURE_SHOW_DIJKSTRA_OVERLAY,
     NUM_DEBUG_FEATURES,
 } DEBUG_FEATURE;
 
@@ -239,11 +217,6 @@ static const Debug_Feature_Def game_debug_feature_defs[NUM_DEBUG_FEATURES] = {
     {
         .feature = DEBUG_FEATURE_REVEAL_MAP,
         .name = "Reveal map",
-        .default_enabled = false,
-    },
-    {
-        .feature = DEBUG_FEATURE_SHOW_DIJKSTRA_OVERLAY,
-        .name = "Dijkstra overlay",
         .default_enabled = false,
     },
 };
@@ -423,7 +396,6 @@ typedef struct {
     END_MENU_STATE end_menu_state;
     bool debug_hud_visible;
     u32 debug_feature_mask;
-    u8 debug_dijkstra_overlay_mode;
     WORLD_ART_THEME dungeon_wall_theme;
     Texture2D units_texture;
     Texture2D items_texture;
@@ -491,9 +463,6 @@ typedef struct {
 
     i32 spawn_to_exit_path_len;
     u8 spawn_to_exit_path[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
-
-    i16 dijkstra_distance[NUM_DUNGEON_DIJKSTRA_MAPS][DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
-    bool dijkstra_distance_valid[NUM_DUNGEON_DIJKSTRA_MAPS];
 
 } Game;
 
@@ -573,48 +542,9 @@ static u32 game_debug_feature_bit(DEBUG_FEATURE feature)
     return 1u << (u32)feature;
 }
 
-static const char *game_debug_dijkstra_overlay_mode_name(u8 mode)
-{
-    if (mode == DEBUG_DIJKSTRA_OVERLAY_OFF)
-        return "off";
-
-    i32 map_idx = (i32)mode - 1;
-    if (map_idx < 0 || map_idx >= NUM_DUNGEON_DIJKSTRA_MAPS)
-        return "off";
-
-    return game_dungeon_dijkstra_map_names[map_idx];
-}
-
-static bool game_debug_get_active_dijkstra_overlay_map(const Game *game,
-                                                       DUNGEON_DIJKSTRA_MAP *out_map)
-{
-    i32 mode = (i32)game->debug_dijkstra_overlay_mode;
-    if (mode <= DEBUG_DIJKSTRA_OVERLAY_OFF || mode >= NUM_DEBUG_DIJKSTRA_OVERLAY_MODES)
-        return false;
-
-    if (out_map)
-        *out_map = (DUNGEON_DIJKSTRA_MAP)(mode - 1);
-    return true;
-}
-
-static void game_debug_cycle_dijkstra_overlay_mode(Game *game)
-{
-#if GAME_DEBUG_FEATURES
-    u8 next_mode = (u8)(game->debug_dijkstra_overlay_mode + 1);
-    if (next_mode >= NUM_DEBUG_DIJKSTRA_OVERLAY_MODES)
-        next_mode = DEBUG_DIJKSTRA_OVERLAY_OFF;
-    game->debug_dijkstra_overlay_mode = next_mode;
-#else
-    (void)game;
-#endif
-}
-
 static bool game_debug_feature_is_enabled(const Game *game, DEBUG_FEATURE feature)
 {
 #if GAME_DEBUG_FEATURES
-    if (feature == DEBUG_FEATURE_SHOW_DIJKSTRA_OVERLAY)
-        return game->debug_dijkstra_overlay_mode != DEBUG_DIJKSTRA_OVERLAY_OFF;
-
     return (game->debug_feature_mask & game_debug_feature_bit(feature)) != 0;
 #else
     (void)game;
@@ -626,12 +556,6 @@ static bool game_debug_feature_is_enabled(const Game *game, DEBUG_FEATURE featur
 static void game_debug_set_feature_enabled(Game *game, DEBUG_FEATURE feature, bool enabled)
 {
 #if GAME_DEBUG_FEATURES
-    if (feature == DEBUG_FEATURE_SHOW_DIJKSTRA_OVERLAY) {
-        game->debug_dijkstra_overlay_mode =
-            enabled ? DEBUG_DIJKSTRA_OVERLAY_SHORTEST_PATH_TO_PLAYER : DEBUG_DIJKSTRA_OVERLAY_OFF;
-        return;
-    }
-
     u32 bit = game_debug_feature_bit(feature);
     if (enabled)
         game->debug_feature_mask |= bit;
@@ -647,7 +571,6 @@ static void game_debug_set_feature_enabled(Game *game, DEBUG_FEATURE feature, bo
 static void game_debug_reset_feature_defaults(Game *game)
 {
     game->debug_feature_mask = 0;
-    game->debug_dijkstra_overlay_mode = DEBUG_DIJKSTRA_OVERLAY_OFF;
     for (i32 idx = 0; idx < NUM_DEBUG_FEATURES; idx++)
         game_debug_set_feature_enabled(game, game_debug_feature_defs[idx].feature,
                                        game_debug_feature_defs[idx].default_enabled);
@@ -2089,21 +2012,20 @@ static bool game_dungeon_cell_has_unit_excluding(const Game *game, i32 x, i32 y,
     return false;
 }
 
-static bool game_dungeon_build_dijkstra_map(const Game *game, const i16 *goal_x, const i16 *goal_y,
-                                            const i16 *goal_distance, i32 goal_count,
-                                            i16 out_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT])
+static bool
+game_dungeon_build_distance_field(const Game *game, const i16 *goal_x, const i16 *goal_y,
+                                  i32 goal_count,
+                                  i16 out_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT])
 {
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
             out_distance[y][x] =
-                game_dungeon_cell_is_floor(game, x, y) ? DUNGEON_DIJKSTRA_UNREACHABLE : -1;
+                game_dungeon_cell_is_floor(game, x, y) ? DUNGEON_PATH_UNREACHABLE : -1;
         }
     }
 
     if (goal_count <= 0)
         return false;
-
-    bool has_valid_goal = false;
 
     static const i32 neighbor_offsets[4][2] = {
         {1, 0},
@@ -2112,8 +2034,10 @@ static bool game_dungeon_build_dijkstra_map(const Game *game, const i16 *goal_x,
         {0, -1},
     };
 
-    i16 source_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
     i32 queue[DUNGEON_CELL_COUNT];
+    i32 head = 0;
+    i32 tail = 0;
+    bool has_valid_goal = false;
 
     for (i32 goal_idx = 0; goal_idx < goal_count; goal_idx++) {
         i32 source_x = goal_x[goal_idx];
@@ -2123,67 +2047,47 @@ static bool game_dungeon_build_dijkstra_map(const Game *game, const i16 *goal_x,
 
         has_valid_goal = true;
 
-        i32 source_seed = 0;
-        if (goal_distance)
-            source_seed = goal_distance[goal_idx];
-        source_seed =
-            clamp(source_seed, -DUNGEON_DIJKSTRA_UNREACHABLE + 1, DUNGEON_DIJKSTRA_UNREACHABLE - 1);
+        if (out_distance[source_y][source_x] == 0)
+            continue;
 
-        for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
-            for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
-                source_distance[y][x] =
-                    game_dungeon_cell_is_floor(game, x, y) ? DUNGEON_DIJKSTRA_UNREACHABLE : -1;
-            }
-        }
-
-        source_distance[source_y][source_x] = 0;
-        if (source_seed < out_distance[source_y][source_x])
-            out_distance[source_y][source_x] = (i16)source_seed;
-
-        i32 head = 0;
-        i32 tail = 0;
+        out_distance[source_y][source_x] = 0;
         queue[tail++] = source_y * DUNGEON_COL_COUNT + source_x;
+    }
 
-        while (head < tail) {
-            i32 idx = queue[head++];
-            i32 x = idx % DUNGEON_COL_COUNT;
-            i32 y = idx / DUNGEON_COL_COUNT;
-            i32 next_source_distance = source_distance[y][x] + 1;
+    if (!has_valid_goal)
+        return false;
 
-            for (i32 n = 0; n < 4; n++) {
-                i32 nx = x + neighbor_offsets[n][0];
-                i32 ny = y + neighbor_offsets[n][1];
-                if (!game_dungeon_cell_in_bounds(nx, ny))
-                    continue;
-                if (source_distance[ny][nx] < 0)
-                    continue;
-                if (next_source_distance >= source_distance[ny][nx])
-                    continue;
+    while (head < tail) {
+        i32 idx = queue[head++];
+        i32 x = idx % DUNGEON_COL_COUNT;
+        i32 y = idx / DUNGEON_COL_COUNT;
+        i32 next_distance = out_distance[y][x] + 1;
 
-                source_distance[ny][nx] = (i16)next_source_distance;
+        for (i32 n = 0; n < 4; n++) {
+            i32 nx = x + neighbor_offsets[n][0];
+            i32 ny = y + neighbor_offsets[n][1];
+            if (!game_dungeon_cell_in_bounds(nx, ny))
+                continue;
+            if (out_distance[ny][nx] < 0)
+                continue;
+            if (next_distance >= out_distance[ny][nx])
+                continue;
 
-                i32 candidate_distance = source_seed + next_source_distance;
-                candidate_distance = clamp(candidate_distance, -DUNGEON_DIJKSTRA_UNREACHABLE + 1,
-                                           DUNGEON_DIJKSTRA_UNREACHABLE - 1);
-                if (candidate_distance < out_distance[ny][nx])
-                    out_distance[ny][nx] = (i16)candidate_distance;
-
-                queue[tail++] = ny * DUNGEON_COL_COUNT + nx;
-            }
+            out_distance[ny][nx] = (i16)next_distance;
+            queue[tail++] = ny * DUNGEON_COL_COUNT + nx;
         }
     }
 
-    return has_valid_goal;
+    return true;
 }
 
-static void game_dungeon_rebuild_shortest_path_to_player_dijkstra_map(Game *game)
+static bool
+game_dungeon_build_player_distance_field(const Game *game,
+                                         i16 out_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT])
 {
     i16 goal_x[1] = {game->player_x};
     i16 goal_y[1] = {game->player_y};
-    game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER] =
-        game_dungeon_build_dijkstra_map(
-            game, goal_x, goal_y, 0, 1,
-            game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER]);
+    return game_dungeon_build_distance_field(game, goal_x, goal_y, 1, out_distance);
 }
 
 static bool game_dungeon_threat_source_has_higher_priority(const Dungeon_Threat_Source *a,
@@ -2196,83 +2100,6 @@ static bool game_dungeon_threat_source_has_higher_priority(const Dungeon_Threat_
     if (a->health != b->health)
         return a->health < b->health;
     return a->unit_index < b->unit_index;
-}
-
-static void game_dungeon_rebuild_biggest_threat_to_player_dijkstra_map(Game *game)
-{
-    if (!game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER]) {
-        game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER] =
-            game_dungeon_build_dijkstra_map(
-                game, 0, 0, 0, 0,
-                game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER]);
-        return;
-    }
-
-    Dungeon_Threat_Source sources[DUNGEON_MAX_UNITS];
-    i32 source_count = 0;
-
-    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
-        const Dungeon_Unit *unit = &game->units[unit_idx];
-        if (unit->is_friendly)
-            continue;
-        if (!game_dungeon_cell_is_floor(game, unit->x, unit->y))
-            continue;
-
-        i16 distance_to_player =
-            game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][unit->y][unit->x];
-        if (distance_to_player < 0 || distance_to_player >= DUNGEON_DIJKSTRA_UNREACHABLE)
-            continue;
-
-        sources[source_count++] = (Dungeon_Threat_Source){
-            .x = unit->x,
-            .y = unit->y,
-            .distance_to_player = distance_to_player,
-            .health = unit->stats.health,
-            .unit_index = unit_idx,
-            .last_damaged_player_event = unit->last_damaged_player_event,
-        };
-    }
-
-    if (source_count <= 0) {
-        game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER] =
-            game_dungeon_build_dijkstra_map(
-                game, 0, 0, 0, 0,
-                game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER]);
-        return;
-    }
-
-    for (i32 idx = 1; idx < source_count; idx++) {
-        Dungeon_Threat_Source value = sources[idx];
-        i32 insert_idx = idx - 1;
-        while (insert_idx >= 0 &&
-               game_dungeon_threat_source_has_higher_priority(&value, &sources[insert_idx])) {
-            sources[insert_idx + 1] = sources[insert_idx];
-            insert_idx--;
-        }
-        sources[insert_idx + 1] = value;
-    }
-
-    i16 goal_x[DUNGEON_MAX_UNITS];
-    i16 goal_y[DUNGEON_MAX_UNITS];
-    i16 goal_distance[DUNGEON_MAX_UNITS];
-    for (i32 idx = 0; idx < source_count; idx++) {
-        goal_x[idx] = sources[idx].x;
-        goal_y[idx] = sources[idx].y;
-        i32 source_distance =
-            min(idx * DUNGEON_THREAT_PRIORITY_STEP, DUNGEON_DIJKSTRA_UNREACHABLE - 1);
-        goal_distance[idx] = (i16)source_distance;
-    }
-
-    game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER] =
-        game_dungeon_build_dijkstra_map(
-            game, goal_x, goal_y, goal_distance, source_count,
-            game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_BIGGEST_THREAT_TO_PLAYER]);
-}
-
-static void game_dungeon_rebuild_dijkstra_maps(Game *game)
-{
-    game_dungeon_rebuild_shortest_path_to_player_dijkstra_map(game);
-    game_dungeon_rebuild_biggest_threat_to_player_dijkstra_map(game);
 }
 
 static u8 game_dungeon_get_orientation_from_step(i32 dx, i32 dy, u8 fallback)
@@ -2513,15 +2340,16 @@ static bool game_dungeon_unit_can_see_cell(const Game *game, i32 unit_x, i32 uni
     return game_dungeon_has_line_of_sight(game, unit_x, unit_y, target_x, target_y);
 }
 
-static i16 game_dungeon_get_player_distance_for_threat(const Game *game, i32 x, i32 y)
+static i16 game_dungeon_get_player_distance_for_threat(
+    const Game *game, const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
+    bool player_distance_valid, i32 x, i32 y)
 {
-    i16 distance = DUNGEON_DIJKSTRA_UNREACHABLE - 1;
-    if (game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER] &&
-        game_dungeon_cell_in_bounds(x, y)) {
-        distance = game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][y][x];
+    i16 distance = DUNGEON_PATH_UNREACHABLE - 1;
+    if (player_distance_valid && game_dungeon_cell_in_bounds(x, y)) {
+        distance = player_distance[y][x];
     }
 
-    if (distance >= 0 && distance < DUNGEON_DIJKSTRA_UNREACHABLE)
+    if (distance >= 0 && distance < DUNGEON_PATH_UNREACHABLE)
         return distance;
 
     i32 dx = x - game->player_x;
@@ -2530,12 +2358,13 @@ static i16 game_dungeon_get_player_distance_for_threat(const Game *game, i32 x, 
     i32 dy = y - game->player_y;
     if (dy < 0)
         dy = -dy;
-    i32 fallback_distance = min(dx + dy, DUNGEON_DIJKSTRA_UNREACHABLE - 1);
+    i32 fallback_distance = min(dx + dy, DUNGEON_PATH_UNREACHABLE - 1);
     return (i16)fallback_distance;
 }
 
-static i32 game_dungeon_find_most_threatening_enemy_in_view(const Game *game, i32 viewer_x,
-                                                            i32 viewer_y)
+static i32 game_dungeon_find_most_threatening_enemy_in_view(
+    const Game *game, const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
+    bool player_distance_valid, i32 viewer_x, i32 viewer_y)
 {
     bool has_best = false;
     Dungeon_Threat_Source best_threat = {0};
@@ -2554,8 +2383,8 @@ static i32 game_dungeon_find_most_threatening_enemy_in_view(const Game *game, i3
         Dungeon_Threat_Source threat = {
             .x = unit->x,
             .y = unit->y,
-            .distance_to_player =
-                game_dungeon_get_player_distance_for_threat(game, unit->x, unit->y),
+            .distance_to_player = game_dungeon_get_player_distance_for_threat(
+                game, player_distance, player_distance_valid, unit->x, unit->y),
             .health = unit->stats.health,
             .unit_index = unit_idx,
             .last_damaged_player_event = unit->last_damaged_player_event,
@@ -2585,27 +2414,29 @@ static bool game_dungeon_find_nearest_enemy_target(const Game *game, i32 enemy_x
         .target_is_player = true,
         .target_x = game->player_x,
         .target_y = game->player_y,
-        .distance = DUNGEON_DIJKSTRA_UNREACHABLE,
+        .distance = DUNGEON_PATH_UNREACHABLE,
         .target_unit_idx = -1,
     };
 
-    i16 player_distance = DUNGEON_DIJKSTRA_UNREACHABLE;
+    i16 goal_x[1] = {(i16)enemy_x};
+    i16 goal_y[1] = {(i16)enemy_y};
+    i16 distance_from_enemy[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    bool has_distance_from_enemy =
+        game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_enemy);
+
+    i16 player_distance = DUNGEON_PATH_UNREACHABLE;
     if (game_dungeon_cells_are_cardinal_neighbors(enemy_x, enemy_y, game->player_x,
                                                   game->player_y)) {
         player_distance = 1;
-    } else if (game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER]) {
-        player_distance =
-            game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][enemy_y][enemy_x];
+    } else if (has_distance_from_enemy &&
+               game_dungeon_cell_in_bounds(game->player_x, game->player_y)) {
+        player_distance = distance_from_enemy[game->player_y][game->player_x];
     }
 
-    if (player_distance > 0 && player_distance < DUNGEON_DIJKSTRA_UNREACHABLE) {
+    if (player_distance > 0 && player_distance < DUNGEON_PATH_UNREACHABLE) {
         best_target.distance = player_distance;
         has_target = true;
     }
-
-    i16 goal_x[1] = {0};
-    i16 goal_y[1] = {0};
-    i16 distance_to_friendly[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
 
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
         const Dungeon_Unit *unit = &game->units[unit_idx];
@@ -2613,14 +2444,11 @@ static bool game_dungeon_find_nearest_enemy_target(const Game *game, i32 enemy_x
             continue;
         if (!game_dungeon_cell_is_floor(game, unit->x, unit->y))
             continue;
-
-        goal_x[0] = unit->x;
-        goal_y[0] = unit->y;
-        if (!game_dungeon_build_dijkstra_map(game, goal_x, goal_y, 0, 1, distance_to_friendly))
+        if (!has_distance_from_enemy)
             continue;
 
-        i16 distance = distance_to_friendly[enemy_y][enemy_x];
-        if (distance <= 0 || distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+        i16 distance = distance_from_enemy[unit->y][unit->x];
+        if (distance <= 0 || distance >= DUNGEON_PATH_UNREACHABLE)
             continue;
         if (has_target && distance >= best_target.distance)
             continue;
@@ -2655,11 +2483,11 @@ static bool game_dungeon_try_move_unit_towards_cell(Game *game, i32 unit_idx, i3
     i16 goal_x[1] = {(i16)target_x};
     i16 goal_y[1] = {(i16)target_y};
     i16 distance_to_target[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
-    if (!game_dungeon_build_dijkstra_map(game, goal_x, goal_y, 0, 1, distance_to_target))
+    if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_to_target))
         return false;
 
     i16 best_distance = distance_to_target[start_y][start_x];
-    if (best_distance <= 0 || best_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+    if (best_distance <= 0 || best_distance >= DUNGEON_PATH_UNREACHABLE)
         return false;
 
     static const i32 neighbor_offsets[4][2] = {
@@ -2683,7 +2511,7 @@ static bool game_dungeon_try_move_unit_towards_cell(Game *game, i32 unit_idx, i3
             continue;
 
         i16 next_distance = distance_to_target[ny][nx];
-        if (next_distance < 0 || next_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+        if (next_distance < 0 || next_distance >= DUNGEON_PATH_UNREACHABLE)
             continue;
         if (next_distance >= best_distance)
             continue;
@@ -2704,13 +2532,14 @@ static bool game_dungeon_try_move_unit_towards_cell(Game *game, i32 unit_idx, i3
     return true;
 }
 
-static bool game_dungeon_try_move_unit_to_player_distance(Game *game, i32 unit_idx,
-                                                          i32 desired_distance)
+static bool game_dungeon_try_move_unit_to_player_distance(
+    Game *game, i32 unit_idx, i32 desired_distance,
+    const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT], bool player_distance_valid)
 {
     assert(unit_idx >= 0);
     assert(unit_idx < game->unit_count);
 
-    if (!game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER])
+    if (!player_distance_valid)
         return false;
 
     Dungeon_Unit *unit = &game->units[unit_idx];
@@ -2719,9 +2548,8 @@ static bool game_dungeon_try_move_unit_to_player_distance(Game *game, i32 unit_i
     if (!game_dungeon_cell_in_bounds(start_x, start_y))
         return false;
 
-    i16 current_player_distance =
-        game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][start_y][start_x];
-    if (current_player_distance < 0 || current_player_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+    i16 current_player_distance = player_distance[start_y][start_x];
+    if (current_player_distance < 0 || current_player_distance >= DUNGEON_PATH_UNREACHABLE)
         return false;
 
     i32 best_x = start_x;
@@ -2751,9 +2579,8 @@ static bool game_dungeon_try_move_unit_to_player_distance(Game *game, i32 unit_i
         if (game_dungeon_cell_has_unit_excluding(game, nx, ny, unit_idx))
             continue;
 
-        i16 next_player_distance =
-            game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][ny][nx];
-        if (next_player_distance < 0 || next_player_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+        i16 next_player_distance = player_distance[ny][nx];
+        if (next_player_distance < 0 || next_player_distance >= DUNGEON_PATH_UNREACHABLE)
             continue;
 
         i32 next_error = next_player_distance - desired_distance;
@@ -2790,7 +2617,9 @@ static bool game_dungeon_try_move_unit_to_player_distance(Game *game, i32 unit_i
     return true;
 }
 
-static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
+static void game_dungeon_take_friendly_unit_turn(
+    Game *game, i32 unit_idx, const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
+    bool player_distance_valid)
 {
     assert(unit_idx >= 0);
     assert(unit_idx < game->unit_count);
@@ -2805,31 +2634,30 @@ static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
         return;
 
     if (unit->is_returning_to_player) {
-        if (game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER]) {
-            i16 player_distance =
-                game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][start_y]
-                                       [start_x];
-            if (player_distance >= 0 && player_distance <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
+        if (player_distance_valid) {
+            i16 distance_to_player = player_distance[start_y][start_x];
+            if (distance_to_player >= 0 &&
+                distance_to_player <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
                 unit->is_returning_to_player = false;
         }
 
         if (unit->is_returning_to_player) {
             game_dungeon_try_move_unit_to_player_distance(game, unit_idx,
-                                                          DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE);
+                                                          DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE,
+                                                          player_distance, player_distance_valid);
 
-            if (game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER] &&
-                game_dungeon_cell_in_bounds(unit->x, unit->y)) {
-                i16 player_distance =
-                    game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][unit->y]
-                                           [unit->x];
-                if (player_distance >= 0 && player_distance <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
+            if (player_distance_valid && game_dungeon_cell_in_bounds(unit->x, unit->y)) {
+                i16 distance_to_player = player_distance[unit->y][unit->x];
+                if (distance_to_player >= 0 &&
+                    distance_to_player <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
                     unit->is_returning_to_player = false;
             }
             return;
         }
     }
 
-    i32 target_enemy_idx = game_dungeon_find_most_threatening_enemy_in_view(game, start_x, start_y);
+    i32 target_enemy_idx = game_dungeon_find_most_threatening_enemy_in_view(
+        game, player_distance, player_distance_valid, start_x, start_y);
     if (target_enemy_idx >= 0) {
         Dungeon_Unit *target_enemy = &game->units[target_enemy_idx];
         i32 enemy_x = target_enemy->x;
@@ -2862,7 +2690,8 @@ static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
     }
 
     game_dungeon_try_move_unit_to_player_distance(game, unit_idx,
-                                                  DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE);
+                                                  DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE,
+                                                  player_distance, player_distance_valid);
 }
 
 static void game_dungeon_take_friendly_turns(Game *game)
@@ -2870,7 +2699,8 @@ static void game_dungeon_take_friendly_turns(Game *game)
     if (game->unit_count <= 0)
         return;
 
-    game_dungeon_rebuild_dijkstra_maps(game);
+    i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    bool player_distance_valid = game_dungeon_build_player_distance_field(game, player_distance);
 
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
         Dungeon_Unit *unit = &game->units[unit_idx];
@@ -2903,7 +2733,8 @@ static void game_dungeon_take_friendly_turns(Game *game)
             break;
 
         game->units[next_friendly_idx].has_acted_this_turn = true;
-        game_dungeon_take_friendly_unit_turn(game, next_friendly_idx);
+        game_dungeon_take_friendly_unit_turn(game, next_friendly_idx, player_distance,
+                                             player_distance_valid);
     }
 }
 
@@ -2930,7 +2761,6 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
 static void game_dungeon_take_enemy_turns(Game *game)
 {
     game_dungeon_apply_poison_turn_damage(game);
-    game_dungeon_rebuild_dijkstra_maps(game);
 
     if (game->unit_count <= 0)
         return;
@@ -3033,8 +2863,6 @@ static void game_dungeon_take_enemy_turns(Game *game)
 
         game_dungeon_try_move_unit_towards_cell(game, next_enemy_idx, target_x, target_y);
     }
-
-    game_dungeon_rebuild_dijkstra_maps(game);
 }
 
 static void game_dungeon_clear_spawn_to_exit_path(Game *game)
@@ -3838,8 +3666,6 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     game->player_attack_anim_active = false;
     game->player_orientation = PLAYER_START_ORIENTATION;
     game->player_damage_event_count = 0;
-    for (i32 map_idx = 0; map_idx < NUM_DUNGEON_DIJKSTRA_MAPS; map_idx++)
-        game->dijkstra_distance_valid[map_idx] = false;
     game->player_spawn_x = -1;
     game->player_spawn_y = -1;
     game_dungeon_clear_spawn_to_exit_path(game);
@@ -3902,8 +3728,8 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
 
     assert(game_dungeon_cell_is_floor(game, game->player_x, game->player_y));
     game_dungeon_rebuild_line_of_sight(game);
-    game_dungeon_rebuild_dijkstra_maps(game);
-    return game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER];
+    i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    return game_dungeon_build_player_distance_field(game, player_distance);
 }
 
 static bool game_dungeon_resolve_floor_index_for_depth(Game *game, u32 depth, u32 *out_floor_index)
@@ -3983,7 +3809,6 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
         game->player_attack_anim_active = false;
         game_dungeon_build_spawn_to_exit_path(game);
         game_dungeon_rebuild_line_of_sight(game);
-        game_dungeon_rebuild_dijkstra_maps(game);
     }
 
     return true;
@@ -5674,50 +5499,6 @@ static void game_draw_scroll_target_indicator(Game *game, Vector2 origin, float 
     DrawRectangleLinesEx(marker, max(1.0f, tile_size * 0.1f), border);
 }
 
-static void game_draw_dungeon_dijkstra_overlay(Game *game, Vector2 origin, float tile_size)
-{
-    DUNGEON_DIJKSTRA_MAP overlay_map = DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER;
-    if (!game_debug_get_active_dijkstra_overlay_map(game, &overlay_map))
-        return;
-    if (!game->dijkstra_distance_valid[overlay_map])
-        return;
-
-    float text_size = clamp(tile_size * 0.2f, 10.0f, 24.0f);
-
-    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
-        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
-            if (!game_dungeon_cell_is_explored(game, x, y))
-                continue;
-
-            i16 distance = game->dijkstra_distance[overlay_map][y][x];
-            Color text_color = game_dungeon_cell_is_visible(game, x, y)
-                                   ? (Color){236, 248, 250, 245}
-                                   : (Color){154, 172, 178, 230};
-            char text[8];
-
-            if (distance < 0) {
-                text_color = game_dungeon_cell_is_visible(game, x, y) ? (Color){115, 130, 136, 230}
-                                                                      : (Color){89, 100, 106, 220};
-                snprintf(text, sizeof(text), "##");
-            } else if (distance >= DUNGEON_DIJKSTRA_UNREACHABLE) {
-                text_color = game_dungeon_cell_is_visible(game, x, y) ? (Color){255, 145, 124, 240}
-                                                                      : (Color){188, 112, 98, 230};
-                snprintf(text, sizeof(text), "##");
-            } else {
-                snprintf(text, sizeof(text), "%d", (i32)distance);
-            }
-
-            Vector2 top_left = game_dungeon_get_cell_top_left(origin, x, y, tile_size);
-            Vector2 text_draw_size = MeasureTextEx(game->font, text, text_size, game->font_spacing);
-            Vector2 text_pos = {
-                .x = top_left.x + (tile_size - text_draw_size.x) * 0.5f,
-                .y = top_left.y + (tile_size - text_draw_size.y) * 0.5f,
-            };
-            DrawTextEx(game->font, text, text_pos, text_size, game->font_spacing, text_color);
-        }
-    }
-}
-
 static void game_draw_test_dungeon(Game *game)
 {
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
@@ -5850,8 +5631,6 @@ static void game_draw_test_dungeon(Game *game)
         DrawRectangleLinesEx((Rectangle){exit_top_left.x, exit_top_left.y, tile_size, tile_size},
                              3.0f, exit_color);
     }
-
-    game_draw_dungeon_dijkstra_overlay(game, origin, tile_size);
 }
 
 static bool game_update_player(Game *game)
@@ -5956,7 +5735,6 @@ static bool game_update_player(Game *game)
 
     game_dungeon_build_spawn_to_exit_path(game);
     game_dungeon_rebuild_line_of_sight(game);
-    game_dungeon_rebuild_dijkstra_maps(game);
     return true;
 }
 
@@ -6226,13 +6004,7 @@ static void game_draw_debug_hud(Game *game)
     for (i32 idx = 0; idx < NUM_DEBUG_FEATURES; idx++) {
         const Debug_Feature_Def *def = &game_debug_feature_defs[idx];
         bool enabled = game_debug_feature_is_enabled(game, def->feature);
-        if (def->feature == DEBUG_FEATURE_SHOW_DIJKSTRA_OVERLAY) {
-            const char *mode_name =
-                game_debug_dijkstra_overlay_mode_name(game->debug_dijkstra_overlay_mode);
-            snprintf(line, sizeof(line), "%s: %s", def->name, mode_name);
-        } else {
-            snprintf(line, sizeof(line), "%s: %s", def->name, enabled ? "ON" : "off");
-        }
+        snprintf(line, sizeof(line), "%s: %s", def->name, enabled ? "ON" : "off");
         game_draw_debug_hud_button(game, game_debug_hud_next_button_rect(panel, &cursor_y), line,
                                    enabled);
     }
@@ -6628,12 +6400,8 @@ void game_update(Mem mem)
                     continue;
 
                 DEBUG_FEATURE feature = game_debug_feature_defs[idx].feature;
-                if (feature == DEBUG_FEATURE_SHOW_DIJKSTRA_OVERLAY) {
-                    game_debug_cycle_dijkstra_overlay_mode(game);
-                } else {
-                    bool enabled = game_debug_feature_is_enabled(game, feature);
-                    game_debug_set_feature_enabled(game, feature, !enabled);
-                }
+                bool enabled = game_debug_feature_is_enabled(game, feature);
+                game_debug_set_feature_enabled(game, feature, !enabled);
                 handled_click = true;
             }
         }

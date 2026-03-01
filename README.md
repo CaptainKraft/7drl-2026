@@ -25,30 +25,16 @@ We build raylib from source and copy the static libs into `lib/` during `make in
 
 After updating raylib, run `make init` to rebuild and copy `libraylib-mac.a` and `libraylib-web.a` into `lib/`
 
-## Dijkstra Maps (AI foundation)
+## Pathfinding and AI
 
-We are using Brogue-style Dijkstra maps as the base for turn-based movement and enemy decision-making.
-
-References:
-
-- https://www.roguebasin.com/index.php/The_Incredible_Power_of_Dijkstra_Maps
-- https://www.roguebasin.com/index.php/Dijkstra_Maps_Visualized
+Turn-based movement and target selection are driven by straightforward breadth-first path searches on walkable floor cells.
 
 Current implementation:
 
-- Build a Dijkstra distance field from the player position over walkable floor cells.
-- Rebuild this field when the player successfully takes a move turn.
-- Each enemy checks the four cardinal neighbors and steps to the lowest value ("roll downhill").
-- Enemy turns are processed after the player turn, one-by-one, using a shared map for that turn.
-
-Design notes for future features:
-
-- The same map can drive any number of enemies, so scaling actor count is cheap.
-- Multiple goals are supported naturally by seeding several cells as map sources.
-- Weighted behavior comes from combining or offsetting maps (approach, flee, hazards, loot, objectives).
-- Fleeing behavior can be produced with Brogue's rescan method (invert/scale, then rescan).
-
-This keeps AI logic deterministic, simple to debug, and easy to extend into richer behaviors.
+- Units query path distances on demand from the current board state instead of relying on persistent global distance maps.
+- Enemy turns choose the nearest reachable target (player or summoned ally) and move one cardinal step that reduces distance.
+- Familiar target choice prioritizes enemies that most recently damaged the player, then enemies closer to the player, then enemies with lower health.
+- Tie-breaks are deterministic, so repeated seeded runs produce consistent turn behavior.
 
 ## Debug controls
 
