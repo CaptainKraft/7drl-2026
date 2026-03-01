@@ -78,6 +78,7 @@
 #define DUNGEON_MAX_ITEMS 24
 #define DUNGEON_MAX_UNITS 24
 #define DUNGEON_CELL_COUNT (DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT)
+#define DUNGEON_MAX_FLOOR_DEPTH 512
 #define DUNGEON_EXIT_MIN_PATH_STEPS 80
 #define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
 #define DUNGEON_MAIN_PATH_KEEP_PERCENT 25
@@ -315,6 +316,9 @@ typedef struct {
 
     u64 dungeon_seed;
     u32 dungeon_floor_index;
+    u32 dungeon_depth;
+    u32 dungeon_floor_seed_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
+    u32 dungeon_floor_seed_count;
     i32 dungeon_template_index;
     RNG dungeon_layout_rng;
     RNG dungeon_populate_rng;
@@ -494,8 +498,10 @@ static void game_debug_handle_actions(Game *game, bool *out_rebuild_floor)
             game->show_dungeon_map = !game->show_dungeon_map;
             break;
         case DEBUG_ACTION_NEXT_FLOOR:
-            game->dungeon_floor_index++;
-            *out_rebuild_floor = true;
+            if (game->dungeon_depth + 1 < DUNGEON_MAX_FLOOR_DEPTH) {
+                game->dungeon_depth++;
+                *out_rebuild_floor = true;
+            }
             break;
         default:
             break;
@@ -1523,6 +1529,40 @@ static bool game_dungeon_cell_has_world_feature(const Game *game, i32 x, i32 y)
     return false;
 }
 
+static bool game_dungeon_get_world_feature_role_at(const Game *game, i32 x, i32 y,
+                                                   WORLD_ART_ROLE *out_role)
+{
+    for (u8 idx = 0; idx < game->world_feature_count; idx++) {
+        Dungeon_World_Feature feature = game->world_features[idx];
+        if (feature.x != x || feature.y != y)
+            continue;
+
+        if (out_role)
+            *out_role = world_art_get_role_from_tile(feature.tile);
+        return true;
+    }
+
+    return false;
+}
+
+static bool game_dungeon_find_world_feature_by_role(const Game *game, WORLD_ART_ROLE role,
+                                                    i16 *out_x, i16 *out_y)
+{
+    for (u8 idx = 0; idx < game->world_feature_count; idx++) {
+        Dungeon_World_Feature feature = game->world_features[idx];
+        if (world_art_get_role_from_tile(feature.tile) != role)
+            continue;
+
+        if (out_x)
+            *out_x = feature.x;
+        if (out_y)
+            *out_y = feature.y;
+        return true;
+    }
+
+    return false;
+}
+
 static bool game_dungeon_cell_has_item(const Game *game, i32 x, i32 y)
 {
     for (u8 idx = 0; idx < game->item_count; idx++) {
@@ -1778,17 +1818,7 @@ static void game_dungeon_clear_spawn_to_exit_path(Game *game)
 
 static bool game_dungeon_find_exit_cell(const Game *game, i16 *out_x, i16 *out_y)
 {
-    for (u8 idx = 0; idx < game->world_feature_count; idx++) {
-        Dungeon_World_Feature feature = game->world_features[idx];
-        if (world_art_get_role_from_tile(feature.tile) != WORLD_ART_ROLE_STAIRS_DOWN)
-            continue;
-
-        *out_x = feature.x;
-        *out_y = feature.y;
-        return true;
-    }
-
-    return false;
+    return game_dungeon_find_world_feature_by_role(game, WORLD_ART_ROLE_STAIRS_DOWN, out_x, out_y);
 }
 
 static bool game_dungeon_build_spawn_to_exit_path(Game *game)
@@ -2296,7 +2326,7 @@ static bool game_dungeon_spawn_is_in_largest_component(const Game *game)
     return spawn_component_size > 0 && spawn_component_size == largest_component_size;
 }
 
-static void game_dungeon_populate_test_entities(Game *game)
+static void game_dungeon_populate_test_entities(Game *game, bool include_up_stairs)
 {
     i16 x = 0;
     i16 y = 0;
@@ -2311,10 +2341,12 @@ static void game_dungeon_populate_test_entities(Game *game)
             game_dungeon_cull_outside_main_path(game, &game->dungeon_cull_rng);
     }
 
-    WORLD_ART_THEME up_stairs_theme =
-        (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
-    game_dungeon_add_world_feature(game, game->player_spawn_x, game->player_spawn_y,
-                                   world_art_get_up_stairs_tile(up_stairs_theme));
+    if (include_up_stairs) {
+        WORLD_ART_THEME up_stairs_theme =
+            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
+        game_dungeon_add_world_feature(game, game->player_spawn_x, game->player_spawn_y,
+                                       world_art_get_up_stairs_tile(up_stairs_theme));
+    }
 
     for (i32 grunt_idx = 0;
          grunt_idx < DUNGEON_GOBLIN_GRUNT_COUNT && game->unit_count < DUNGEON_MAX_UNITS;
@@ -2328,8 +2360,9 @@ static void game_dungeon_populate_test_entities(Game *game)
     }
 }
 
-static bool game_build_test_dungeon_candidate(Game *game)
+static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool include_up_stairs)
 {
+    game->dungeon_floor_index = floor_index;
     game_seed_dungeon_rng_streams(game);
 
     game->world_feature_count = 0;
@@ -2372,7 +2405,7 @@ static bool game_build_test_dungeon_candidate(Game *game)
     if (!game_dungeon_spawn_is_in_largest_component(game))
         return false;
 
-    game_dungeon_populate_test_entities(game);
+    game_dungeon_populate_test_entities(game, include_up_stairs);
     if (game->unit_count != DUNGEON_GOBLIN_GRUNT_COUNT)
         return false;
 
@@ -2393,18 +2426,78 @@ static bool game_build_test_dungeon_candidate(Game *game)
     return game->player_dijkstra_distance_valid;
 }
 
-static void game_build_test_dungeon(Game *game)
+static bool game_dungeon_resolve_floor_index_for_depth(Game *game, u32 depth, u32 *out_floor_index)
 {
-    u32 start_floor_index = game->dungeon_floor_index;
+    assert(out_floor_index != 0);
 
-    for (i32 attempt = 0; attempt < DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT; attempt++) {
-        game->dungeon_floor_index = start_floor_index + (u32)attempt;
-        if (game_build_test_dungeon_candidate(game))
-            return;
+    if (depth >= DUNGEON_MAX_FLOOR_DEPTH) {
+        snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                 "Reached max floor depth (%d)", DUNGEON_MAX_FLOOR_DEPTH);
+        return false;
     }
 
-    snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
-             "No valid floor found in %d seeds", DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT);
+    while (game->dungeon_floor_seed_count <= depth) {
+        u32 resolving_depth = game->dungeon_floor_seed_count;
+        u32 start_floor_index =
+            resolving_depth == 0 ? 0 : game->dungeon_floor_seed_by_depth[resolving_depth - 1] + 1;
+        bool include_up_stairs = resolving_depth > 0;
+        bool found_floor = false;
+
+        for (i32 attempt = 0; attempt < DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT; attempt++) {
+            u32 candidate_floor_index = start_floor_index + (u32)attempt;
+            if (!game_build_test_dungeon_candidate(game, candidate_floor_index, include_up_stairs))
+                continue;
+
+            game->dungeon_floor_seed_by_depth[resolving_depth] = candidate_floor_index;
+            game->dungeon_floor_seed_count++;
+            found_floor = true;
+            break;
+        }
+
+        if (!found_floor) {
+            snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                     "No valid floor found for level %u in %d seeds", resolving_depth + 1,
+                     DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT);
+            return false;
+        }
+    }
+
+    *out_floor_index = game->dungeon_floor_seed_by_depth[depth];
+    return true;
+}
+
+static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_ROLE arrival_role)
+{
+    u32 floor_index = 0;
+    if (!game_dungeon_resolve_floor_index_for_depth(game, depth, &floor_index))
+        return false;
+
+    bool include_up_stairs = depth > 0;
+    if (!game_build_test_dungeon_candidate(game, floor_index, include_up_stairs)) {
+        snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                 "Failed to regenerate level %u", depth + 1);
+        return false;
+    }
+
+    game->dungeon_depth = depth;
+
+    if (arrival_role == WORLD_ART_ROLE_STAIRS_DOWN || arrival_role == WORLD_ART_ROLE_STAIRS_UP) {
+        i16 arrival_x = 0;
+        i16 arrival_y = 0;
+        if (!game_dungeon_find_world_feature_by_role(game, arrival_role, &arrival_x, &arrival_y)) {
+            snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
+                     "Level %u is missing arrival stairs", depth + 1);
+            return false;
+        }
+
+        game->player_x = arrival_x;
+        game->player_y = arrival_y;
+        game_dungeon_build_spawn_to_exit_path(game);
+        game_dungeon_rebuild_line_of_sight(game);
+        game_dungeon_rebuild_player_dijkstra_map(game);
+    }
+
+    return true;
 }
 
 static u32 game_dungeon_hash(i32 x, i32 y)
@@ -3088,7 +3181,7 @@ static Rectangle game_draw_player_stats_panel(Game *game)
     char stat_line[96];
     snprintf(stat_line, sizeof(stat_line), "Damage %d   Speed %d   Floor %u",
              (i32)game->player_stats.damage, (i32)game->player_stats.speed,
-             game->dungeon_floor_index + 1);
+             game->dungeon_depth + 1);
 
     char health_text[32];
     snprintf(health_text, sizeof(health_text), "%d/%d", (i32)game->player_stats.health,
@@ -3476,6 +3569,27 @@ static bool game_update_player(Game *game)
 
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
+
+    WORLD_ART_ROLE stepped_feature_role = WORLD_ART_ROLE_FLOOR;
+    if (game_dungeon_get_world_feature_role_at(game, next_x, next_y, &stepped_feature_role)) {
+        if (stepped_feature_role == WORLD_ART_ROLE_STAIRS_DOWN) {
+            if (game->dungeon_depth + 1 < DUNGEON_MAX_FLOOR_DEPTH &&
+                game_build_test_dungeon_for_depth(game, game->dungeon_depth + 1,
+                                                  WORLD_ART_ROLE_STAIRS_UP)) {
+                game_center_dungeon_camera_on_player(game);
+                return true;
+            }
+        }
+
+        if (stepped_feature_role == WORLD_ART_ROLE_STAIRS_UP && game->dungeon_depth > 0) {
+            if (game_build_test_dungeon_for_depth(game, game->dungeon_depth - 1,
+                                                  WORLD_ART_ROLE_STAIRS_DOWN)) {
+                game_center_dungeon_camera_on_player(game);
+                return true;
+            }
+        }
+    }
+
     game_dungeon_build_spawn_to_exit_path(game);
     game_dungeon_rebuild_line_of_sight(game);
     game_dungeon_rebuild_player_dijkstra_map(game);
@@ -3564,6 +3678,8 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
     Color floor_explored = (Color){97, 88, 74, 255};
     Color wall_visible = (Color){121, 108, 88, 255};
     Color wall_explored = (Color){70, 60, 47, 255};
+    Color exit_visible = (Color){241, 195, 92, 255};
+    Color exit_explored = (Color){150, 111, 58, 255};
 
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
@@ -3577,6 +3693,8 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
                 tint = visible ? wall_visible : wall_explored;
             else if (cell == DUNGEON_CELL_FLOOR)
                 tint = visible ? floor_visible : floor_explored;
+            if (game->has_exit && x == game->exit_x && y == game->exit_y)
+                tint = visible ? exit_visible : exit_explored;
 
             DrawRectangleRec((Rectangle){map_origin.x + (float)x * cell_size,
                                          map_origin.y + (float)y * cell_size, cell_size, cell_size},
@@ -3744,10 +3862,12 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->player_stats = game_get_player_base_stats();
     game->dungeon_seed = DUNGEON_SEED;
     game->dungeon_floor_index = 0;
+    game->dungeon_depth = 0;
+    game->dungeon_floor_seed_count = 0;
     game->dungeon_template_index = 0;
     game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
     game_dungeon_load_template(game, game->dungeon_template_index);
-    game_build_test_dungeon(game);
+    game_build_test_dungeon_for_depth(game, game->dungeon_depth, WORLD_ART_ROLE_FLOOR);
     game_center_dungeon_camera_on_player(game);
 }
 
@@ -3851,6 +3971,8 @@ void game_update(Mem mem)
                 DUNGEON_HBW_TEMPLATE_COUNT;
             if (game_dungeon_load_template(game, next_template)) {
                 game->dungeon_floor_index = 0;
+                game->dungeon_depth = 0;
+                game->dungeon_floor_seed_count = 0;
                 rebuild_floor = true;
             }
         }
@@ -3893,8 +4015,8 @@ void game_update(Mem mem)
     }
 
     if (rebuild_floor) {
-        game_build_test_dungeon(game);
-        game_center_dungeon_camera_on_player(game);
+        if (game_build_test_dungeon_for_depth(game, game->dungeon_depth, WORLD_ART_ROLE_FLOOR))
+            game_center_dungeon_camera_on_player(game);
     }
 
     bool player_took_turn = false;
