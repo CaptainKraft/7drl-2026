@@ -101,6 +101,7 @@
 #define DUNGEON_ATTACK_ANIM_DURATION 0.12f
 #define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
 #define DUNGEON_DISEASED_DAMAGE_PENALTY 1
+#define DUNGEON_POISON_DAMAGE_PER_TURN 1
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
 
@@ -322,6 +323,8 @@ typedef struct {
     u8 turns_out_of_player_los;
     bool is_diseased;
     float diseased_particle_spawn_timer;
+    bool is_poisoned;
+    float poisoned_particle_spawn_timer;
     u32 last_damaged_player_event;
     bool move_anim_active;
     bool attack_anim_active;
@@ -335,6 +338,7 @@ typedef struct {
     Vector2 velocity;
     float age;
     float lifetime;
+    Color color;
     bool active;
 } Dungeon_Diseased_Particle;
 
@@ -1052,6 +1056,20 @@ static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
     unit->diseased_particle_spawn_timer = 0.0f;
 }
 
+static void game_dungeon_apply_poisoned_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    if (unit->is_friendly)
+        return;
+
+    if (unit->is_poisoned)
+        return;
+
+    unit->is_poisoned = true;
+    unit->poisoned_particle_spawn_timer = 0.0f;
+}
+
 static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -1096,6 +1114,8 @@ static Color game_scroll_get_summon_unit_tint(UNIT_ART_KIND summon_unit_kind)
     case UNIT_ART_TROLL:
         return (Color){162, 194, 112, 255};
     case UNIT_ART_RAT:
+        return (Color){184, 166, 145, 255};
+    case UNIT_ART_COBRA:
         return (Color){170, 228, 144, 255};
     case UNIT_ART_SPIDER:
         return (Color){206, 166, 232, 255};
@@ -1138,6 +1158,7 @@ static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
     case UNIT_ART_TROLL:
         return game_make_unit_stats(8, 3);
     case UNIT_ART_RAT:
+    case UNIT_ART_COBRA:
         return game_make_unit_stats(2, 1);
     case UNIT_ART_SPIDER:
         return game_make_unit_stats(3, 1);
@@ -1183,6 +1204,8 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .turns_out_of_player_los = 0,
         .is_diseased = false,
         .diseased_particle_spawn_timer = 0.0f,
+        .is_poisoned = false,
+        .poisoned_particle_spawn_timer = 0.0f,
         .move_anim_active = false,
         .attack_anim_active = false,
         .has_acted_this_turn = false,
@@ -2821,6 +2844,8 @@ static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
 
             if (unit->kind == UNIT_ART_RAT)
                 game_dungeon_apply_diseased_status(target_enemy);
+            else if (unit->kind == UNIT_ART_COBRA)
+                game_dungeon_apply_poisoned_status(target_enemy);
 
             bool enemy_defeated = game_unit_stats_take_damage(
                 &target_enemy->stats, game_dungeon_get_unit_attack_damage(unit));
@@ -2879,8 +2904,29 @@ static void game_dungeon_take_friendly_turns(Game *game)
     }
 }
 
+static void game_dungeon_apply_poison_turn_damage(Game *game)
+{
+    for (i32 unit_idx = 0; unit_idx < game->unit_count;) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        if (unit->is_friendly || !unit->is_poisoned) {
+            unit_idx++;
+            continue;
+        }
+
+        bool unit_defeated =
+            game_unit_stats_take_damage(&unit->stats, DUNGEON_POISON_DAMAGE_PER_TURN);
+        if (unit_defeated) {
+            game_dungeon_remove_unit_at(game, unit_idx);
+            continue;
+        }
+
+        unit_idx++;
+    }
+}
+
 static void game_dungeon_take_enemy_turns(Game *game)
 {
+    game_dungeon_apply_poison_turn_damage(game);
     game_dungeon_rebuild_dijkstra_maps(game);
 
     if (game->unit_count <= 0)
@@ -3610,8 +3656,11 @@ static bool game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
     return true;
 }
 
-static bool game_dungeon_spawn_scrolls(Game *game, RNG *rng, i32 entrance_x, i32 entrance_y)
+static bool game_dungeon_spawn_scrolls(Game *game, RNG *rng, i32 entrance_x, i32 entrance_y,
+                                       UNIT_ART_KIND summon_unit_kind)
 {
+    assert(game_scroll_summon_unit_is_valid(summon_unit_kind));
+
     i16 distance_map[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
     i32 max_distance = 0;
     if (!game_dungeon_build_floor_distance_map(game, entrance_x, entrance_y, distance_map,
@@ -3646,7 +3695,7 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *rng, i32 entrance_x, i32
         if (!found)
             return false;
 
-        game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, UNIT_ART_RAT);
+        game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, summon_unit_kind);
     }
 
     return true;
@@ -3738,8 +3787,9 @@ static bool game_dungeon_populate_test_entities(Game *game, bool include_up_stai
                                        world_art_get_up_stairs_tile(stairs_theme));
     }
 
+    UNIT_ART_KIND scroll_summon_unit_kind = include_up_stairs ? UNIT_ART_RAT : UNIT_ART_COBRA;
     if (!game_dungeon_spawn_scrolls(game, &game->dungeon_populate_rng, game->player_spawn_x,
-                                    game->player_spawn_y)) {
+                                    game->player_spawn_y, scroll_summon_unit_kind)) {
         return false;
     }
 
@@ -4755,7 +4805,8 @@ static void game_dungeon_update_unit_animations(Game *game)
     }
 }
 
-static void game_dungeon_emit_diseased_particle(Game *game, Vector2 sprite_center, float tile_size)
+static void game_dungeon_emit_status_particle(Game *game, Vector2 sprite_center, float tile_size,
+                                              Color color)
 {
     i32 particle_idx = (i32)(game->diseased_particle_cursor % DUNGEON_DISEASED_PARTICLE_CAPACITY);
     game->diseased_particle_cursor =
@@ -4775,11 +4826,12 @@ static void game_dungeon_emit_diseased_particle(Game *game, Vector2 sprite_cente
         .velocity = (Vector2){drift_x, rise_speed},
         .age = 0.0f,
         .lifetime = lifetime,
+        .color = color,
         .active = true,
     };
 }
 
-static void game_dungeon_update_diseased_particles(Game *game)
+static void game_dungeon_update_status_particles(Game *game)
 {
     float frame_time = GetFrameTime();
     if (frame_time <= 0.0f)
@@ -4811,23 +4863,38 @@ static void game_dungeon_update_diseased_particles(Game *game)
         Dungeon_Unit *unit = &game->units[unit_idx];
         if (unit->is_friendly)
             continue;
-        if (!unit->is_diseased)
-            continue;
 
-        unit->diseased_particle_spawn_timer -= frame_time;
-        while (unit->diseased_particle_spawn_timer <= 0.0f) {
-            if (game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
-                Vector2 unit_center =
-                    game_dungeon_get_unit_draw_feet_position(unit, dungeon_origin, tile_size);
-                game_dungeon_emit_diseased_particle(game, unit_center, tile_size);
+        if (unit->is_diseased) {
+            unit->diseased_particle_spawn_timer -= frame_time;
+            while (unit->diseased_particle_spawn_timer <= 0.0f) {
+                if (game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
+                    Vector2 unit_center =
+                        game_dungeon_get_unit_draw_feet_position(unit, dungeon_origin, tile_size);
+                    game_dungeon_emit_status_particle(game, unit_center, tile_size,
+                                                      (Color){0, 0, 0, 255});
+                }
+
+                unit->diseased_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
             }
+        }
 
-            unit->diseased_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+        if (unit->is_poisoned) {
+            unit->poisoned_particle_spawn_timer -= frame_time;
+            while (unit->poisoned_particle_spawn_timer <= 0.0f) {
+                if (game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
+                    Vector2 unit_center =
+                        game_dungeon_get_unit_draw_feet_position(unit, dungeon_origin, tile_size);
+                    game_dungeon_emit_status_particle(game, unit_center, tile_size,
+                                                      (Color){83, 203, 102, 255});
+                }
+
+                unit->poisoned_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+            }
         }
     }
 }
 
-static void game_draw_diseased_particles(const Game *game)
+static void game_draw_status_particles(const Game *game)
 {
     float pixel_size = DUNGEON_TILE_SCALE;
 
@@ -4844,7 +4911,8 @@ static void game_draw_diseased_particles(const Game *game)
 
         float x = roundf((particle->position.x - (pixel_size * 0.5f)) / pixel_size) * pixel_size;
         float y = roundf((particle->position.y - (pixel_size * 0.5f)) / pixel_size) * pixel_size;
-        Color particle_color = (Color){0, 0, 0, alpha};
+        Color particle_color = particle->color;
+        particle_color.a = alpha;
 
         DrawRectangleRec((Rectangle){x - pixel_size, y, pixel_size * 3.0f, pixel_size},
                          particle_color);
@@ -5751,7 +5819,7 @@ static void game_draw_test_dungeon(Game *game)
     Vector2 player_feet = game_dungeon_get_player_draw_feet_position(game, origin, tile_size);
     game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
                                          player_feet, tile_size, unit_anim_frame);
-    game_draw_diseased_particles(game);
+    game_draw_status_particles(game);
     game_draw_scroll_target_indicator(game, origin, tile_size);
 
     if (show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
@@ -6615,7 +6683,7 @@ void game_update(Mem mem)
     }
 
     game_dungeon_update_unit_animations(game);
-    game_dungeon_update_diseased_particles(game);
+    game_dungeon_update_status_particles(game);
 
     if ((i32)game->player_stats.health <= 0) {
         game_open_end_menu(game, END_MENU_DEATH);
