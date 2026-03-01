@@ -304,6 +304,14 @@ typedef struct {
 } Dungeon_Threat_Source;
 
 typedef struct {
+    bool target_is_player;
+    i16 target_x;
+    i16 target_y;
+    i16 distance;
+    i32 target_unit_idx;
+} Dungeon_Enemy_Target;
+
+typedef struct {
     u8 floor_row;
     u8 variation_start;
     u8 variation_count;
@@ -2131,6 +2139,74 @@ static i32 game_dungeon_find_most_threatening_enemy_in_view(const Game *game, i3
     return best_threat.unit_index;
 }
 
+static bool game_dungeon_find_nearest_enemy_target(const Game *game, i32 enemy_x, i32 enemy_y,
+                                                   Dungeon_Enemy_Target *out_target)
+{
+    assert(out_target != 0);
+
+    if (!game_dungeon_cell_in_bounds(enemy_x, enemy_y))
+        return false;
+
+    bool has_target = false;
+    Dungeon_Enemy_Target best_target = {
+        .target_is_player = true,
+        .target_x = game->player_x,
+        .target_y = game->player_y,
+        .distance = DUNGEON_DIJKSTRA_UNREACHABLE,
+        .target_unit_idx = -1,
+    };
+
+    i16 player_distance = DUNGEON_DIJKSTRA_UNREACHABLE;
+    if (game_dungeon_cells_are_cardinal_neighbors(enemy_x, enemy_y, game->player_x,
+                                                  game->player_y)) {
+        player_distance = 1;
+    } else if (game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER]) {
+        player_distance =
+            game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][enemy_y][enemy_x];
+    }
+
+    if (player_distance > 0 && player_distance < DUNGEON_DIJKSTRA_UNREACHABLE) {
+        best_target.distance = player_distance;
+        has_target = true;
+    }
+
+    i16 goal_x[1] = {0};
+    i16 goal_y[1] = {0};
+    i16 distance_to_friendly[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        const Dungeon_Unit *unit = &game->units[unit_idx];
+        if (!unit->is_friendly)
+            continue;
+        if (!game_dungeon_cell_is_floor(game, unit->x, unit->y))
+            continue;
+
+        goal_x[0] = unit->x;
+        goal_y[0] = unit->y;
+        if (!game_dungeon_build_dijkstra_map(game, goal_x, goal_y, 0, 1, distance_to_friendly))
+            continue;
+
+        i16 distance = distance_to_friendly[enemy_y][enemy_x];
+        if (distance <= 0 || distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
+            continue;
+        if (has_target && distance >= best_target.distance)
+            continue;
+
+        best_target.target_is_player = false;
+        best_target.target_x = unit->x;
+        best_target.target_y = unit->y;
+        best_target.distance = distance;
+        best_target.target_unit_idx = unit_idx;
+        has_target = true;
+    }
+
+    if (!has_target)
+        return false;
+
+    *out_target = best_target;
+    return true;
+}
+
 static bool game_dungeon_try_move_unit_towards_cell(Game *game, i32 unit_idx, i32 target_x,
                                                     i32 target_y)
 {
@@ -2360,20 +2436,29 @@ static void game_dungeon_take_enemy_turns(Game *game)
     if (game->unit_count <= 0)
         return;
 
-    bool has_player_dijkstra =
-        game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER];
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++)
+        game->units[unit_idx].has_acted_this_turn = false;
 
-    static const i32 neighbor_offsets[4][2] = {
-        {1, 0},
-        {0, 1},
-        {-1, 0},
-        {0, -1},
-    };
+    while (true) {
+        i32 next_enemy_idx = -1;
 
-    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
-        Dungeon_Unit *unit = &game->units[unit_idx];
-        if (unit->is_friendly)
-            continue;
+        for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+            Dungeon_Unit *unit = &game->units[unit_idx];
+            if (unit->is_friendly)
+                continue;
+            if (unit->has_acted_this_turn)
+                continue;
+
+            next_enemy_idx = unit_idx;
+            break;
+        }
+
+        if (next_enemy_idx < 0)
+            break;
+
+        game->units[next_enemy_idx].has_acted_this_turn = true;
+
+        Dungeon_Unit *unit = &game->units[next_enemy_idx];
         i32 start_x = unit->x;
         i32 start_y = unit->y;
         if (!game_dungeon_cell_in_bounds(start_x, start_y))
@@ -2393,66 +2478,51 @@ static void game_dungeon_take_enemy_turns(Game *game)
         if (!unit->is_awake)
             continue;
 
-        i32 to_player_x = game->player_x - start_x;
-        i32 to_player_y = game->player_y - start_y;
-        bool player_is_adjacent = (to_player_x == 0 && (to_player_y == -1 || to_player_y == 1)) ||
-                                  (to_player_y == 0 && (to_player_x == -1 || to_player_x == 1));
-        if (player_is_adjacent) {
-            unit->orientation =
-                game_dungeon_get_orientation_from_step(to_player_x, to_player_y, unit->orientation);
+        Dungeon_Enemy_Target target = {0};
+        if (!game_dungeon_find_nearest_enemy_target(game, start_x, start_y, &target))
+            continue;
 
-            game->player_damage_event_count++;
-            if (game->player_damage_event_count == 0)
-                game->player_damage_event_count = 1;
-            unit->last_damaged_player_event = game->player_damage_event_count;
+        i32 target_x = target.target_x;
+        i32 target_y = target.target_y;
 
-            bool player_defeated =
-                game_unit_stats_take_damage(&game->player_stats, unit->stats.damage);
-            if (player_defeated)
-                return;
+        if (target.target_is_player) {
+            target_x = game->player_x;
+            target_y = game->player_y;
+        } else {
+            if (target.target_unit_idx < 0 || target.target_unit_idx >= game->unit_count)
+                continue;
+
+            Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
+            if (!target_unit->is_friendly || target_unit->x != target.target_x ||
+                target_unit->y != target.target_y)
+                continue;
+        }
+
+        if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, target_x, target_y)) {
+            unit->orientation = game_dungeon_get_orientation_from_step(
+                target_x - start_x, target_y - start_y, unit->orientation);
+
+            if (target.target_is_player) {
+                game->player_damage_event_count++;
+                if (game->player_damage_event_count == 0)
+                    game->player_damage_event_count = 1;
+                unit->last_damaged_player_event = game->player_damage_event_count;
+
+                bool player_defeated =
+                    game_unit_stats_take_damage(&game->player_stats, unit->stats.damage);
+                if (player_defeated)
+                    return;
+            } else {
+                Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
+                bool target_defeated =
+                    game_unit_stats_take_damage(&target_unit->stats, unit->stats.damage);
+                if (target_defeated)
+                    game_dungeon_remove_unit_at(game, target.target_unit_idx);
+            }
             continue;
         }
 
-        if (!has_player_dijkstra)
-            continue;
-
-        i16 best_distance =
-            game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][start_y][start_x];
-        if (best_distance <= 0 || best_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
-            continue;
-
-        i32 best_x = start_x;
-        i32 best_y = start_y;
-
-        for (i32 n = 0; n < 4; n++) {
-            i32 nx = start_x + neighbor_offsets[n][0];
-            i32 ny = start_y + neighbor_offsets[n][1];
-            if (!game_dungeon_cell_is_floor(game, nx, ny))
-                continue;
-            if (game->player_x == nx && game->player_y == ny)
-                continue;
-            if (game_dungeon_cell_has_unit_excluding(game, nx, ny, unit_idx))
-                continue;
-
-            i16 next_distance =
-                game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][ny][nx];
-            if (next_distance < 0 || next_distance >= DUNGEON_DIJKSTRA_UNREACHABLE)
-                continue;
-            if (next_distance >= best_distance)
-                continue;
-
-            best_distance = next_distance;
-            best_x = nx;
-            best_y = ny;
-        }
-
-        if (best_x == start_x && best_y == start_y)
-            continue;
-
-        unit->x = (i16)best_x;
-        unit->y = (i16)best_y;
-        unit->orientation = game_dungeon_get_orientation_from_step(
-            best_x - start_x, best_y - start_y, unit->orientation);
+        game_dungeon_try_move_unit_towards_cell(game, next_enemy_idx, target_x, target_y);
     }
 
     game_dungeon_rebuild_dijkstra_maps(game);
