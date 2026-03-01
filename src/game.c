@@ -90,6 +90,7 @@
 #define DUNGEON_GOBLIN_GRUNT_COUNT 7
 #define DUNGEON_DIJKSTRA_UNREACHABLE 0x3fff
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
+#define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
 
 #define DUNGEON_MINIMAP_MAX_WIDTH 320.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 220.0f
@@ -2199,6 +2200,40 @@ static bool game_dungeon_find_first_floor_cell(const Game *game, i16 *out_x, i16
     return false;
 }
 
+static i32 game_abs_i32(i32 value)
+{
+    return value < 0 ? -value : value;
+}
+
+static bool game_dungeon_cell_is_offscreen_from_entry_point(i32 x, i32 y, i32 entry_x, i32 entry_y)
+{
+    if (!game_dungeon_cell_in_bounds(entry_x, entry_y))
+        return true;
+
+    float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
+    float half_visible_tiles_x = (float)VIRTUAL_W / (tile_size * DUNGEON_CAMERA_ZOOM_RESET * 2.0f);
+    float half_visible_tiles_y = (float)VIRTUAL_H / (tile_size * DUNGEON_CAMERA_ZOOM_RESET * 2.0f);
+    float max_visible_dx = half_visible_tiles_x + DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES;
+    float max_visible_dy = half_visible_tiles_y + DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES;
+
+    i32 dx = game_abs_i32(x - entry_x);
+    i32 dy = game_abs_i32(y - entry_y);
+    return (float)dx > max_visible_dx || (float)dy > max_visible_dy;
+}
+
+static bool game_dungeon_cell_is_offscreen_from_floor_entries(const Game *game, i32 x, i32 y)
+{
+    if (!game_dungeon_cell_is_offscreen_from_entry_point(x, y, game->player_spawn_x,
+                                                         game->player_spawn_y))
+        return false;
+
+    if (game->has_exit &&
+        !game_dungeon_cell_is_offscreen_from_entry_point(x, y, game->exit_x, game->exit_y))
+        return false;
+
+    return true;
+}
+
 static bool game_dungeon_pick_random_floor_cell(Game *game, RNG *rng, bool require_empty,
                                                 i16 *out_x, i16 *out_y)
 {
@@ -2224,6 +2259,44 @@ static bool game_dungeon_pick_random_floor_cell(Game *game, RNG *rng, bool requi
         if (!game_dungeon_cell_is_floor(game, x, y))
             continue;
         if (require_empty && game_dungeon_cell_is_occupied(game, x, y))
+            continue;
+
+        *out_x = (i16)x;
+        *out_y = (i16)y;
+        return true;
+    }
+
+    return false;
+}
+
+static bool game_dungeon_pick_enemy_spawn_floor_cell(Game *game, RNG *rng, i16 *out_x, i16 *out_y)
+{
+    for (i32 attempt = 0; attempt < 512; attempt++) {
+        i32 x = ck_rand_int(rng, 0, DUNGEON_COL_COUNT);
+        i32 y = ck_rand_int(rng, 0, DUNGEON_ROW_COUNT);
+        if (!game_dungeon_cell_is_floor(game, x, y))
+            continue;
+        if (game_dungeon_cell_is_occupied(game, x, y))
+            continue;
+        if (!game_dungeon_cell_is_offscreen_from_floor_entries(game, x, y))
+            continue;
+
+        *out_x = (i16)x;
+        *out_y = (i16)y;
+        return true;
+    }
+
+    i32 total_cells = DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT;
+    i32 start_cell = ck_rand_int(rng, 0, total_cells);
+    for (i32 step = 0; step < total_cells; step++) {
+        i32 idx = (start_cell + step) % total_cells;
+        i32 x = idx % DUNGEON_COL_COUNT;
+        i32 y = idx / DUNGEON_COL_COUNT;
+        if (!game_dungeon_cell_is_floor(game, x, y))
+            continue;
+        if (game_dungeon_cell_is_occupied(game, x, y))
+            continue;
+        if (!game_dungeon_cell_is_offscreen_from_floor_entries(game, x, y))
             continue;
 
         *out_x = (i16)x;
@@ -2403,7 +2476,7 @@ static void game_dungeon_populate_test_entities(Game *game, bool include_up_stai
     for (i32 grunt_idx = 0;
          grunt_idx < DUNGEON_GOBLIN_GRUNT_COUNT && game->unit_count < DUNGEON_MAX_UNITS;
          grunt_idx++) {
-        if (!game_dungeon_pick_random_floor_cell(game, &game->dungeon_populate_rng, true, &x, &y))
+        if (!game_dungeon_pick_enemy_spawn_floor_cell(game, &game->dungeon_populate_rng, &x, &y))
             break;
 
         u8 orientation =
