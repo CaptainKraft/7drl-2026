@@ -108,6 +108,10 @@
 #define DUNGEON_POISON_DAMAGE_PER_TURN 1
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
+#define DUNGEON_WEB_PROJECTILE_CAPACITY DUNGEON_MAX_UNITS
+#define DUNGEON_WEB_PROJECTILE_DURATION 0.26f
+#define DUNGEON_WEB_PROJECTILE_ARC_HEIGHT_TILES 0.35f
+#define DUNGEON_WEB_PROJECTILE_SIZE_TILES 0.2f
 
 #define DUNGEON_MINIMAP_MAX_WIDTH 640.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
@@ -303,6 +307,8 @@ typedef struct {
     float diseased_particle_spawn_timer;
     bool is_poisoned;
     float poisoned_particle_spawn_timer;
+    bool is_webbed;
+    bool webbed_skip_next_turn;
     u32 last_damaged_player_event;
     bool move_anim_active;
     bool attack_anim_active;
@@ -319,6 +325,17 @@ typedef struct {
     Color color;
     bool active;
 } Dungeon_Diseased_Particle;
+
+typedef struct {
+    float start_x;
+    float start_y;
+    float target_x;
+    float target_y;
+    float elapsed;
+    float duration;
+    float delay;
+    bool active;
+} Dungeon_Web_Projectile;
 
 typedef struct {
     i16 x;
@@ -435,6 +452,9 @@ typedef struct {
 
     Dungeon_Diseased_Particle diseased_particles[DUNGEON_DISEASED_PARTICLE_CAPACITY];
     u16 diseased_particle_cursor;
+
+    Dungeon_Web_Projectile web_projectiles[DUNGEON_WEB_PROJECTILE_CAPACITY];
+    u16 web_projectile_cursor;
 
     Dungeon_Defeated_Unit_Visual defeated_unit_visuals[DUNGEON_MAX_UNITS];
     u8 defeated_unit_visual_cursor;
@@ -999,6 +1019,20 @@ static void game_dungeon_apply_poisoned_status(Dungeon_Unit *unit)
     unit->poisoned_particle_spawn_timer = 0.0f;
 }
 
+static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    if (unit->is_friendly)
+        return;
+
+    if (unit->is_webbed)
+        return;
+
+    unit->is_webbed = true;
+    unit->webbed_skip_next_turn = true;
+}
+
 static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -1135,6 +1169,8 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .diseased_particle_spawn_timer = 0.0f,
         .is_poisoned = false,
         .poisoned_particle_spawn_timer = 0.0f,
+        .is_webbed = false,
+        .webbed_skip_next_turn = false,
         .move_anim_active = false,
         .attack_anim_active = false,
         .has_acted_this_turn = false,
@@ -2325,6 +2361,27 @@ static void game_dungeon_begin_player_attack_animation(Game *game, i32 start_x, 
     game->player_attack_anim_active = true;
 }
 
+static void game_dungeon_spawn_web_projectile(Game *game, i32 start_x, i32 start_y, i32 target_x,
+                                              i32 target_y, float start_delay)
+{
+    assert(game != 0);
+
+    i32 projectile_idx = (i32)(game->web_projectile_cursor % DUNGEON_WEB_PROJECTILE_CAPACITY);
+    game->web_projectile_cursor =
+        (u16)((game->web_projectile_cursor + 1) % DUNGEON_WEB_PROJECTILE_CAPACITY);
+
+    game->web_projectiles[projectile_idx] = (Dungeon_Web_Projectile){
+        .start_x = (float)start_x,
+        .start_y = (float)start_y,
+        .target_x = (float)target_x,
+        .target_y = (float)target_y,
+        .elapsed = 0.0f,
+        .duration = DUNGEON_WEB_PROJECTILE_DURATION,
+        .delay = max(0.0f, start_delay),
+        .active = true,
+    };
+}
+
 static bool game_dungeon_cells_are_cardinal_neighbors(i32 a_x, i32 a_y, i32 b_x, i32 b_y)
 {
     i32 dx = b_x - a_x;
@@ -2403,6 +2460,87 @@ static i32 game_dungeon_find_most_threatening_enemy_in_view(
     if (!has_best)
         return -1;
     return best_threat.unit_index;
+}
+
+static i32
+game_dungeon_find_spider_web_target(const Game *game, i32 spider_x, i32 spider_y,
+                                    const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
+                                    bool player_distance_valid, i16 *out_target_distance,
+                                    i16 *out_nearest_enemy_distance)
+{
+    assert(out_target_distance != 0);
+    assert(out_nearest_enemy_distance != 0);
+
+    *out_target_distance = DUNGEON_PATH_UNREACHABLE;
+    *out_nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
+
+    if (!game_dungeon_cell_in_bounds(spider_x, spider_y))
+        return -1;
+
+    i16 goal_x[1] = {(i16)spider_x};
+    i16 goal_y[1] = {(i16)spider_y};
+    i16 distance_from_spider[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_spider))
+        return -1;
+
+    bool has_best = false;
+    i32 best_target_idx = -1;
+    i16 best_spider_distance = DUNGEON_PATH_UNREACHABLE;
+    i16 best_player_distance = DUNGEON_PATH_UNREACHABLE;
+    i16 nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
+
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        const Dungeon_Unit *unit = &game->units[unit_idx];
+        if (unit->is_friendly)
+            continue;
+        if (unit->is_webbed)
+            continue;
+        if (!game_dungeon_cell_in_bounds(unit->x, unit->y))
+            continue;
+        if (!game_dungeon_cell_is_in_player_los(game, unit->x, unit->y))
+            continue;
+        if (!game_dungeon_unit_can_see_cell(game, spider_x, spider_y, unit->x, unit->y))
+            continue;
+
+        i16 spider_distance = distance_from_spider[unit->y][unit->x];
+        if (spider_distance <= 0 || spider_distance >= DUNGEON_PATH_UNREACHABLE)
+            continue;
+
+        if (spider_distance < nearest_enemy_distance)
+            nearest_enemy_distance = spider_distance;
+
+        i16 enemy_player_distance = game_dungeon_get_player_distance_for_threat(
+            game, player_distance, player_distance_valid, unit->x, unit->y);
+
+        bool is_better = false;
+        if (!has_best) {
+            is_better = true;
+        } else if (spider_distance < best_spider_distance) {
+            is_better = true;
+        } else if (spider_distance == best_spider_distance &&
+                   enemy_player_distance < best_player_distance) {
+            is_better = true;
+        } else if (spider_distance == best_spider_distance &&
+                   enemy_player_distance == best_player_distance &&
+                   (i32)unit_idx < best_target_idx) {
+            is_better = true;
+        }
+
+        if (!is_better)
+            continue;
+
+        has_best = true;
+        best_target_idx = unit_idx;
+        best_spider_distance = spider_distance;
+        best_player_distance = enemy_player_distance;
+    }
+
+    if (!has_best)
+        return -1;
+
+    *out_target_distance = best_spider_distance;
+    *out_nearest_enemy_distance = nearest_enemy_distance;
+    return best_target_idx;
 }
 
 static bool game_dungeon_find_nearest_enemy_target(const Game *game, i32 enemy_x, i32 enemy_y,
@@ -2806,22 +2944,58 @@ static void game_dungeon_take_friendly_unit_turn(
         }
     }
 
-    i32 target_enemy_idx = game_dungeon_find_most_threatening_enemy_in_view(
-        game, player_distance, player_distance_valid, start_x, start_y);
-    if (target_enemy_idx >= 0) {
-        Dungeon_Unit *target_enemy = &game->units[target_enemy_idx];
-        i32 enemy_x = target_enemy->x;
-        i32 enemy_y = target_enemy->y;
+    if (unit->kind == UNIT_ART_SPIDER) {
+        i16 target_enemy_distance = DUNGEON_PATH_UNREACHABLE;
+        i16 nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
+        i32 target_enemy_idx = game_dungeon_find_spider_web_target(
+            game, start_x, start_y, player_distance, player_distance_valid, &target_enemy_distance,
+            &nearest_enemy_distance);
+        if (target_enemy_idx >= 0) {
+            Dungeon_Unit *target_enemy = &game->units[target_enemy_idx];
+            i32 enemy_x = target_enemy->x;
+            i32 enemy_y = target_enemy->y;
 
-        if (unit->kind == UNIT_ART_SPIDER) {
             unit->orientation = game_dungeon_get_orientation_from_positions(
                 start_x, start_y, enemy_x, enemy_y, unit->orientation);
+
+            bool no_enemy_too_close =
+                nearest_enemy_distance >= DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE;
+            bool in_web_range =
+                target_enemy_distance >= DUNGEON_SUMMONED_SPIDER_TARGET_MIN_DISTANCE &&
+                target_enemy_distance <= DUNGEON_SUMMONED_SPIDER_TARGET_MAX_DISTANCE;
+            if (no_enemy_too_close && in_web_range) {
+                float attack_delay = game_dungeon_get_unit_move_anim_remaining(target_enemy);
+                game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, enemy_x, enemy_y,
+                                                         attack_delay);
+                game_dungeon_spawn_web_projectile(game, start_x, start_y, enemy_x, enemy_y,
+                                                  attack_delay);
+                target_enemy->is_awake = true;
+                target_enemy->turns_out_of_player_los = 0;
+                game_dungeon_apply_webbed_status(target_enemy);
+                return;
+            }
+
             game_dungeon_try_move_spider_to_distance_range(
                 game, unit_idx, enemy_x, enemy_y, DUNGEON_SUMMONED_SPIDER_TARGET_MIN_DISTANCE,
                 DUNGEON_SUMMONED_SPIDER_TARGET_MAX_DISTANCE,
                 DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
             return;
         }
+
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, game->player_x, game->player_y, unit->orientation);
+        game_dungeon_try_move_spider_to_distance_range(
+            game, unit_idx, game->player_x, game->player_y, follow_distance, follow_distance,
+            DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
+        return;
+    }
+
+    i32 target_enemy_idx = game_dungeon_find_most_threatening_enemy_in_view(
+        game, player_distance, player_distance_valid, start_x, start_y);
+    if (target_enemy_idx >= 0) {
+        Dungeon_Unit *target_enemy = &game->units[target_enemy_idx];
+        i32 enemy_x = target_enemy->x;
+        i32 enemy_y = target_enemy->y;
 
         if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, enemy_x, enemy_y)) {
             unit->orientation = game_dungeon_get_orientation_from_step(
@@ -2846,15 +3020,6 @@ static void game_dungeon_take_friendly_unit_turn(
         }
 
         game_dungeon_try_move_unit_towards_cell(game, unit_idx, enemy_x, enemy_y);
-        return;
-    }
-
-    if (unit->kind == UNIT_ART_SPIDER) {
-        unit->orientation = game_dungeon_get_orientation_from_positions(
-            start_x, start_y, game->player_x, game->player_y, unit->orientation);
-        game_dungeon_try_move_spider_to_distance_range(
-            game, unit_idx, game->player_x, game->player_y, follow_distance, follow_distance,
-            DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
         return;
     }
 
@@ -2978,6 +3143,15 @@ static void game_dungeon_take_enemy_turns(Game *game)
             continue;
         if (woke_from_player_los)
             continue;
+
+        if (unit->is_webbed) {
+            if (unit->webbed_skip_next_turn) {
+                unit->webbed_skip_next_turn = false;
+                continue;
+            }
+
+            unit->webbed_skip_next_turn = true;
+        }
 
         Dungeon_Enemy_Target target = {0};
         if (!game_dungeon_find_nearest_enemy_target(game, start_x, start_y, &target))
@@ -3819,6 +3993,8 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     game->unit_count = 0;
     memset(game->diseased_particles, 0, sizeof(game->diseased_particles));
     game->diseased_particle_cursor = 0;
+    memset(game->web_projectiles, 0, sizeof(game->web_projectiles));
+    game->web_projectile_cursor = 0;
     memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
     game->defeated_unit_visual_cursor = 0;
     game->player_x = -1;
@@ -4804,6 +4980,36 @@ static void game_dungeon_update_unit_animations(Game *game)
     }
 }
 
+static void game_dungeon_update_web_projectiles(Game *game)
+{
+    float frame_time = GetFrameTime();
+    if (frame_time <= 0.0f)
+        frame_time = CAMERA_FALLBACK_FRAME_TIME;
+    frame_time = clamp(frame_time, 0.0f, 0.1f);
+
+    for (i32 projectile_idx = 0; projectile_idx < DUNGEON_WEB_PROJECTILE_CAPACITY;
+         projectile_idx++) {
+        Dungeon_Web_Projectile *projectile = &game->web_projectiles[projectile_idx];
+        if (!projectile->active)
+            continue;
+
+        float projectile_frame_time = frame_time;
+        if (projectile->delay > 0.0f) {
+            projectile->delay -= frame_time;
+            if (projectile->delay > 0.0f) {
+                projectile_frame_time = 0.0f;
+            } else {
+                projectile_frame_time = -projectile->delay;
+                projectile->delay = 0.0f;
+            }
+        }
+
+        projectile->elapsed += projectile_frame_time;
+        if (projectile->elapsed >= projectile->duration)
+            projectile->active = false;
+    }
+}
+
 static void game_dungeon_emit_status_particle(Game *game, Vector2 sprite_center, float tile_size,
                                               Color color)
 {
@@ -4917,6 +5123,38 @@ static void game_draw_status_particles(const Game *game)
                          particle_color);
         DrawRectangleRec((Rectangle){x, y - pixel_size, pixel_size, pixel_size * 3.0f},
                          particle_color);
+    }
+}
+
+static void game_draw_web_projectiles(const Game *game, Vector2 origin, float tile_size)
+{
+    float pixel_size = max(1.0f, DUNGEON_TILE_SCALE);
+    float projectile_size = max(pixel_size * 2.0f, tile_size * DUNGEON_WEB_PROJECTILE_SIZE_TILES);
+
+    for (i32 projectile_idx = 0; projectile_idx < DUNGEON_WEB_PROJECTILE_CAPACITY;
+         projectile_idx++) {
+        const Dungeon_Web_Projectile *projectile = &game->web_projectiles[projectile_idx];
+        if (!projectile->active)
+            continue;
+        if (projectile->delay > 0.0f)
+            continue;
+
+        float duration = max(projectile->duration, 0.001f);
+        float t = clamp(projectile->elapsed / duration, 0.0f, 1.0f);
+        float eased_t = game_dungeon_get_move_anim_eased_t(t);
+
+        float tile_x = projectile->start_x + (projectile->target_x - projectile->start_x) * eased_t;
+        float tile_y = projectile->start_y + (projectile->target_y - projectile->start_y) * eased_t;
+        float arc = sinf(eased_t * 3.14159265f) * DUNGEON_WEB_PROJECTILE_ARC_HEIGHT_TILES;
+        tile_y -= arc;
+
+        Vector2 center = game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
+        float x = roundf((center.x - (projectile_size * 0.5f)) / pixel_size) * pixel_size;
+        float y = roundf((center.y - (projectile_size * 0.5f)) / pixel_size) * pixel_size;
+
+        Rectangle projectile_rect = {x, y, projectile_size, projectile_size};
+        DrawRectangleRec(projectile_rect, (Color){244, 247, 255, 232});
+        DrawRectangleLinesEx(projectile_rect, pixel_size, (Color){255, 255, 255, 255});
     }
 }
 
@@ -5770,6 +6008,8 @@ static void game_draw_test_dungeon(Game *game)
         game_draw_unit_tile_with_feet_anchor(game, visual->kind, visual->orientation, feet_position,
                                              tile_size, unit_anim_frame);
     }
+
+    game_draw_web_projectiles(game, origin, tile_size);
 
     Vector2 player_feet = game_dungeon_get_player_draw_feet_position(game, origin, tile_size);
     game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
@@ -6625,6 +6865,7 @@ void game_update(Mem mem)
     }
 
     game_dungeon_update_unit_animations(game);
+    game_dungeon_update_web_projectiles(game);
     game_dungeon_update_status_particles(game);
 
     if ((i32)game->player_stats.health <= 0) {
