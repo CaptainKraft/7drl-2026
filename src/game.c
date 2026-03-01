@@ -98,6 +98,8 @@
 #define DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE 2
 #define DUNGEON_MOVE_ANIM_DURATION 0.18f
 #define DUNGEON_MOVE_HOP_HEIGHT_TILES 0.16f
+#define DUNGEON_ATTACK_ANIM_DURATION 0.12f
+#define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
 #define DUNGEON_DISEASED_DAMAGE_PER_TURN 1
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
@@ -293,6 +295,10 @@ typedef struct {
     float move_anim_from_x;
     float move_anim_from_y;
     float move_anim_elapsed;
+    float attack_anim_dir_x;
+    float attack_anim_dir_y;
+    float attack_anim_delay;
+    float attack_anim_elapsed;
     UNIT_ART_KIND kind;
     u8 orientation;
     bool is_friendly;
@@ -304,6 +310,7 @@ typedef struct {
     float diseased_particle_spawn_timer;
     u32 last_damaged_player_event;
     bool move_anim_active;
+    bool attack_anim_active;
     bool has_acted_this_turn;
 } Dungeon_Unit;
 
@@ -314,6 +321,17 @@ typedef struct {
     float lifetime;
     bool active;
 } Dungeon_Diseased_Particle;
+
+typedef struct {
+    i16 x;
+    i16 y;
+    float move_anim_from_x;
+    float move_anim_from_y;
+    float move_anim_elapsed;
+    UNIT_ART_KIND kind;
+    u8 orientation;
+    bool move_anim_active;
+} Dungeon_Defeated_Unit_Visual;
 
 typedef struct {
     i16 x;
@@ -420,12 +438,20 @@ typedef struct {
     Dungeon_Diseased_Particle diseased_particles[DUNGEON_DISEASED_PARTICLE_CAPACITY];
     u16 diseased_particle_cursor;
 
+    Dungeon_Defeated_Unit_Visual defeated_unit_visuals[DUNGEON_MAX_UNITS];
+    u8 defeated_unit_visual_cursor;
+
     i16 player_x;
     i16 player_y;
     float player_move_anim_from_x;
     float player_move_anim_from_y;
     float player_move_anim_elapsed;
+    float player_attack_anim_dir_x;
+    float player_attack_anim_dir_y;
+    float player_attack_anim_delay;
+    float player_attack_anim_elapsed;
     bool player_move_anim_active;
+    bool player_attack_anim_active;
     u8 player_orientation;
     Unit_Stats player_stats;
     ITEM_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
@@ -1053,6 +1079,10 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .move_anim_from_x = (float)x,
         .move_anim_from_y = (float)y,
         .move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION,
+        .attack_anim_dir_x = 0.0f,
+        .attack_anim_dir_y = 0.0f,
+        .attack_anim_delay = 0.0f,
+        .attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION,
         .kind = kind,
         .orientation = orientation,
         .is_friendly = is_friendly,
@@ -1063,6 +1093,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .disease_damage_ready = false,
         .diseased_particle_spawn_timer = 0.0f,
         .move_anim_active = false,
+        .attack_anim_active = false,
         .has_acted_this_turn = false,
     };
 }
@@ -1845,10 +1876,37 @@ static void game_dungeon_remove_item_at(Game *game, i32 item_idx)
     game->item_count--;
 }
 
+static void game_dungeon_add_defeated_unit_visual(Game *game, const Dungeon_Unit *unit)
+{
+    assert(game != 0);
+    assert(unit != 0);
+
+    if (!unit->move_anim_active)
+        return;
+
+    u8 visual_idx = game->defeated_unit_visual_cursor;
+    game->defeated_unit_visual_cursor =
+        (u8)((game->defeated_unit_visual_cursor + 1) % DUNGEON_MAX_UNITS);
+
+    game->defeated_unit_visuals[visual_idx] = (Dungeon_Defeated_Unit_Visual){
+        .x = unit->x,
+        .y = unit->y,
+        .move_anim_from_x = unit->move_anim_from_x,
+        .move_anim_from_y = unit->move_anim_from_y,
+        .move_anim_elapsed = unit->move_anim_elapsed,
+        .kind = unit->kind,
+        .orientation = unit->orientation,
+        .move_anim_active = true,
+    };
+}
+
 static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
 {
     assert(unit_idx >= 0);
     assert(unit_idx < game->unit_count);
+
+    Dungeon_Unit removed_unit = game->units[unit_idx];
+    game_dungeon_add_defeated_unit_visual(game, &removed_unit);
 
     u8 last_idx = (u8)(game->unit_count - 1);
     if ((u8)unit_idx != last_idx)
@@ -2151,6 +2209,31 @@ static float game_dungeon_get_move_anim_t(float elapsed)
     return clamp(elapsed / DUNGEON_MOVE_ANIM_DURATION, 0.0f, 1.0f);
 }
 
+static float game_dungeon_get_unit_move_anim_remaining(const Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    if (!unit->move_anim_active)
+        return 0.0f;
+    return max(0.0f, DUNGEON_MOVE_ANIM_DURATION - unit->move_anim_elapsed);
+}
+
+static float game_dungeon_get_player_move_anim_remaining(const Game *game)
+{
+    assert(game != 0);
+
+    if (!game->player_move_anim_active)
+        return 0.0f;
+    return max(0.0f, DUNGEON_MOVE_ANIM_DURATION - game->player_move_anim_elapsed);
+}
+
+static float game_dungeon_get_attack_anim_t(float elapsed)
+{
+    if (DUNGEON_ATTACK_ANIM_DURATION <= 0.0f)
+        return 1.0f;
+    return clamp(elapsed / DUNGEON_ATTACK_ANIM_DURATION, 0.0f, 1.0f);
+}
+
 static float game_dungeon_get_move_anim_eased_t(float t)
 {
     t = clamp(t, 0.0f, 1.0f);
@@ -2186,6 +2269,11 @@ static void game_dungeon_begin_unit_move_animation(Dungeon_Unit *unit, i32 start
     unit->move_anim_from_y = from_y;
     unit->move_anim_elapsed = 0.0f;
     unit->move_anim_active = true;
+    unit->attack_anim_dir_x = 0.0f;
+    unit->attack_anim_dir_y = 0.0f;
+    unit->attack_anim_delay = 0.0f;
+    unit->attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
+    unit->attack_anim_active = false;
 }
 
 static void game_dungeon_begin_player_move_animation(Game *game, i32 start_x, i32 start_y)
@@ -2204,6 +2292,94 @@ static void game_dungeon_begin_player_move_animation(Game *game, i32 start_x, i3
     game->player_move_anim_from_y = from_y;
     game->player_move_anim_elapsed = 0.0f;
     game->player_move_anim_active = true;
+    game->player_attack_anim_dir_x = 0.0f;
+    game->player_attack_anim_dir_y = 0.0f;
+    game->player_attack_anim_delay = 0.0f;
+    game->player_attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
+    game->player_attack_anim_active = false;
+}
+
+static float game_dungeon_get_attack_anim_dash_amount(float t)
+{
+    t = clamp(t, 0.0f, 1.0f);
+    if (t <= 0.5f)
+        return game_dungeon_get_move_anim_eased_t(t / 0.5f);
+    return 1.0f - game_dungeon_get_move_anim_eased_t((t - 0.5f) / 0.5f);
+}
+
+static void game_dungeon_get_attack_anim_direction(i32 start_x, i32 start_y, i32 target_x,
+                                                   i32 target_y, float *out_dir_x, float *out_dir_y)
+{
+    assert(out_dir_x != 0);
+    assert(out_dir_y != 0);
+
+    i32 dx = target_x - start_x;
+    i32 dy = target_y - start_y;
+    i32 abs_dx = dx < 0 ? -dx : dx;
+    i32 abs_dy = dy < 0 ? -dy : dy;
+
+    float dir_x = 0.0f;
+    float dir_y = 0.0f;
+
+    if (abs_dx >= abs_dy) {
+        if (dx > 0)
+            dir_x = 1.0f;
+        else if (dx < 0)
+            dir_x = -1.0f;
+        else if (dy > 0)
+            dir_y = 1.0f;
+        else if (dy < 0)
+            dir_y = -1.0f;
+    } else {
+        if (dy > 0)
+            dir_y = 1.0f;
+        else if (dy < 0)
+            dir_y = -1.0f;
+        else if (dx > 0)
+            dir_x = 1.0f;
+        else if (dx < 0)
+            dir_x = -1.0f;
+    }
+
+    *out_dir_x = dir_x;
+    *out_dir_y = dir_y;
+}
+
+static void game_dungeon_begin_unit_attack_animation(Dungeon_Unit *unit, i32 start_x, i32 start_y,
+                                                     i32 target_x, i32 target_y, float start_delay)
+{
+    assert(unit != 0);
+
+    float dir_x = 0.0f;
+    float dir_y = 0.0f;
+    game_dungeon_get_attack_anim_direction(start_x, start_y, target_x, target_y, &dir_x, &dir_y);
+    if (dir_x == 0.0f && dir_y == 0.0f)
+        return;
+
+    unit->attack_anim_dir_x = dir_x;
+    unit->attack_anim_dir_y = dir_y;
+    unit->attack_anim_delay = max(0.0f, start_delay);
+    unit->attack_anim_elapsed = 0.0f;
+    unit->attack_anim_active = true;
+}
+
+static void game_dungeon_begin_player_attack_animation(Game *game, i32 start_x, i32 start_y,
+                                                       i32 target_x, i32 target_y,
+                                                       float start_delay)
+{
+    assert(game != 0);
+
+    float dir_x = 0.0f;
+    float dir_y = 0.0f;
+    game_dungeon_get_attack_anim_direction(start_x, start_y, target_x, target_y, &dir_x, &dir_y);
+    if (dir_x == 0.0f && dir_y == 0.0f)
+        return;
+
+    game->player_attack_anim_dir_x = dir_x;
+    game->player_attack_anim_dir_y = dir_y;
+    game->player_attack_anim_delay = max(0.0f, start_delay);
+    game->player_attack_anim_elapsed = 0.0f;
+    game->player_attack_anim_active = true;
 }
 
 static bool game_dungeon_cells_are_cardinal_neighbors(i32 a_x, i32 a_y, i32 b_x, i32 b_y)
@@ -2525,6 +2701,9 @@ static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
         if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, enemy_x, enemy_y)) {
             unit->orientation = game_dungeon_get_orientation_from_step(
                 enemy_x - start_x, enemy_y - start_y, unit->orientation);
+            float attack_delay = game_dungeon_get_unit_move_anim_remaining(target_enemy);
+            game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, enemy_x, enemy_y,
+                                                     attack_delay);
 
             target_enemy->is_awake = true;
             target_enemy->turns_out_of_player_los = 0;
@@ -2639,10 +2818,12 @@ static void game_dungeon_take_enemy_turns(Game *game)
 
         i32 target_x = target.target_x;
         i32 target_y = target.target_y;
+        float attack_delay = 0.0f;
 
         if (target.target_is_player) {
             target_x = game->player_x;
             target_y = game->player_y;
+            attack_delay = game_dungeon_get_player_move_anim_remaining(game);
         } else {
             if (target.target_unit_idx < 0 || target.target_unit_idx >= game->unit_count)
                 continue;
@@ -2651,11 +2832,14 @@ static void game_dungeon_take_enemy_turns(Game *game)
             if (!target_unit->is_friendly || target_unit->x != target.target_x ||
                 target_unit->y != target.target_y)
                 continue;
+            attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
         }
 
         if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, target_x, target_y)) {
             unit->orientation = game_dungeon_get_orientation_from_step(
                 target_x - start_x, target_y - start_y, unit->orientation);
+            game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
+                                                     attack_delay);
 
             if (target.target_is_player) {
                 game->player_damage_event_count++;
@@ -3462,12 +3646,19 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     game->unit_count = 0;
     memset(game->diseased_particles, 0, sizeof(game->diseased_particles));
     game->diseased_particle_cursor = 0;
+    memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
+    game->defeated_unit_visual_cursor = 0;
     game->player_x = -1;
     game->player_y = -1;
     game->player_move_anim_from_x = -1.0f;
     game->player_move_anim_from_y = -1.0f;
     game->player_move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+    game->player_attack_anim_dir_x = 0.0f;
+    game->player_attack_anim_dir_y = 0.0f;
+    game->player_attack_anim_delay = 0.0f;
+    game->player_attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
     game->player_move_anim_active = false;
+    game->player_attack_anim_active = false;
     game->player_orientation = PLAYER_START_ORIENTATION;
     game->player_damage_event_count = 0;
     for (i32 map_idx = 0; map_idx < NUM_DUNGEON_DIJKSTRA_MAPS; map_idx++)
@@ -3502,7 +3693,12 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     game->player_move_anim_from_x = (float)player_x;
     game->player_move_anim_from_y = (float)player_y;
     game->player_move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+    game->player_attack_anim_dir_x = 0.0f;
+    game->player_attack_anim_dir_y = 0.0f;
+    game->player_attack_anim_delay = 0.0f;
+    game->player_attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
     game->player_move_anim_active = false;
+    game->player_attack_anim_active = false;
     game->player_spawn_x = player_x;
     game->player_spawn_y = player_y;
 
@@ -3602,7 +3798,12 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
         game->player_move_anim_from_x = (float)arrival_x;
         game->player_move_anim_from_y = (float)arrival_y;
         game->player_move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+        game->player_attack_anim_dir_x = 0.0f;
+        game->player_attack_anim_dir_y = 0.0f;
+        game->player_attack_anim_delay = 0.0f;
+        game->player_attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
         game->player_move_anim_active = false;
+        game->player_attack_anim_active = false;
         game_dungeon_build_spawn_to_exit_path(game);
         game_dungeon_rebuild_line_of_sight(game);
         game_dungeon_rebuild_dijkstra_maps(game);
@@ -4210,6 +4411,24 @@ static void game_dungeon_get_unit_draw_tile_position(const Dungeon_Unit *unit, f
     *out_hop = hop;
 }
 
+static void game_dungeon_apply_unit_attack_dash(const Dungeon_Unit *unit, float *io_tile_x,
+                                                float *io_tile_y)
+{
+    assert(unit != 0);
+    assert(io_tile_x != 0);
+    assert(io_tile_y != 0);
+
+    if (!unit->attack_anim_active)
+        return;
+    if (unit->attack_anim_delay > 0.0f)
+        return;
+
+    float attack_t = game_dungeon_get_attack_anim_t(unit->attack_anim_elapsed);
+    float dash_amount = game_dungeon_get_attack_anim_dash_amount(attack_t);
+    *io_tile_x += unit->attack_anim_dir_x * dash_amount * DUNGEON_ATTACK_DASH_DISTANCE_TILES;
+    *io_tile_y += unit->attack_anim_dir_y * dash_amount * DUNGEON_ATTACK_DASH_DISTANCE_TILES;
+}
+
 static Vector2 game_dungeon_get_unit_draw_feet_position(const Dungeon_Unit *unit, Vector2 origin,
                                                         float tile_size)
 {
@@ -4217,6 +4436,30 @@ static Vector2 game_dungeon_get_unit_draw_feet_position(const Dungeon_Unit *unit
     float tile_y = 0.0f;
     float hop = 0.0f;
     game_dungeon_get_unit_draw_tile_position(unit, &tile_x, &tile_y, &hop);
+    game_dungeon_apply_unit_attack_dash(unit, &tile_x, &tile_y);
+
+    Vector2 feet = game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
+    feet.y -= hop * DUNGEON_MOVE_HOP_HEIGHT_TILES * tile_size;
+    return feet;
+}
+
+static Vector2
+game_dungeon_get_defeated_unit_visual_feet_position(const Dungeon_Defeated_Unit_Visual *visual,
+                                                    Vector2 origin, float tile_size)
+{
+    assert(visual != 0);
+
+    float tile_x = (float)visual->x;
+    float tile_y = (float)visual->y;
+    float hop = 0.0f;
+
+    if (visual->move_anim_active) {
+        float t = game_dungeon_get_move_anim_t(visual->move_anim_elapsed);
+        game_dungeon_get_move_anim_tile_position(visual->move_anim_from_x, visual->move_anim_from_y,
+                                                 (float)visual->x, (float)visual->y,
+                                                 visual->move_anim_elapsed, &tile_x, &tile_y);
+        hop = 4.0f * t * (1.0f - t);
+    }
 
     Vector2 feet = game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
     feet.y -= hop * DUNGEON_MOVE_HOP_HEIGHT_TILES * tile_size;
@@ -4248,6 +4491,24 @@ static void game_dungeon_get_player_draw_tile_position(const Game *game, float *
     *out_hop = hop;
 }
 
+static void game_dungeon_apply_player_attack_dash(const Game *game, float *io_tile_x,
+                                                  float *io_tile_y)
+{
+    assert(game != 0);
+    assert(io_tile_x != 0);
+    assert(io_tile_y != 0);
+
+    if (!game->player_attack_anim_active)
+        return;
+    if (game->player_attack_anim_delay > 0.0f)
+        return;
+
+    float attack_t = game_dungeon_get_attack_anim_t(game->player_attack_anim_elapsed);
+    float dash_amount = game_dungeon_get_attack_anim_dash_amount(attack_t);
+    *io_tile_x += game->player_attack_anim_dir_x * dash_amount * DUNGEON_ATTACK_DASH_DISTANCE_TILES;
+    *io_tile_y += game->player_attack_anim_dir_y * dash_amount * DUNGEON_ATTACK_DASH_DISTANCE_TILES;
+}
+
 static Vector2 game_dungeon_get_player_draw_feet_position(const Game *game, Vector2 origin,
                                                           float tile_size)
 {
@@ -4255,6 +4516,7 @@ static Vector2 game_dungeon_get_player_draw_feet_position(const Game *game, Vect
     float tile_y = 0.0f;
     float hop = 0.0f;
     game_dungeon_get_player_draw_tile_position(game, &tile_x, &tile_y, &hop);
+    game_dungeon_apply_player_attack_dash(game, &tile_x, &tile_y);
 
     Vector2 feet = game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
     feet.y -= hop * DUNGEON_MOVE_HOP_HEIGHT_TILES * tile_size;
@@ -4271,7 +4533,7 @@ static Vector2 game_dungeon_get_player_center(const Game *game, float tile_size)
     return game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
 }
 
-static void game_dungeon_update_move_animations(Game *game)
+static void game_dungeon_update_unit_animations(Game *game)
 {
     float frame_time = GetFrameTime();
     if (frame_time <= 0.0f)
@@ -4288,17 +4550,72 @@ static void game_dungeon_update_move_animations(Game *game)
         }
     }
 
+    if (game->player_attack_anim_active) {
+        float attack_frame_time = frame_time;
+        if (game->player_attack_anim_delay > 0.0f) {
+            game->player_attack_anim_delay -= frame_time;
+            if (game->player_attack_anim_delay > 0.0f) {
+                attack_frame_time = 0.0f;
+            } else {
+                attack_frame_time = -game->player_attack_anim_delay;
+                game->player_attack_anim_delay = 0.0f;
+            }
+        }
+
+        game->player_attack_anim_elapsed += attack_frame_time;
+        if (game->player_attack_anim_elapsed >= DUNGEON_ATTACK_ANIM_DURATION) {
+            game->player_attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
+            game->player_attack_anim_dir_x = 0.0f;
+            game->player_attack_anim_dir_y = 0.0f;
+            game->player_attack_anim_delay = 0.0f;
+            game->player_attack_anim_active = false;
+        }
+    }
+
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
         Dungeon_Unit *unit = &game->units[unit_idx];
-        if (!unit->move_anim_active)
+        if (unit->move_anim_active) {
+            unit->move_anim_elapsed += frame_time;
+            if (unit->move_anim_elapsed >= DUNGEON_MOVE_ANIM_DURATION) {
+                unit->move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+                unit->move_anim_from_x = (float)unit->x;
+                unit->move_anim_from_y = (float)unit->y;
+                unit->move_anim_active = false;
+            }
+        }
+
+        if (unit->attack_anim_active) {
+            float attack_frame_time = frame_time;
+            if (unit->attack_anim_delay > 0.0f) {
+                unit->attack_anim_delay -= frame_time;
+                if (unit->attack_anim_delay > 0.0f) {
+                    attack_frame_time = 0.0f;
+                } else {
+                    attack_frame_time = -unit->attack_anim_delay;
+                    unit->attack_anim_delay = 0.0f;
+                }
+            }
+
+            unit->attack_anim_elapsed += attack_frame_time;
+            if (unit->attack_anim_elapsed >= DUNGEON_ATTACK_ANIM_DURATION) {
+                unit->attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
+                unit->attack_anim_dir_x = 0.0f;
+                unit->attack_anim_dir_y = 0.0f;
+                unit->attack_anim_delay = 0.0f;
+                unit->attack_anim_active = false;
+            }
+        }
+    }
+
+    for (u8 visual_idx = 0; visual_idx < DUNGEON_MAX_UNITS; visual_idx++) {
+        Dungeon_Defeated_Unit_Visual *visual = &game->defeated_unit_visuals[visual_idx];
+        if (!visual->move_anim_active)
             continue;
 
-        unit->move_anim_elapsed += frame_time;
-        if (unit->move_anim_elapsed >= DUNGEON_MOVE_ANIM_DURATION) {
-            unit->move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
-            unit->move_anim_from_x = (float)unit->x;
-            unit->move_anim_from_y = (float)unit->y;
-            unit->move_anim_active = false;
+        visual->move_anim_elapsed += frame_time;
+        if (visual->move_anim_elapsed >= DUNGEON_MOVE_ANIM_DURATION) {
+            visual->move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+            visual->move_anim_active = false;
         }
     }
 }
@@ -5043,6 +5360,19 @@ static void game_draw_test_dungeon(Game *game)
                                              tile_size, unit_anim_frame);
     }
 
+    for (u8 visual_idx = 0; visual_idx < DUNGEON_MAX_UNITS; visual_idx++) {
+        const Dungeon_Defeated_Unit_Visual *visual = &game->defeated_unit_visuals[visual_idx];
+        if (!visual->move_anim_active)
+            continue;
+        if (!game_dungeon_cell_is_visible(game, visual->x, visual->y))
+            continue;
+
+        Vector2 feet_position =
+            game_dungeon_get_defeated_unit_visual_feet_position(visual, origin, tile_size);
+        game_draw_unit_tile_with_feet_anchor(game, visual->kind, visual->orientation, feet_position,
+                                             tile_size, unit_anim_frame);
+    }
+
     Vector2 player_feet = game_dungeon_get_player_draw_feet_position(game, origin, tile_size);
     game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
                                          player_feet, tile_size, unit_anim_frame);
@@ -5117,6 +5447,9 @@ static bool game_update_player(Game *game)
         Dungeon_Unit *target_unit = &game->units[target_unit_idx];
         if (target_unit->is_friendly)
             return false;
+        float attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
+        game_dungeon_begin_player_attack_animation(game, game->player_x, game->player_y, next_x,
+                                                   next_y, attack_delay);
         target_unit->is_awake = true;
         target_unit->turns_out_of_player_los = 0;
 
@@ -5865,7 +6198,7 @@ void game_update(Mem mem)
         game_dungeon_take_enemy_turns(game);
     }
 
-    game_dungeon_update_move_animations(game);
+    game_dungeon_update_unit_animations(game);
     game_dungeon_update_diseased_particles(game);
 
     if ((i32)game->player_stats.health <= 0) {
