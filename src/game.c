@@ -2182,6 +2182,8 @@ static i32 game_dungeon_find_most_threatening_enemy_in_view(const Game *game, i3
             continue;
         if (!game_dungeon_cell_in_bounds(unit->x, unit->y))
             continue;
+        if (!game_dungeon_cell_is_in_player_los(game, unit->x, unit->y))
+            continue;
         if (!game_dungeon_unit_can_see_cell(game, viewer_x, viewer_y, unit->x, unit->y))
             continue;
 
