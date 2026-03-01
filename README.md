@@ -54,14 +54,9 @@ This keeps AI logic deterministic, simple to debug, and easy to extend into rich
 
 Dungeon developer-only controls are centralized as data in `src/game.c`:
 
-- Toggle features live in `game_debug_feature_defs`:
-  - `P`: spawn->exit path overlay
-  - `L`: reveal full map (ignores LOS/fog checks)
-  - `J`: Dijkstra distance number overlay
-- Debug actions live in `game_debug_action_defs`:
-  - `Tab`: toggle map/preview view
-  - `Space`: generate next floor
-- Runtime handling is generic (`game_debug_handle_feature_toggles` and `game_debug_handle_actions`), so adding new controls is table-driven.
+- Press the grave key to show/hide the debug HUD in debug builds.
+- Every debug action and feature toggle is a clickable HUD button (no dedicated debug hotkeys).
+- Feature toggles in `game_debug_feature_defs` default to off so debug startup matches release visuals.
 
 Release safety:
 
