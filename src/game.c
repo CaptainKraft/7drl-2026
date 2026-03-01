@@ -100,7 +100,7 @@
 #define DUNGEON_MOVE_HOP_HEIGHT_TILES 0.16f
 #define DUNGEON_ATTACK_ANIM_DURATION 0.12f
 #define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
-#define DUNGEON_DISEASED_DAMAGE_PER_TURN 1
+#define DUNGEON_DISEASED_DAMAGE_PENALTY 1
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
 
@@ -320,7 +320,6 @@ typedef struct {
     bool is_awake;
     u8 turns_out_of_player_los;
     bool is_diseased;
-    bool disease_damage_ready;
     float diseased_particle_spawn_timer;
     u32 last_damaged_player_event;
     bool move_anim_active;
@@ -1041,8 +1040,18 @@ static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
         return;
 
     unit->is_diseased = true;
-    unit->disease_damage_ready = false;
     unit->diseased_particle_spawn_timer = 0.0f;
+}
+
+static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    i32 damage = (i32)unit->stats.damage;
+    if (unit->is_diseased)
+        damage = max(0, damage - DUNGEON_DISEASED_DAMAGE_PENALTY);
+
+    return damage;
 }
 
 static Unit_Stats game_get_player_base_stats(void)
@@ -1106,7 +1115,6 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .is_awake = false,
         .turns_out_of_player_los = 0,
         .is_diseased = false,
-        .disease_damage_ready = false,
         .diseased_particle_spawn_timer = 0.0f,
         .move_anim_active = false,
         .attack_anim_active = false,
@@ -1951,35 +1959,6 @@ static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
     game->unit_count--;
 }
 
-static void game_dungeon_apply_diseased_damage(Game *game)
-{
-    if (game->unit_count <= 0)
-        return;
-
-    for (i32 unit_idx = 0; unit_idx < game->unit_count;) {
-        Dungeon_Unit *unit = &game->units[unit_idx];
-        if (unit->is_friendly || !unit->is_diseased) {
-            unit_idx++;
-            continue;
-        }
-
-        if (!unit->disease_damage_ready) {
-            unit->disease_damage_ready = true;
-            unit_idx++;
-            continue;
-        }
-
-        bool unit_defeated =
-            game_unit_stats_take_damage(&unit->stats, DUNGEON_DISEASED_DAMAGE_PER_TURN);
-        if (unit_defeated) {
-            game_dungeon_remove_unit_at(game, unit_idx);
-            continue;
-        }
-
-        unit_idx++;
-    }
-}
-
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
 {
     if (game->player_x == x && game->player_y == y)
@@ -2775,8 +2754,8 @@ static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
             if (unit->kind == UNIT_ART_RAT)
                 game_dungeon_apply_diseased_status(target_enemy);
 
-            bool enemy_defeated =
-                game_unit_stats_take_damage(&target_enemy->stats, unit->stats.damage);
+            bool enemy_defeated = game_unit_stats_take_damage(
+                &target_enemy->stats, game_dungeon_get_unit_attack_damage(unit));
             if (enemy_defeated)
                 game_dungeon_remove_unit_at(game, target_enemy_idx);
             return;
@@ -2824,7 +2803,6 @@ static void game_dungeon_take_friendly_turns(Game *game)
 
 static void game_dungeon_take_enemy_turns(Game *game)
 {
-    game_dungeon_apply_diseased_damage(game);
     game_dungeon_rebuild_dijkstra_maps(game);
 
     if (game->unit_count <= 0)
@@ -2904,6 +2882,7 @@ static void game_dungeon_take_enemy_turns(Game *game)
                 target_x - start_x, target_y - start_y, unit->orientation);
             game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
                                                      attack_delay);
+            i32 attack_damage = game_dungeon_get_unit_attack_damage(unit);
 
             if (target.target_is_player) {
                 game->player_damage_event_count++;
@@ -2912,13 +2891,13 @@ static void game_dungeon_take_enemy_turns(Game *game)
                 unit->last_damaged_player_event = game->player_damage_event_count;
 
                 bool player_defeated =
-                    game_unit_stats_take_damage(&game->player_stats, unit->stats.damage);
+                    game_unit_stats_take_damage(&game->player_stats, attack_damage);
                 if (player_defeated)
                     return;
             } else {
                 Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
                 bool target_defeated =
-                    game_unit_stats_take_damage(&target_unit->stats, unit->stats.damage);
+                    game_unit_stats_take_damage(&target_unit->stats, attack_damage);
                 if (target_defeated)
                     game_dungeon_remove_unit_at(game, target.target_unit_idx);
             }
@@ -5267,12 +5246,14 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
 
     bool has_hovered_unit = false;
     Unit_Stats hovered_stats = {0};
+    i32 hovered_damage = 0;
     char hovered_name[UNIT_ART_DISPLAY_NAME_CAP];
 
     if (game->player_x == hover_x && game->player_y == hover_y &&
         game_dungeon_cell_is_visible(game, hover_x, hover_y)) {
         snprintf(hovered_name, sizeof(hovered_name), "You");
         hovered_stats = game->player_stats;
+        hovered_damage = (i32)game->player_stats.damage;
         has_hovered_unit = true;
     } else {
         const Dungeon_Unit *unit = game_dungeon_get_unit_at(game, hover_x, hover_y);
@@ -5283,6 +5264,7 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
 
         unit_art_get_display_name(unit->kind, hovered_name, UNIT_ART_DISPLAY_NAME_CAP);
         hovered_stats = unit->stats;
+        hovered_damage = game_dungeon_get_unit_attack_damage(unit);
         has_hovered_unit = true;
     }
 
@@ -5294,7 +5276,7 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
              (i32)hovered_stats.max_health);
 
     char damage_line[32];
-    snprintf(damage_line, sizeof(damage_line), "Damage  %d", (i32)hovered_stats.damage);
+    snprintf(damage_line, sizeof(damage_line), "Damage  %d", hovered_damage);
 
     float title_size = 19.0f;
     float line_size = 16.0f;
