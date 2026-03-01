@@ -4,7 +4,7 @@
 #include "game.h"
 #include "platform.h"
 
-#define GAME_FONT_PATH "assets/Inter-VariableFont_opsz,wght.ttf"
+#define GAME_FONT_PATH "assets/PixelSerif_16px_v02.ttf"
 #define GAME_FONT_SIZE 160
 #define GAME_FONT_SPACING 0.0f
 

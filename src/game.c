@@ -326,6 +326,7 @@ typedef struct {
     bool move_anim_active;
     bool attack_anim_active;
     bool has_acted_this_turn;
+    bool skip_friendly_turn_once;
     bool is_returning_to_player;
 } Dungeon_Unit;
 
@@ -1185,6 +1186,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .move_anim_active = false,
         .attack_anim_active = false,
         .has_acted_this_turn = false,
+        .skip_friendly_turn_once = false,
         .is_returning_to_player = false,
     };
 }
@@ -2842,8 +2844,18 @@ static void game_dungeon_take_friendly_turns(Game *game)
 
     game_dungeon_rebuild_dijkstra_maps(game);
 
-    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++)
-        game->units[unit_idx].has_acted_this_turn = false;
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        unit->has_acted_this_turn = false;
+
+        if (!unit->is_friendly)
+            continue;
+        if (!unit->skip_friendly_turn_once)
+            continue;
+
+        unit->has_acted_this_turn = true;
+        unit->skip_friendly_turn_once = false;
+    }
 
     while (true) {
         i32 next_friendly_idx = -1;
@@ -5132,6 +5144,8 @@ static bool game_player_try_use_active_scroll_target(Game *game)
     u8 summon_orientation = game_dungeon_get_orientation_from_positions(
         game->player_x, game->player_y, target_x, target_y, game->player_orientation);
     game_dungeon_add_unit(game, target_x, target_y, summon_unit_kind, summon_orientation, true);
+    assert(game->unit_count > 0);
+    game->units[game->unit_count - 1].skip_friendly_turn_once = true;
     return true;
 }
 
