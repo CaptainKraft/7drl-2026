@@ -124,6 +124,12 @@
 #define DUNGEON_ACTION_BAR_PANEL_PADDING 6.0f
 #define DUNGEON_ACTION_BAR_BOTTOM_MARGIN 14.0f
 
+#define DUNGEON_FAMILIAR_COMMAND_COUNT 2
+#define DUNGEON_FAMILIAR_COMMAND_BUTTON_HEIGHT 28.0f
+#define DUNGEON_FAMILIAR_COMMAND_BUTTON_GAP 6.0f
+#define DUNGEON_FAMILIAR_COMMAND_PANEL_PADDING 6.0f
+#define DUNGEON_FAMILIAR_COMMAND_PANEL_GAP 8.0f
+
 #define DUNGEON_HOVER_PANEL_PADDING 10.0f
 
 #define DEBUG_HUD_PANEL_MARGIN 18.0f
@@ -166,6 +172,8 @@ typedef enum {
     INPUT_ACTION_SLOT_3,
     INPUT_ACTION_SLOT_4,
     INPUT_ACTION_SLOT_5,
+    INPUT_FAMILIAR_WAIT,
+    INPUT_FAMILIAR_RETURN,
     INPUT_BACK,
     INPUT_CONFIRM,
     INPUT_DEBUG_TOGGLE_HUD,
@@ -180,6 +188,12 @@ typedef struct {
     bool pressed[NUM_INPUTS];
     bool released[NUM_INPUTS];
 } Input;
+
+typedef enum {
+    FAMILIAR_TURN_COMMAND_NONE,
+    FAMILIAR_TURN_COMMAND_WAIT,
+    FAMILIAR_TURN_COMMAND_RETURN,
+} FAMILIAR_TURN_COMMAND;
 
 typedef enum {
     DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER,
@@ -312,6 +326,7 @@ typedef struct {
     bool move_anim_active;
     bool attack_anim_active;
     bool has_acted_this_turn;
+    bool is_returning_to_player;
 } Dungeon_Unit;
 
 typedef struct {
@@ -457,6 +472,7 @@ typedef struct {
     ITEM_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
     i32 player_active_scroll_slot;
     u32 player_damage_event_count;
+    FAMILIAR_TURN_COMMAND familiar_turn_command;
 
     i16 player_spawn_x;
     i16 player_spawn_y;
@@ -1095,6 +1111,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .move_anim_active = false,
         .attack_anim_active = false,
         .has_acted_this_turn = false,
+        .is_returning_to_player = false,
     };
 }
 
@@ -1863,6 +1880,26 @@ static i32 game_dungeon_get_unit_index_at(const Game *game, i32 x, i32 y)
     }
 
     return -1;
+}
+
+static bool game_dungeon_has_living_familiar(const Game *game)
+{
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        if (game->units[idx].is_friendly)
+            return true;
+    }
+
+    return false;
+}
+
+static void game_dungeon_set_familiar_return_mode(Game *game, bool returning_to_player)
+{
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        Dungeon_Unit *unit = &game->units[idx];
+        if (!unit->is_friendly)
+            continue;
+        unit->is_returning_to_player = returning_to_player;
+    }
 }
 
 static void game_dungeon_remove_item_at(Game *game, i32 item_idx)
@@ -2693,6 +2730,31 @@ static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
     i32 start_y = unit->y;
     if (!game_dungeon_cell_in_bounds(start_x, start_y))
         return;
+
+    if (unit->is_returning_to_player) {
+        if (game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER]) {
+            i16 player_distance =
+                game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][start_y]
+                                       [start_x];
+            if (player_distance >= 0 && player_distance <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
+                unit->is_returning_to_player = false;
+        }
+
+        if (unit->is_returning_to_player) {
+            game_dungeon_try_move_unit_to_player_distance(game, unit_idx,
+                                                          DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE);
+
+            if (game->dijkstra_distance_valid[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER] &&
+                game_dungeon_cell_in_bounds(unit->x, unit->y)) {
+                i16 player_distance =
+                    game->dijkstra_distance[DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER][unit->y]
+                                           [unit->x];
+                if (player_distance >= 0 && player_distance <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
+                    unit->is_returning_to_player = false;
+            }
+            return;
+        }
+    }
 
     i32 target_enemy_idx = game_dungeon_find_most_threatening_enemy_in_view(game, start_x, start_y);
     if (target_enemy_idx >= 0) {
@@ -5027,6 +5089,76 @@ static Rectangle game_action_bar_panel_rect(void)
     return (Rectangle){x, y, panel_w, panel_h};
 }
 
+static Rectangle game_familiar_command_panel_rect(void)
+{
+    Rectangle action_bar_panel = game_action_bar_panel_rect();
+    float panel_h =
+        DUNGEON_FAMILIAR_COMMAND_BUTTON_HEIGHT + DUNGEON_FAMILIAR_COMMAND_PANEL_PADDING * 2.0f;
+    float y = action_bar_panel.y - DUNGEON_FAMILIAR_COMMAND_PANEL_GAP - panel_h;
+    y = max(DEBUG_HUD_PANEL_MARGIN, y);
+
+    return (Rectangle){action_bar_panel.x, y, action_bar_panel.width, panel_h};
+}
+
+static void game_draw_familiar_command_bar(Game *game)
+{
+    static const char *labels[DUNGEON_FAMILIAR_COMMAND_COUNT] = {
+        "Wait [Space]",
+        "Return [R]",
+    };
+    static const FAMILIAR_TURN_COMMAND commands[DUNGEON_FAMILIAR_COMMAND_COUNT] = {
+        FAMILIAR_TURN_COMMAND_WAIT,
+        FAMILIAR_TURN_COMMAND_RETURN,
+    };
+
+    Rectangle panel = game_familiar_command_panel_rect();
+    bool has_familiar = game_dungeon_has_living_familiar(game);
+    game_draw_dungeon_ui_panel(panel, (Color){15, 18, 14, 232}, (Color){22, 28, 21, 226},
+                               (Color){105, 132, 99, 255});
+
+    float buttons_w = panel.width - DUNGEON_FAMILIAR_COMMAND_PANEL_PADDING * 2.0f;
+    float button_w =
+        (buttons_w - DUNGEON_FAMILIAR_COMMAND_BUTTON_GAP * (DUNGEON_FAMILIAR_COMMAND_COUNT - 1)) /
+        (float)DUNGEON_FAMILIAR_COMMAND_COUNT;
+
+    for (i32 command_idx = 0; command_idx < DUNGEON_FAMILIAR_COMMAND_COUNT; command_idx++) {
+        Rectangle button = {
+            .x = panel.x + DUNGEON_FAMILIAR_COMMAND_PANEL_PADDING +
+                 (button_w + DUNGEON_FAMILIAR_COMMAND_BUTTON_GAP) * (float)command_idx,
+            .y = panel.y + DUNGEON_FAMILIAR_COMMAND_PANEL_PADDING,
+            .width = button_w,
+            .height = DUNGEON_FAMILIAR_COMMAND_BUTTON_HEIGHT,
+        };
+
+        bool active = game->familiar_turn_command == commands[command_idx];
+        Color fill = (Color){55, 72, 51, 255};
+        Color border = (Color){167, 204, 156, 255};
+        Color text = (Color){228, 242, 218, 255};
+
+        if (!has_familiar) {
+            fill = (Color){40, 44, 43, 250};
+            border = (Color){86, 95, 93, 255};
+            text = (Color){124, 132, 129, 255};
+        } else if (!active) {
+            fill = (Color){44, 55, 42, 252};
+            border = (Color){122, 150, 113, 255};
+            text = (Color){194, 212, 187, 255};
+        }
+
+        DrawRectangleRounded(button, 0.18f, 4, fill);
+        DrawRectangleLinesEx(button, 1.0f, border);
+
+        float text_size = 14.0f;
+        Vector2 text_measure =
+            MeasureTextEx(game->font, labels[command_idx], text_size, game->font_spacing);
+        Vector2 text_pos = {
+            .x = button.x + (button.width - text_measure.x) * 0.5f,
+            .y = button.y + (button.height - text_measure.y) * 0.5f,
+        };
+        DrawTextEx(game->font, labels[command_idx], text_pos, text_size, game->font_spacing, text);
+    }
+}
+
 static void game_draw_player_action_bar(Game *game)
 {
     Rectangle panel = game_action_bar_panel_rect();
@@ -5426,6 +5558,7 @@ static bool game_update_player(Game *game)
 {
     i32 move_x = 0;
     i32 move_y = 0;
+    game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
 
     i32 action_slot_idx = game_input_pressed_action_bar_slot(game);
     if (action_slot_idx >= 0)
@@ -5440,6 +5573,18 @@ static bool game_update_player(Game *game)
             return false;
         }
         return game_player_try_use_active_scroll_target(game);
+    }
+
+    if (game_dungeon_has_living_familiar(game)) {
+        if (game->input.pressed[INPUT_FAMILIAR_WAIT]) {
+            game->familiar_turn_command = FAMILIAR_TURN_COMMAND_WAIT;
+            return true;
+        }
+
+        if (game->input.pressed[INPUT_FAMILIAR_RETURN]) {
+            game->familiar_turn_command = FAMILIAR_TURN_COMMAND_RETURN;
+            return true;
+        }
     }
 
     if (game->input.pressed[INPUT_MOVE_UP]) {
@@ -5809,6 +5954,7 @@ static void game_draw_dungeon_hud(Game *game)
     }
 
     Rectangle minimap_panel = game_draw_dungeon_minimap(game);
+    game_draw_familiar_command_bar(game);
     game_draw_player_action_bar(game);
     game_draw_debug_hud(game);
     game_draw_hovered_unit_stats(game, player_panel, minimap_panel);
@@ -5933,6 +6079,7 @@ static bool game_start_new_dungeon_run(Game *game)
     game->dungeon_floor_seed_count = 0;
     game->player_stats = game_get_player_base_stats();
     game_player_clear_action_bar(game);
+    game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
     game->show_dungeon_map = true;
     game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
 
@@ -6033,6 +6180,8 @@ static void game_input(Game *game)
         IsKeyDown(KEY_A) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_LEFT);
     input->down[INPUT_MOVE_RIGHT] =
         IsKeyDown(KEY_D) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
+    input->down[INPUT_FAMILIAR_WAIT] = IsKeyDown(KEY_SPACE);
+    input->down[INPUT_FAMILIAR_RETURN] = IsKeyDown(KEY_R);
     input->down[INPUT_CONFIRM] = IsKeyDown(KEY_ENTER) || IsKeyDown(KEY_KP_ENTER) ||
                                  IsKeyDown(KEY_SPACE) ||
                                  IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
@@ -6056,6 +6205,8 @@ static void game_input(Game *game)
     input->pressed[INPUT_ACTION_SLOT_3] = IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3);
     input->pressed[INPUT_ACTION_SLOT_4] = IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_KP_4);
     input->pressed[INPUT_ACTION_SLOT_5] = IsKeyPressed(KEY_FIVE) || IsKeyPressed(KEY_KP_5);
+    input->pressed[INPUT_FAMILIAR_WAIT] = IsKeyPressed(KEY_SPACE);
+    input->pressed[INPUT_FAMILIAR_RETURN] = IsKeyPressed(KEY_R);
     input->pressed[INPUT_MOUSE_LEFT] = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
     input->pressed[INPUT_MOUSE_RIGHT] = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
     input->pressed[INPUT_MOUSE_MIDDLE] = IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE);
@@ -6220,7 +6371,12 @@ void game_update(Mem mem)
     }
 
     if (player_took_turn) {
-        game_dungeon_take_friendly_turns(game);
+        if (game->familiar_turn_command == FAMILIAR_TURN_COMMAND_RETURN)
+            game_dungeon_set_familiar_return_mode(game, true);
+
+        if (game->familiar_turn_command != FAMILIAR_TURN_COMMAND_WAIT)
+            game_dungeon_take_friendly_turns(game);
+
         game_dungeon_take_enemy_turns(game);
     }
 
