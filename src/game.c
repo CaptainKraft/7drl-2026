@@ -82,7 +82,7 @@
 #define DUNGEON_MAX_FLOOR_DEPTH 512
 #define DUNGEON_EXIT_MIN_PATH_STEPS 80
 #define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
-#define DUNGEON_MAIN_PATH_KEEP_PERCENT 25
+#define DUNGEON_MAIN_PATH_KEEP_PERCENT 50
 #define DUNGEON_MAIN_PATH_CULL_PICK_SAMPLES 4
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 #define DUNGEON_LOS_RADIUS_TILES 12
@@ -4239,10 +4239,9 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
             .x = map_origin.x + ((float)unit.x + 0.5f) * cell_size,
             .y = map_origin.y + ((float)unit.y + 0.5f) * cell_size,
         };
-        DrawCircleV(enemy_center, enemy_radius, (Color){230, 104, 92, 255});
+        DrawPoly(enemy_center, 4, enemy_radius, 45.0f, (Color){230, 104, 92, 255});
         if (enemy_radius > 1.5f) {
-            DrawCircleLines((i32)(enemy_center.x + 0.5f), (i32)(enemy_center.y + 0.5f),
-                            enemy_radius, (Color){87, 32, 31, 255});
+            DrawPolyLinesEx(enemy_center, 4, enemy_radius, 45.0f, 1.0f, (Color){87, 32, 31, 255});
         }
     }
 
@@ -4252,10 +4251,11 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
             .x = map_origin.x + ((float)game->player_x + 0.5f) * cell_size,
             .y = map_origin.y + ((float)game->player_y + 0.5f) * cell_size,
         };
-        float radius = max(2.0f, cell_size * 0.75f);
-        DrawCircleV(player_center, radius, (Color){255, 224, 121, 255});
-        DrawCircleLines((i32)(player_center.x + 0.5f), (i32)(player_center.y + 0.5f), radius,
-                        (Color){101, 63, 24, 255});
+        float pulse_t = 0.5f + 0.5f * sinf((float)GetTime() * 6.0f);
+        float radius = max(2.0f, cell_size * 0.65f);
+        radius *= 0.85f + (0.45f * pulse_t);
+        DrawPoly(player_center, 4, radius, 45.0f, (Color){255, 224, 121, 255});
+        DrawPolyLinesEx(player_center, 4, radius, 45.0f, 1.0f, (Color){101, 63, 24, 255});
     }
 
     return panel;
