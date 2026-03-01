@@ -74,6 +74,7 @@
 #define DUNGEON_RNG_STREAM_LAYOUT 0x4c41594f5554ull
 #define DUNGEON_RNG_STREAM_POPULATE 0x504f50554c415445ull
 #define DUNGEON_RNG_STREAM_CULL 0x43554c4cull
+#define DUNGEON_RNG_STREAM_DISEASED 0x4449534541534544ull
 #define DUNGEON_RNG_STREAM_RUN_SEED 0x52554e53454544ull
 
 #define DUNGEON_MAX_WORLD_FEATURES 12
@@ -95,6 +96,9 @@
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
 #define DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE 2
+#define DUNGEON_DISEASED_DAMAGE_PER_TURN 1
+#define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
+#define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
 
 #define DUNGEON_MINIMAP_MAX_WIDTH 640.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
@@ -290,9 +294,20 @@ typedef struct {
     Unit_Stats stats;
     bool is_awake;
     u8 turns_out_of_player_los;
+    bool is_diseased;
+    bool disease_damage_ready;
+    float diseased_particle_spawn_timer;
     u32 last_damaged_player_event;
     bool has_acted_this_turn;
 } Dungeon_Unit;
+
+typedef struct {
+    Vector2 position;
+    Vector2 velocity;
+    float age;
+    float lifetime;
+    bool active;
+} Dungeon_Diseased_Particle;
 
 typedef struct {
     i16 x;
@@ -379,6 +394,7 @@ typedef struct {
     RNG dungeon_layout_rng;
     RNG dungeon_populate_rng;
     RNG dungeon_cull_rng;
+    RNG dungeon_diseased_particle_rng;
     Dungeon_HBW_Tileset dungeon_tileset;
     char dungeon_template_error[160];
 
@@ -394,6 +410,9 @@ typedef struct {
 
     Dungeon_Unit units[DUNGEON_MAX_UNITS];
     u8 unit_count;
+
+    Dungeon_Diseased_Particle diseased_particles[DUNGEON_DISEASED_PARTICLE_CAPACITY];
+    u16 diseased_particle_cursor;
 
     i16 player_x;
     i16 player_y;
@@ -959,6 +978,21 @@ static bool game_unit_stats_take_damage(Unit_Stats *stats, i32 damage)
     return (i32)stats->health <= 0;
 }
 
+static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    if (unit->is_friendly)
+        return;
+
+    if (unit->is_diseased)
+        return;
+
+    unit->is_diseased = true;
+    unit->disease_damage_ready = false;
+    unit->diseased_particle_spawn_timer = 0.0f;
+}
+
 static Unit_Stats game_get_player_base_stats(void)
 {
     return game_make_unit_stats(6, 2);
@@ -1012,6 +1046,9 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .stats = game_get_unit_base_stats(kind),
         .is_awake = false,
         .turns_out_of_player_los = 0,
+        .is_diseased = false,
+        .disease_damage_ready = false,
+        .diseased_particle_spawn_timer = 0.0f,
         .has_acted_this_turn = false,
     };
 }
@@ -1043,6 +1080,7 @@ static void game_seed_dungeon_rng_streams(Game *game)
     game->dungeon_layout_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_LAYOUT);
     game->dungeon_populate_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_POPULATE);
     game->dungeon_cull_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_CULL);
+    game->dungeon_diseased_particle_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_DISEASED);
 }
 
 static bool game_dungeon_hbw_pixel_is_floor(u8 r, u8 g, u8 b)
@@ -1804,6 +1842,35 @@ static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
     game->unit_count--;
 }
 
+static void game_dungeon_apply_diseased_damage(Game *game)
+{
+    if (game->unit_count <= 0)
+        return;
+
+    for (i32 unit_idx = 0; unit_idx < game->unit_count;) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        if (unit->is_friendly || !unit->is_diseased) {
+            unit_idx++;
+            continue;
+        }
+
+        if (!unit->disease_damage_ready) {
+            unit->disease_damage_ready = true;
+            unit_idx++;
+            continue;
+        }
+
+        bool unit_defeated =
+            game_unit_stats_take_damage(&unit->stats, DUNGEON_DISEASED_DAMAGE_PER_TURN);
+        if (unit_defeated) {
+            game_dungeon_remove_unit_at(game, unit_idx);
+            continue;
+        }
+
+        unit_idx++;
+    }
+}
+
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
 {
     if (game->player_x == x && game->player_y == y)
@@ -2382,6 +2449,9 @@ static void game_dungeon_take_friendly_unit_turn(Game *game, i32 unit_idx)
             target_enemy->is_awake = true;
             target_enemy->turns_out_of_player_los = 0;
 
+            if (unit->kind == UNIT_ART_RAT)
+                game_dungeon_apply_diseased_status(target_enemy);
+
             bool enemy_defeated =
                 game_unit_stats_take_damage(&target_enemy->stats, unit->stats.damage);
             if (enemy_defeated)
@@ -2431,6 +2501,7 @@ static void game_dungeon_take_friendly_turns(Game *game)
 
 static void game_dungeon_take_enemy_turns(Game *game)
 {
+    game_dungeon_apply_diseased_damage(game);
     game_dungeon_rebuild_dijkstra_maps(game);
 
     if (game->unit_count <= 0)
@@ -3309,6 +3380,8 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     game->world_feature_count = 0;
     game->item_count = 0;
     game->unit_count = 0;
+    memset(game->diseased_particles, 0, sizeof(game->diseased_particles));
+    game->diseased_particle_cursor = 0;
     game->player_x = -1;
     game->player_y = -1;
     game->player_orientation = PLAYER_START_ORIENTATION;
@@ -4017,6 +4090,104 @@ static Vector2 game_dungeon_get_player_center(const Game *game, float tile_size)
     return game_dungeon_get_cell_center(origin, game->player_x, game->player_y, tile_size);
 }
 
+static void game_dungeon_emit_diseased_particle(Game *game, Vector2 sprite_center, float tile_size)
+{
+    i32 particle_idx = (i32)(game->diseased_particle_cursor % DUNGEON_DISEASED_PARTICLE_CAPACITY);
+    game->diseased_particle_cursor =
+        (u16)((game->diseased_particle_cursor + 1) % DUNGEON_DISEASED_PARTICLE_CAPACITY);
+
+    float half_sprite_w = tile_size * 0.4f;
+    float spawn_x = ck_rand_float(&game->dungeon_diseased_particle_rng,
+                                  sprite_center.x - half_sprite_w, sprite_center.x + half_sprite_w);
+    float drift_x = ck_rand_float(&game->dungeon_diseased_particle_rng, -DUNGEON_TILE_SCALE * 1.5f,
+                                  DUNGEON_TILE_SCALE * 1.5f);
+    float rise_speed = ck_rand_float(&game->dungeon_diseased_particle_rng,
+                                     -DUNGEON_TILE_SCALE * 5.0f, -DUNGEON_TILE_SCALE * 3.5f);
+    float lifetime = ck_rand_float(&game->dungeon_diseased_particle_rng, 1.0f, 1.25f);
+
+    game->diseased_particles[particle_idx] = (Dungeon_Diseased_Particle){
+        .position = (Vector2){spawn_x, sprite_center.y},
+        .velocity = (Vector2){drift_x, rise_speed},
+        .age = 0.0f,
+        .lifetime = lifetime,
+        .active = true,
+    };
+}
+
+static void game_dungeon_update_diseased_particles(Game *game)
+{
+    float frame_time = GetFrameTime();
+    if (frame_time <= 0.0f)
+        frame_time = CAMERA_FALLBACK_FRAME_TIME;
+    frame_time = clamp(frame_time, 0.0f, 0.1f);
+
+    for (i32 idx = 0; idx < DUNGEON_DISEASED_PARTICLE_CAPACITY; idx++) {
+        Dungeon_Diseased_Particle *particle = &game->diseased_particles[idx];
+        if (!particle->active)
+            continue;
+
+        particle->age += frame_time;
+        if (particle->age >= particle->lifetime) {
+            particle->active = false;
+            continue;
+        }
+
+        particle->position.x += particle->velocity.x * frame_time;
+        particle->position.y += particle->velocity.y * frame_time;
+    }
+
+    if (!game->show_dungeon_map)
+        return;
+
+    float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
+    Vector2 dungeon_origin = game_dungeon_get_origin();
+
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        if (unit->is_friendly)
+            continue;
+        if (!unit->is_diseased)
+            continue;
+
+        unit->diseased_particle_spawn_timer -= frame_time;
+        while (unit->diseased_particle_spawn_timer <= 0.0f) {
+            if (game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
+                Vector2 unit_center =
+                    game_dungeon_get_cell_center(dungeon_origin, unit->x, unit->y, tile_size);
+                game_dungeon_emit_diseased_particle(game, unit_center, tile_size);
+            }
+
+            unit->diseased_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+        }
+    }
+}
+
+static void game_draw_diseased_particles(const Game *game)
+{
+    float pixel_size = DUNGEON_TILE_SCALE;
+
+    for (i32 idx = 0; idx < DUNGEON_DISEASED_PARTICLE_CAPACITY; idx++) {
+        const Dungeon_Diseased_Particle *particle = &game->diseased_particles[idx];
+        if (!particle->active)
+            continue;
+
+        float life_t = particle->age / max(particle->lifetime, 0.001f);
+        life_t = clamp(life_t, 0.0f, 1.0f);
+        u8 alpha = (u8)((1.0f - life_t) * 220.0f);
+        if (alpha == 0)
+            continue;
+
+        float x = roundf((particle->position.x - (pixel_size * 0.5f)) / pixel_size) * pixel_size;
+        float y = roundf((particle->position.y - (pixel_size * 0.5f)) / pixel_size) * pixel_size;
+        Color particle_color = (Color){0, 0, 0, alpha};
+
+        DrawRectangleRec((Rectangle){x - pixel_size, y, pixel_size * 3.0f, pixel_size},
+                         particle_color);
+        DrawRectangleRec((Rectangle){x, y - pixel_size, pixel_size, pixel_size * 3.0f},
+                         particle_color);
+    }
+}
+
 static void game_update_dungeon_camera_offset(Game *game)
 {
     game->dungeon_cam.offset = (Vector2){
@@ -4663,6 +4834,7 @@ static void game_draw_test_dungeon(Game *game)
         game_dungeon_get_cell_center(origin, game->player_x, game->player_y, tile_size);
     game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
                                          player_feet, tile_size, unit_anim_frame);
+    game_draw_diseased_particles(game);
     game_draw_scroll_target_indicator(game, origin, tile_size);
 
     if (show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
@@ -5477,6 +5649,8 @@ void game_update(Mem mem)
         game_dungeon_take_friendly_turns(game);
         game_dungeon_take_enemy_turns(game);
     }
+
+    game_dungeon_update_diseased_particles(game);
 
     if ((i32)game->player_stats.health <= 0) {
         game_open_end_menu(game, END_MENU_DEATH);
