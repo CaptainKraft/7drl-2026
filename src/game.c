@@ -96,6 +96,10 @@
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
 #define DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE 2
+#define DUNGEON_SUMMONED_SPIDER_FOLLOW_DISTANCE 4
+#define DUNGEON_SUMMONED_SPIDER_TARGET_MIN_DISTANCE 3
+#define DUNGEON_SUMMONED_SPIDER_TARGET_MAX_DISTANCE 5
+#define DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE 3
 #define DUNGEON_MOVE_ANIM_DURATION 0.18f
 #define DUNGEON_MOVE_HOP_HEIGHT_TILES 0.16f
 #define DUNGEON_ATTACK_ANIM_DURATION 0.12f
@@ -1086,7 +1090,7 @@ static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
     case UNIT_ART_COBRA:
         return game_make_unit_stats(2, 1);
     case UNIT_ART_SPIDER:
-        return game_make_unit_stats(3, 1);
+        return game_make_unit_stats(1, 0);
     case UNIT_ART_SLIME:
         return game_make_unit_stats(5, 1);
     case UNIT_ART_SKELETON_GRUNT:
@@ -2617,6 +2621,145 @@ static bool game_dungeon_try_move_unit_to_player_distance(
     return true;
 }
 
+static i32 game_dungeon_get_distance_to_range_error(i16 distance, i32 min_distance,
+                                                    i32 max_distance)
+{
+    if (distance < min_distance)
+        return min_distance - distance;
+    if (distance > max_distance)
+        return distance - max_distance;
+    return 0;
+}
+
+static bool game_dungeon_try_move_spider_to_distance_range(Game *game, i32 unit_idx, i32 anchor_x,
+                                                           i32 anchor_y, i32 desired_min_distance,
+                                                           i32 desired_max_distance,
+                                                           i32 min_enemy_distance)
+{
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+    assert(desired_min_distance >= 0);
+    assert(desired_max_distance >= desired_min_distance);
+    assert(min_enemy_distance >= 0);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return false;
+
+    i16 anchor_goal_x[1] = {(i16)anchor_x};
+    i16 anchor_goal_y[1] = {(i16)anchor_y};
+    i16 distance_to_anchor[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_distance_field(game, anchor_goal_x, anchor_goal_y, 1,
+                                           distance_to_anchor)) {
+        return false;
+    }
+
+    i16 enemy_goal_x[DUNGEON_MAX_UNITS];
+    i16 enemy_goal_y[DUNGEON_MAX_UNITS];
+    i32 enemy_goal_count = 0;
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        const Dungeon_Unit *enemy = &game->units[idx];
+        if (enemy->is_friendly)
+            continue;
+        if (!game_dungeon_cell_is_floor(game, enemy->x, enemy->y))
+            continue;
+
+        enemy_goal_x[enemy_goal_count] = enemy->x;
+        enemy_goal_y[enemy_goal_count] = enemy->y;
+        enemy_goal_count++;
+    }
+
+    bool has_enemy_distance = false;
+    i16 distance_to_nearest_enemy[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (enemy_goal_count > 0) {
+        has_enemy_distance = game_dungeon_build_distance_field(
+            game, enemy_goal_x, enemy_goal_y, enemy_goal_count, distance_to_nearest_enemy);
+    }
+
+    static const i32 candidate_offsets[5][2] = {
+        {0, 0}, {1, 0}, {0, 1}, {-1, 0}, {0, -1},
+    };
+
+    i32 preferred_distance = (desired_min_distance + desired_max_distance) / 2;
+    bool has_best = false;
+    i32 best_x = start_x;
+    i32 best_y = start_y;
+    i32 best_enemy_error = 0;
+    i16 best_nearest_enemy_distance = 0;
+    i32 best_anchor_error = 0;
+    i32 best_center_error = 0;
+
+    for (i32 candidate_idx = 0; candidate_idx < 5; candidate_idx++) {
+        i32 nx = start_x + candidate_offsets[candidate_idx][0];
+        i32 ny = start_y + candidate_offsets[candidate_idx][1];
+        if (!game_dungeon_cell_is_floor(game, nx, ny))
+            continue;
+        if (game->player_x == nx && game->player_y == ny)
+            continue;
+        if (game_dungeon_cell_has_unit_excluding(game, nx, ny, unit_idx))
+            continue;
+
+        i16 anchor_distance = distance_to_anchor[ny][nx];
+        if (anchor_distance < 0 || anchor_distance >= DUNGEON_PATH_UNREACHABLE)
+            continue;
+
+        i16 nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
+        if (has_enemy_distance) {
+            nearest_enemy_distance = distance_to_nearest_enemy[ny][nx];
+            if (nearest_enemy_distance < 0 || nearest_enemy_distance >= DUNGEON_PATH_UNREACHABLE)
+                continue;
+        }
+
+        i32 enemy_error = 0;
+        if (has_enemy_distance && nearest_enemy_distance < min_enemy_distance)
+            enemy_error = min_enemy_distance - nearest_enemy_distance;
+
+        i32 anchor_error = game_dungeon_get_distance_to_range_error(
+            anchor_distance, desired_min_distance, desired_max_distance);
+        i32 center_error = anchor_distance - preferred_distance;
+        if (center_error < 0)
+            center_error = -center_error;
+
+        bool is_better = false;
+        if (!has_best) {
+            is_better = true;
+        } else if (enemy_error != best_enemy_error) {
+            is_better = enemy_error < best_enemy_error;
+        } else if (enemy_error > 0 && nearest_enemy_distance != best_nearest_enemy_distance) {
+            is_better = nearest_enemy_distance > best_nearest_enemy_distance;
+        } else if (anchor_error != best_anchor_error) {
+            is_better = anchor_error < best_anchor_error;
+        } else if (center_error != best_center_error) {
+            is_better = center_error < best_center_error;
+        }
+
+        if (!is_better)
+            continue;
+
+        has_best = true;
+        best_x = nx;
+        best_y = ny;
+        best_enemy_error = enemy_error;
+        best_nearest_enemy_distance = nearest_enemy_distance;
+        best_anchor_error = anchor_error;
+        best_center_error = center_error;
+    }
+
+    if (!has_best)
+        return false;
+    if (best_x == start_x && best_y == start_y)
+        return false;
+
+    game_dungeon_begin_unit_move_animation(unit, start_x, start_y);
+    unit->x = (i16)best_x;
+    unit->y = (i16)best_y;
+    unit->orientation = game_dungeon_get_orientation_from_step(best_x - start_x, best_y - start_y,
+                                                               unit->orientation);
+    return true;
+}
+
 static void game_dungeon_take_friendly_unit_turn(
     Game *game, i32 unit_idx, const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
     bool player_distance_valid)
@@ -2633,23 +2776,30 @@ static void game_dungeon_take_friendly_unit_turn(
     if (!game_dungeon_cell_in_bounds(start_x, start_y))
         return;
 
+    i32 follow_distance = DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE;
+    if (unit->kind == UNIT_ART_SPIDER)
+        follow_distance = DUNGEON_SUMMONED_SPIDER_FOLLOW_DISTANCE;
+
     if (unit->is_returning_to_player) {
         if (player_distance_valid) {
             i16 distance_to_player = player_distance[start_y][start_x];
-            if (distance_to_player >= 0 &&
-                distance_to_player <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
+            if (distance_to_player >= 0 && distance_to_player <= follow_distance)
                 unit->is_returning_to_player = false;
         }
 
         if (unit->is_returning_to_player) {
-            game_dungeon_try_move_unit_to_player_distance(game, unit_idx,
-                                                          DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE,
-                                                          player_distance, player_distance_valid);
+            if (unit->kind == UNIT_ART_SPIDER) {
+                game_dungeon_try_move_spider_to_distance_range(
+                    game, unit_idx, game->player_x, game->player_y, follow_distance,
+                    follow_distance, DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
+            } else {
+                game_dungeon_try_move_unit_to_player_distance(
+                    game, unit_idx, follow_distance, player_distance, player_distance_valid);
+            }
 
             if (player_distance_valid && game_dungeon_cell_in_bounds(unit->x, unit->y)) {
                 i16 distance_to_player = player_distance[unit->y][unit->x];
-                if (distance_to_player >= 0 &&
-                    distance_to_player <= DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE)
+                if (distance_to_player >= 0 && distance_to_player <= follow_distance)
                     unit->is_returning_to_player = false;
             }
             return;
@@ -2662,6 +2812,16 @@ static void game_dungeon_take_friendly_unit_turn(
         Dungeon_Unit *target_enemy = &game->units[target_enemy_idx];
         i32 enemy_x = target_enemy->x;
         i32 enemy_y = target_enemy->y;
+
+        if (unit->kind == UNIT_ART_SPIDER) {
+            unit->orientation = game_dungeon_get_orientation_from_positions(
+                start_x, start_y, enemy_x, enemy_y, unit->orientation);
+            game_dungeon_try_move_spider_to_distance_range(
+                game, unit_idx, enemy_x, enemy_y, DUNGEON_SUMMONED_SPIDER_TARGET_MIN_DISTANCE,
+                DUNGEON_SUMMONED_SPIDER_TARGET_MAX_DISTANCE,
+                DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
+            return;
+        }
 
         if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, enemy_x, enemy_y)) {
             unit->orientation = game_dungeon_get_orientation_from_step(
@@ -2689,9 +2849,17 @@ static void game_dungeon_take_friendly_unit_turn(
         return;
     }
 
-    game_dungeon_try_move_unit_to_player_distance(game, unit_idx,
-                                                  DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE,
-                                                  player_distance, player_distance_valid);
+    if (unit->kind == UNIT_ART_SPIDER) {
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, game->player_x, game->player_y, unit->orientation);
+        game_dungeon_try_move_spider_to_distance_range(
+            game, unit_idx, game->player_x, game->player_y, follow_distance, follow_distance,
+            DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
+        return;
+    }
+
+    game_dungeon_try_move_unit_to_player_distance(game, unit_idx, follow_distance, player_distance,
+                                                  player_distance_valid);
 }
 
 static void game_dungeon_take_friendly_turns(Game *game)
@@ -3492,6 +3660,7 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summo
 {
     assert(position_rng != 0);
     assert(summon_kind_rng != 0);
+    (void)summon_kind_rng;
 
     i16 distance_map[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
     i32 max_distance = 0;
@@ -3527,8 +3696,7 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summo
         if (!found)
             return false;
 
-        UNIT_ART_KIND summon_unit_kind =
-            ck_rand_int(summon_kind_rng, 0, 2) == 0 ? UNIT_ART_RAT : UNIT_ART_COBRA;
+        UNIT_ART_KIND summon_unit_kind = UNIT_ART_SPIDER;
         game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, summon_unit_kind);
     }
 
