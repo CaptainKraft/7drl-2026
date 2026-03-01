@@ -96,6 +96,8 @@
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
 #define DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE 2
+#define DUNGEON_MOVE_ANIM_DURATION 0.18f
+#define DUNGEON_MOVE_HOP_HEIGHT_TILES 0.16f
 #define DUNGEON_DISEASED_DAMAGE_PER_TURN 1
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
@@ -288,6 +290,9 @@ typedef struct {
 typedef struct {
     i16 x;
     i16 y;
+    float move_anim_from_x;
+    float move_anim_from_y;
+    float move_anim_elapsed;
     UNIT_ART_KIND kind;
     u8 orientation;
     bool is_friendly;
@@ -298,6 +303,7 @@ typedef struct {
     bool disease_damage_ready;
     float diseased_particle_spawn_timer;
     u32 last_damaged_player_event;
+    bool move_anim_active;
     bool has_acted_this_turn;
 } Dungeon_Unit;
 
@@ -416,6 +422,10 @@ typedef struct {
 
     i16 player_x;
     i16 player_y;
+    float player_move_anim_from_x;
+    float player_move_anim_from_y;
+    float player_move_anim_elapsed;
+    bool player_move_anim_active;
     u8 player_orientation;
     Unit_Stats player_stats;
     ITEM_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
@@ -1040,6 +1050,9 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
     game->units[game->unit_count++] = (Dungeon_Unit){
         .x = (i16)x,
         .y = (i16)y,
+        .move_anim_from_x = (float)x,
+        .move_anim_from_y = (float)y,
+        .move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION,
         .kind = kind,
         .orientation = orientation,
         .is_friendly = is_friendly,
@@ -1049,6 +1062,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .is_diseased = false,
         .disease_damage_ready = false,
         .diseased_particle_spawn_timer = 0.0f,
+        .move_anim_active = false,
         .has_acted_this_turn = false,
     };
 }
@@ -2130,6 +2144,68 @@ static u8 game_dungeon_get_orientation_from_positions(i32 origin_x, i32 origin_y
     return fallback;
 }
 
+static float game_dungeon_get_move_anim_t(float elapsed)
+{
+    if (DUNGEON_MOVE_ANIM_DURATION <= 0.0f)
+        return 1.0f;
+    return clamp(elapsed / DUNGEON_MOVE_ANIM_DURATION, 0.0f, 1.0f);
+}
+
+static float game_dungeon_get_move_anim_eased_t(float t)
+{
+    t = clamp(t, 0.0f, 1.0f);
+    return t * t * (3.0f - (2.0f * t));
+}
+
+static void game_dungeon_get_move_anim_tile_position(float from_x, float from_y, float to_x,
+                                                     float to_y, float elapsed, float *out_x,
+                                                     float *out_y)
+{
+    assert(out_x != 0);
+    assert(out_y != 0);
+
+    float t = game_dungeon_get_move_anim_t(elapsed);
+    float eased_t = game_dungeon_get_move_anim_eased_t(t);
+    *out_x = from_x + ((to_x - from_x) * eased_t);
+    *out_y = from_y + ((to_y - from_y) * eased_t);
+}
+
+static void game_dungeon_begin_unit_move_animation(Dungeon_Unit *unit, i32 start_x, i32 start_y)
+{
+    assert(unit != 0);
+
+    float from_x = (float)start_x;
+    float from_y = (float)start_y;
+    if (unit->move_anim_active) {
+        game_dungeon_get_move_anim_tile_position(unit->move_anim_from_x, unit->move_anim_from_y,
+                                                 (float)start_x, (float)start_y,
+                                                 unit->move_anim_elapsed, &from_x, &from_y);
+    }
+
+    unit->move_anim_from_x = from_x;
+    unit->move_anim_from_y = from_y;
+    unit->move_anim_elapsed = 0.0f;
+    unit->move_anim_active = true;
+}
+
+static void game_dungeon_begin_player_move_animation(Game *game, i32 start_x, i32 start_y)
+{
+    assert(game != 0);
+
+    float from_x = (float)start_x;
+    float from_y = (float)start_y;
+    if (game->player_move_anim_active) {
+        game_dungeon_get_move_anim_tile_position(
+            game->player_move_anim_from_x, game->player_move_anim_from_y, (float)start_x,
+            (float)start_y, game->player_move_anim_elapsed, &from_x, &from_y);
+    }
+
+    game->player_move_anim_from_x = from_x;
+    game->player_move_anim_from_y = from_y;
+    game->player_move_anim_elapsed = 0.0f;
+    game->player_move_anim_active = true;
+}
+
 static bool game_dungeon_cells_are_cardinal_neighbors(i32 a_x, i32 a_y, i32 b_x, i32 b_y)
 {
     i32 dx = b_x - a_x;
@@ -2332,6 +2408,7 @@ static bool game_dungeon_try_move_unit_towards_cell(Game *game, i32 unit_idx, i3
     if (best_x == start_x && best_y == start_y)
         return false;
 
+    game_dungeon_begin_unit_move_animation(unit, start_x, start_y);
     unit->x = (i16)best_x;
     unit->y = (i16)best_y;
     unit->orientation = game_dungeon_get_orientation_from_step(best_x - start_x, best_y - start_y,
@@ -2417,6 +2494,7 @@ static bool game_dungeon_try_move_unit_to_player_distance(Game *game, i32 unit_i
     if (best_x == start_x && best_y == start_y)
         return false;
 
+    game_dungeon_begin_unit_move_animation(unit, start_x, start_y);
     unit->x = (i16)best_x;
     unit->y = (i16)best_y;
     unit->orientation = game_dungeon_get_orientation_from_step(best_x - start_x, best_y - start_y,
@@ -3386,6 +3464,10 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     game->diseased_particle_cursor = 0;
     game->player_x = -1;
     game->player_y = -1;
+    game->player_move_anim_from_x = -1.0f;
+    game->player_move_anim_from_y = -1.0f;
+    game->player_move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+    game->player_move_anim_active = false;
     game->player_orientation = PLAYER_START_ORIENTATION;
     game->player_damage_event_count = 0;
     for (i32 map_idx = 0; map_idx < NUM_DUNGEON_DIJKSTRA_MAPS; map_idx++)
@@ -3417,6 +3499,10 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     assert(found_player_cell);
     game->player_x = player_x;
     game->player_y = player_y;
+    game->player_move_anim_from_x = (float)player_x;
+    game->player_move_anim_from_y = (float)player_y;
+    game->player_move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+    game->player_move_anim_active = false;
     game->player_spawn_x = player_x;
     game->player_spawn_y = player_y;
 
@@ -3513,6 +3599,10 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
 
         game->player_x = arrival_x;
         game->player_y = arrival_y;
+        game->player_move_anim_from_x = (float)arrival_x;
+        game->player_move_anim_from_y = (float)arrival_y;
+        game->player_move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+        game->player_move_anim_active = false;
         game_dungeon_build_spawn_to_exit_path(game);
         game_dungeon_rebuild_line_of_sight(game);
         game_dungeon_rebuild_dijkstra_maps(game);
@@ -4086,10 +4176,131 @@ static Vector2 game_dungeon_get_cell_center(Vector2 origin, i32 x, i32 y, float 
     };
 }
 
+static Vector2 game_dungeon_get_tile_center(Vector2 origin, float tile_x, float tile_y,
+                                            float tile_size)
+{
+    return (Vector2){
+        .x = origin.x + (tile_x + 0.5f) * tile_size,
+        .y = origin.y + (tile_y + 0.5f) * tile_size,
+    };
+}
+
+static void game_dungeon_get_unit_draw_tile_position(const Dungeon_Unit *unit, float *out_tile_x,
+                                                     float *out_tile_y, float *out_hop)
+{
+    assert(unit != 0);
+    assert(out_tile_x != 0);
+    assert(out_tile_y != 0);
+    assert(out_hop != 0);
+
+    float tile_x = (float)unit->x;
+    float tile_y = (float)unit->y;
+    float hop = 0.0f;
+
+    if (unit->move_anim_active) {
+        float t = game_dungeon_get_move_anim_t(unit->move_anim_elapsed);
+        game_dungeon_get_move_anim_tile_position(unit->move_anim_from_x, unit->move_anim_from_y,
+                                                 (float)unit->x, (float)unit->y,
+                                                 unit->move_anim_elapsed, &tile_x, &tile_y);
+        hop = 4.0f * t * (1.0f - t);
+    }
+
+    *out_tile_x = tile_x;
+    *out_tile_y = tile_y;
+    *out_hop = hop;
+}
+
+static Vector2 game_dungeon_get_unit_draw_feet_position(const Dungeon_Unit *unit, Vector2 origin,
+                                                        float tile_size)
+{
+    float tile_x = 0.0f;
+    float tile_y = 0.0f;
+    float hop = 0.0f;
+    game_dungeon_get_unit_draw_tile_position(unit, &tile_x, &tile_y, &hop);
+
+    Vector2 feet = game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
+    feet.y -= hop * DUNGEON_MOVE_HOP_HEIGHT_TILES * tile_size;
+    return feet;
+}
+
+static void game_dungeon_get_player_draw_tile_position(const Game *game, float *out_tile_x,
+                                                       float *out_tile_y, float *out_hop)
+{
+    assert(game != 0);
+    assert(out_tile_x != 0);
+    assert(out_tile_y != 0);
+    assert(out_hop != 0);
+
+    float tile_x = (float)game->player_x;
+    float tile_y = (float)game->player_y;
+    float hop = 0.0f;
+
+    if (game->player_move_anim_active) {
+        float t = game_dungeon_get_move_anim_t(game->player_move_anim_elapsed);
+        game_dungeon_get_move_anim_tile_position(
+            game->player_move_anim_from_x, game->player_move_anim_from_y, (float)game->player_x,
+            (float)game->player_y, game->player_move_anim_elapsed, &tile_x, &tile_y);
+        hop = 4.0f * t * (1.0f - t);
+    }
+
+    *out_tile_x = tile_x;
+    *out_tile_y = tile_y;
+    *out_hop = hop;
+}
+
+static Vector2 game_dungeon_get_player_draw_feet_position(const Game *game, Vector2 origin,
+                                                          float tile_size)
+{
+    float tile_x = 0.0f;
+    float tile_y = 0.0f;
+    float hop = 0.0f;
+    game_dungeon_get_player_draw_tile_position(game, &tile_x, &tile_y, &hop);
+
+    Vector2 feet = game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
+    feet.y -= hop * DUNGEON_MOVE_HOP_HEIGHT_TILES * tile_size;
+    return feet;
+}
+
 static Vector2 game_dungeon_get_player_center(const Game *game, float tile_size)
 {
     Vector2 origin = game_dungeon_get_origin();
-    return game_dungeon_get_cell_center(origin, game->player_x, game->player_y, tile_size);
+    float tile_x = 0.0f;
+    float tile_y = 0.0f;
+    float hop = 0.0f;
+    game_dungeon_get_player_draw_tile_position(game, &tile_x, &tile_y, &hop);
+    return game_dungeon_get_tile_center(origin, tile_x, tile_y, tile_size);
+}
+
+static void game_dungeon_update_move_animations(Game *game)
+{
+    float frame_time = GetFrameTime();
+    if (frame_time <= 0.0f)
+        frame_time = CAMERA_FALLBACK_FRAME_TIME;
+    frame_time = clamp(frame_time, 0.0f, 0.1f);
+
+    if (game->player_move_anim_active) {
+        game->player_move_anim_elapsed += frame_time;
+        if (game->player_move_anim_elapsed >= DUNGEON_MOVE_ANIM_DURATION) {
+            game->player_move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+            game->player_move_anim_from_x = (float)game->player_x;
+            game->player_move_anim_from_y = (float)game->player_y;
+            game->player_move_anim_active = false;
+        }
+    }
+
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        if (!unit->move_anim_active)
+            continue;
+
+        unit->move_anim_elapsed += frame_time;
+        if (unit->move_anim_elapsed >= DUNGEON_MOVE_ANIM_DURATION) {
+            unit->move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+            unit->move_anim_from_x = (float)unit->x;
+            unit->move_anim_from_y = (float)unit->y;
+            unit->move_anim_active = false;
+        }
+    }
 }
 
 static void game_dungeon_emit_diseased_particle(Game *game, Vector2 sprite_center, float tile_size)
@@ -4155,7 +4366,7 @@ static void game_dungeon_update_diseased_particles(Game *game)
         while (unit->diseased_particle_spawn_timer <= 0.0f) {
             if (game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
                 Vector2 unit_center =
-                    game_dungeon_get_cell_center(dungeon_origin, unit->x, unit->y, tile_size);
+                    game_dungeon_get_unit_draw_feet_position(unit, dungeon_origin, tile_size);
                 game_dungeon_emit_diseased_particle(game, unit_center, tile_size);
             }
 
@@ -4823,17 +5034,16 @@ static void game_draw_test_dungeon(Game *game)
 
     int unit_anim_frame = game_unit_anim_frame();
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
-        Dungeon_Unit unit = game->units[unit_idx];
-        if (!game_dungeon_cell_is_visible(game, unit.x, unit.y))
+        const Dungeon_Unit *unit = &game->units[unit_idx];
+        if (!game_dungeon_cell_is_visible(game, unit->x, unit->y))
             continue;
 
-        Vector2 feet_position = game_dungeon_get_cell_center(origin, unit.x, unit.y, tile_size);
-        game_draw_unit_tile_with_feet_anchor(game, unit.kind, unit.orientation, feet_position,
+        Vector2 feet_position = game_dungeon_get_unit_draw_feet_position(unit, origin, tile_size);
+        game_draw_unit_tile_with_feet_anchor(game, unit->kind, unit->orientation, feet_position,
                                              tile_size, unit_anim_frame);
     }
 
-    Vector2 player_feet =
-        game_dungeon_get_cell_center(origin, game->player_x, game->player_y, tile_size);
+    Vector2 player_feet = game_dungeon_get_player_draw_feet_position(game, origin, tile_size);
     game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
                                          player_feet, tile_size, unit_anim_frame);
     game_draw_diseased_particles(game);
@@ -4917,6 +5127,9 @@ static bool game_update_player(Game *game)
         return true;
     }
 
+    i32 start_x = game->player_x;
+    i32 start_y = game->player_y;
+    game_dungeon_begin_player_move_animation(game, start_x, start_y);
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
     game_player_try_collect_scroll_at(game, next_x, next_y);
@@ -5652,6 +5865,7 @@ void game_update(Mem mem)
         game_dungeon_take_enemy_turns(game);
     }
 
+    game_dungeon_update_move_animations(game);
     game_dungeon_update_diseased_particles(game);
 
     if ((i32)game->player_stats.health <= 0) {
