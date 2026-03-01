@@ -6,7 +6,6 @@
 
 #define GAME_FONT_PATH "assets/PixelSerif_16px_v02.ttf"
 #define GAME_FONT_SIZE 160
-#define GAME_FONT_SPACING 1.0f
 
 typedef struct {
     bool (*init)(void *user);
@@ -61,7 +60,7 @@ static bool game_app_init(void *user)
 
     // set render target since game_init cares about render size
     BeginTextureMode(ctx->framebuffer);
-    game_init(ctx->game_mem, ctx->font, GAME_FONT_SPACING);
+    game_init(ctx->game_mem, ctx->font, 0.0f);
     EndTextureMode();
 
     ctx->accumulator = 0.0;
