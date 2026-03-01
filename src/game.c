@@ -52,6 +52,7 @@
 #define DUNGEON_COL_COUNT (50 * DUNGEON_SIZE_SCALE)
 #define DUNGEON_ROW_COUNT (30 * DUNGEON_SIZE_SCALE)
 #define DUNGEON_TILE_SCALE 4.0f
+#define DUNGEON_ITEM_WORLD_SCALE 1.0f
 #define DUNGEON_PANEL_PADDING 18.0f
 
 #define PLAYER_START_ORIENTATION 1
@@ -94,8 +95,8 @@
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
 
-#define DUNGEON_MINIMAP_MAX_WIDTH 320.0f
-#define DUNGEON_MINIMAP_MAX_HEIGHT 220.0f
+#define DUNGEON_MINIMAP_MAX_WIDTH 640.0f
+#define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
 #define DUNGEON_MINIMAP_MARGIN 18.0f
 #define DUNGEON_MINIMAP_PANEL_PADDING 10.0f
 #define DUNGEON_MINIMAP_LABEL_SIZE 16.0f
@@ -103,8 +104,15 @@
 
 #define DUNGEON_PLAYER_PANEL_MARGIN 16.0f
 #define DUNGEON_PLAYER_PANEL_PADDING 12.0f
-#define DUNGEON_PLAYER_PANEL_HEART_SIZE 24.0f
+#define DUNGEON_PLAYER_PANEL_HEART_SIZE ((float)ITEM_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
 #define DUNGEON_PLAYER_PANEL_HEART_GAP 4.0f
+
+#define DUNGEON_ACTION_BAR_SLOT_COUNT 5
+#define DUNGEON_ACTION_BAR_ITEM_SIZE ((float)ITEM_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
+#define DUNGEON_ACTION_BAR_SLOT_SIZE (DUNGEON_ACTION_BAR_ITEM_SIZE + 4.0f)
+#define DUNGEON_ACTION_BAR_SLOT_GAP 4.0f
+#define DUNGEON_ACTION_BAR_PANEL_PADDING 6.0f
+#define DUNGEON_ACTION_BAR_BOTTOM_MARGIN 14.0f
 
 #define DUNGEON_HOVER_PANEL_PADDING 10.0f
 
@@ -143,6 +151,11 @@ typedef enum {
     INPUT_MOVE_DOWN,
     INPUT_MOVE_LEFT,
     INPUT_MOVE_RIGHT,
+    INPUT_ACTION_SLOT_1,
+    INPUT_ACTION_SLOT_2,
+    INPUT_ACTION_SLOT_3,
+    INPUT_ACTION_SLOT_4,
+    INPUT_ACTION_SLOT_5,
     INPUT_BACK,
     INPUT_CONFIRM,
     INPUT_DEBUG_TOGGLE_HUD,
@@ -375,6 +388,7 @@ typedef struct {
     i16 player_y;
     u8 player_orientation;
     Unit_Stats player_stats;
+    ITEM_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
     u32 player_damage_event_count;
 
     i16 player_spawn_x;
@@ -575,7 +589,7 @@ static Rectangle game_debug_hud_panel_rect(void)
                          (button_gap_count * DEBUG_HUD_BUTTON_GAP) + (DEBUG_HUD_SECTION_GAP * 2.0f);
 
     float x = DEBUG_HUD_PANEL_MARGIN;
-    float y = 150.0f;
+    float y = (float)GetScreenHeight() - panel_height - DEBUG_HUD_PANEL_MARGIN;
     float max_x =
         max(DEBUG_HUD_PANEL_MARGIN, (float)GetScreenWidth() - panel_width - DEBUG_HUD_PANEL_MARGIN);
     float max_y = max(DEBUG_HUD_PANEL_MARGIN,
@@ -1712,13 +1726,19 @@ static bool game_dungeon_find_world_feature_by_role(const Game *game, WORLD_ART_
     return false;
 }
 
-static bool game_dungeon_cell_has_item(const Game *game, i32 x, i32 y)
+static i32 game_dungeon_get_item_index_at(const Game *game, i32 x, i32 y)
 {
     for (u8 idx = 0; idx < game->item_count; idx++) {
         if (game->items[idx].x == x && game->items[idx].y == y)
-            return true;
+            return idx;
     }
-    return false;
+
+    return -1;
+}
+
+static bool game_dungeon_cell_has_item(const Game *game, i32 x, i32 y)
+{
+    return game_dungeon_get_item_index_at(game, x, y) >= 0;
 }
 
 static bool game_dungeon_cell_has_unit(const Game *game, i32 x, i32 y)
@@ -1747,6 +1767,17 @@ static i32 game_dungeon_get_unit_index_at(const Game *game, i32 x, i32 y)
     }
 
     return -1;
+}
+
+static void game_dungeon_remove_item_at(Game *game, i32 item_idx)
+{
+    assert(item_idx >= 0);
+    assert(item_idx < game->item_count);
+
+    u8 last_idx = (u8)(game->item_count - 1);
+    if ((u8)item_idx != last_idx)
+        game->items[item_idx] = game->items[last_idx];
+    game->item_count--;
 }
 
 static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
@@ -3670,36 +3701,146 @@ static void game_draw_health_hearts(Game *game, Vector2 top_left, i32 health, i3
     }
 }
 
+static void game_player_clear_action_bar(Game *game)
+{
+    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++)
+        game->player_action_bar[slot_idx] = ITEM_ART_NONE;
+}
+
+static i32 game_player_find_first_empty_action_bar_slot(const Game *game)
+{
+    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
+        if (game->player_action_bar[slot_idx] == ITEM_ART_NONE)
+            return slot_idx;
+    }
+
+    return -1;
+}
+
+static bool game_player_try_add_scroll_to_action_bar(Game *game)
+{
+    i32 slot_idx = game_player_find_first_empty_action_bar_slot(game);
+    if (slot_idx < 0)
+        return false;
+
+    game->player_action_bar[slot_idx] = ITEM_KIND_SCROLL;
+    return true;
+}
+
+static bool game_player_try_collect_scroll_at(Game *game, i32 x, i32 y)
+{
+    i32 item_idx = game_dungeon_get_item_index_at(game, x, y);
+    if (item_idx < 0)
+        return false;
+    if (game->items[item_idx].kind != ITEM_KIND_SCROLL)
+        return false;
+    if (!game_player_try_add_scroll_to_action_bar(game))
+        return false;
+
+    game_dungeon_remove_item_at(game, item_idx);
+    return true;
+}
+
+static bool game_player_consume_action_bar_slot(Game *game, i32 slot_idx)
+{
+    if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
+        return false;
+
+    if (game->player_action_bar[slot_idx] != ITEM_KIND_SCROLL)
+        return false;
+
+    game->player_action_bar[slot_idx] = ITEM_ART_NONE;
+    return true;
+}
+
+static i32 game_input_pressed_action_bar_slot(const Game *game)
+{
+    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
+        INPUT action_input = (INPUT)(INPUT_ACTION_SLOT_1 + slot_idx);
+        if (game->input.pressed[action_input])
+            return slot_idx;
+    }
+
+    return -1;
+}
+
+static Rectangle game_action_bar_panel_rect(void)
+{
+    float slots_w = (float)DUNGEON_ACTION_BAR_SLOT_COUNT * DUNGEON_ACTION_BAR_SLOT_SIZE +
+                    (float)(DUNGEON_ACTION_BAR_SLOT_COUNT - 1) * DUNGEON_ACTION_BAR_SLOT_GAP;
+    float panel_w = slots_w + DUNGEON_ACTION_BAR_PANEL_PADDING * 2.0f;
+    float panel_h = DUNGEON_ACTION_BAR_SLOT_SIZE + DUNGEON_ACTION_BAR_PANEL_PADDING * 2.0f;
+
+    float screen_w = (float)GetScreenWidth();
+    float screen_h = (float)GetScreenHeight();
+    float x = roundf((screen_w - panel_w) * 0.5f);
+    float y = screen_h - panel_h - DUNGEON_ACTION_BAR_BOTTOM_MARGIN;
+
+    float max_x = max(DEBUG_HUD_PANEL_MARGIN, screen_w - panel_w - DEBUG_HUD_PANEL_MARGIN);
+    float max_y = max(DEBUG_HUD_PANEL_MARGIN, screen_h - panel_h - DEBUG_HUD_PANEL_MARGIN);
+    x = clamp(x, DEBUG_HUD_PANEL_MARGIN, max_x);
+    y = clamp(y, DEBUG_HUD_PANEL_MARGIN, max_y);
+
+    return (Rectangle){x, y, panel_w, panel_h};
+}
+
+static void game_draw_player_action_bar(Game *game)
+{
+    Rectangle panel = game_action_bar_panel_rect();
+    game_draw_dungeon_ui_panel(panel, (Color){18, 14, 11, 236}, (Color){29, 21, 16, 232},
+                               (Color){132, 105, 72, 255});
+
+    Vector2 slots_top_left = {
+        .x = panel.x + DUNGEON_ACTION_BAR_PANEL_PADDING,
+        .y = panel.y + DUNGEON_ACTION_BAR_PANEL_PADDING,
+    };
+
+    int anim_frame = game_item_anim_frame();
+
+    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
+        Rectangle slot = {
+            .x = slots_top_left.x +
+                 (float)slot_idx * (DUNGEON_ACTION_BAR_SLOT_SIZE + DUNGEON_ACTION_BAR_SLOT_GAP),
+            .y = slots_top_left.y,
+            .width = DUNGEON_ACTION_BAR_SLOT_SIZE,
+            .height = DUNGEON_ACTION_BAR_SLOT_SIZE,
+        };
+
+        ITEM_ART_KIND slot_item = game->player_action_bar[slot_idx];
+        bool has_item = slot_item != ITEM_ART_NONE;
+        Color slot_fill = has_item ? (Color){72, 59, 40, 255} : (Color){44, 36, 27, 255};
+        Color slot_border = has_item ? (Color){191, 163, 119, 255} : (Color){117, 93, 67, 255};
+        DrawRectangleRounded(slot, 0.16f, 4, slot_fill);
+        DrawRectangleLinesEx(slot, 1.0f, slot_border);
+
+        if (has_item) {
+            Vector2 icon_pos = {
+                .x = slot.x + floorf((slot.width - DUNGEON_ACTION_BAR_ITEM_SIZE) * 0.5f),
+                .y = slot.y + floorf((slot.height - DUNGEON_ACTION_BAR_ITEM_SIZE) * 0.5f),
+            };
+            game_draw_item_tile(game, slot_item, icon_pos, DUNGEON_ACTION_BAR_ITEM_SIZE,
+                                anim_frame);
+        }
+    }
+}
+
 static Rectangle game_draw_player_stats_panel(Game *game)
 {
-    char player_name[UNIT_ART_DISPLAY_NAME_CAP];
-    unit_art_get_display_name(UNIT_ART_WARLOCK, player_name, UNIT_ART_DISPLAY_NAME_CAP);
+    char floor_line[32];
+    snprintf(floor_line, sizeof(floor_line), "Floor %u", game->dungeon_depth + 1);
 
-    char stat_line[96];
-    snprintf(stat_line, sizeof(stat_line), "Damage %d   Speed %d   Floor %u",
-             (i32)game->player_stats.damage, (i32)game->player_stats.speed,
-             game->dungeon_depth + 1);
-
-    char health_text[32];
-    snprintf(health_text, sizeof(health_text), "%d/%d", (i32)game->player_stats.health,
-             (i32)game->player_stats.max_health);
-
-    float title_size = 24.0f;
-    float line_size = 17.0f;
+    float floor_size = 17.0f;
     i32 heart_count = max((i32)game->player_stats.max_health, 1);
     float hearts_w = (float)heart_count * DUNGEON_PLAYER_PANEL_HEART_SIZE +
                      (float)(heart_count - 1) * DUNGEON_PLAYER_PANEL_HEART_GAP;
 
-    Vector2 title_measure = MeasureTextEx(game->font, player_name, title_size, game->font_spacing);
-    Vector2 line_measure = MeasureTextEx(game->font, stat_line, line_size, game->font_spacing);
-    Vector2 health_measure = MeasureTextEx(game->font, health_text, line_size, game->font_spacing);
+    Vector2 floor_measure = MeasureTextEx(game->font, floor_line, floor_size, game->font_spacing);
 
-    float content_w = max(title_measure.x, line_measure.x);
-    content_w = max(content_w, hearts_w + health_measure.x + 14.0f);
+    float content_w = max(floor_measure.x, hearts_w);
 
     float panel_w = content_w + (DUNGEON_PLAYER_PANEL_PADDING * 2.0f);
-    float panel_h = (DUNGEON_PLAYER_PANEL_PADDING * 2.0f) + title_size + 10.0f +
-                    DUNGEON_PLAYER_PANEL_HEART_SIZE + 8.0f + line_size;
+    float panel_h =
+        (DUNGEON_PLAYER_PANEL_PADDING * 2.0f) + DUNGEON_PLAYER_PANEL_HEART_SIZE + 8.0f + floor_size;
 
     Rectangle panel = {
         .x = DUNGEON_PLAYER_PANEL_MARGIN,
@@ -3711,41 +3852,19 @@ static Rectangle game_draw_player_stats_panel(Game *game)
     game_draw_dungeon_ui_panel(panel, (Color){20, 15, 12, 236}, (Color){32, 23, 17, 232},
                                (Color){146, 113, 72, 255});
 
-    Rectangle header = {
-        .x = panel.x + 7.0f,
-        .y = panel.y + 7.0f,
-        .width = panel.width - 14.0f,
-        .height = title_size + 4.0f,
-    };
-    DrawRectangleRounded(header, 0.12f, 6, (Color){54, 38, 25, 242});
-
-    Vector2 title_pos = {
-        .x = panel.x + DUNGEON_PLAYER_PANEL_PADDING,
-        .y = panel.y + DUNGEON_PLAYER_PANEL_PADDING - 1.0f,
-    };
-    DrawTextEx(game->font, player_name, title_pos, title_size, game->font_spacing,
-               (Color){236, 215, 178, 255});
-
     Vector2 hearts_pos = {
-        .x = panel.x + DUNGEON_PLAYER_PANEL_PADDING,
-        .y = title_pos.y + title_size + 8.0f,
+        .x = panel.x + (panel.width - hearts_w) * 0.5f,
+        .y = panel.y + DUNGEON_PLAYER_PANEL_PADDING,
     };
     game_draw_health_hearts(game, hearts_pos, game->player_stats.health,
                             game->player_stats.max_health, DUNGEON_PLAYER_PANEL_HEART_SIZE,
                             DUNGEON_PLAYER_PANEL_HEART_GAP);
 
-    Vector2 health_text_pos = {
-        .x = panel.x + panel.width - DUNGEON_PLAYER_PANEL_PADDING - health_measure.x,
-        .y = hearts_pos.y + 3.0f,
-    };
-    DrawTextEx(game->font, health_text, health_text_pos, line_size, game->font_spacing,
-               (Color){219, 196, 154, 255});
-
     Vector2 line_pos = {
-        .x = panel.x + DUNGEON_PLAYER_PANEL_PADDING,
+        .x = panel.x + (panel.width - floor_measure.x) * 0.5f,
         .y = hearts_pos.y + DUNGEON_PLAYER_PANEL_HEART_SIZE + 8.0f,
     };
-    DrawTextEx(game->font, stat_line, line_pos, line_size, game->font_spacing,
+    DrawTextEx(game->font, floor_line, line_pos, floor_size, game->font_spacing,
                (Color){185, 164, 133, 255});
 
     return panel;
@@ -3771,9 +3890,7 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
 
     if (game->player_x == hover_x && game->player_y == hover_y &&
         game_dungeon_cell_is_visible(game, hover_x, hover_y)) {
-        char player_name[UNIT_ART_DISPLAY_NAME_CAP];
-        unit_art_get_display_name(UNIT_ART_WARLOCK, player_name, UNIT_ART_DISPLAY_NAME_CAP);
-        snprintf(hovered_name, sizeof(hovered_name), "%s (You)", player_name);
+        snprintf(hovered_name, sizeof(hovered_name), "You");
         hovered_stats = game->player_stats;
         has_hovered_unit = true;
     } else {
@@ -3979,7 +4096,8 @@ static void game_draw_test_dungeon(Game *game)
             continue;
 
         Vector2 anchor_position = game_dungeon_get_cell_center(origin, item.x, item.y, tile_size);
-        game_draw_item_tile_with_anchor(game, item.kind, anchor_position, tile_size,
+        float item_size = tile_size * DUNGEON_ITEM_WORLD_SCALE;
+        game_draw_item_tile_with_anchor(game, item.kind, anchor_position, item_size,
                                         item_anim_frame);
     }
 
@@ -4030,6 +4148,10 @@ static bool game_update_player(Game *game)
     i32 move_x = 0;
     i32 move_y = 0;
 
+    i32 action_slot_idx = game_input_pressed_action_bar_slot(game);
+    if (action_slot_idx >= 0 && game_player_consume_action_bar_slot(game, action_slot_idx))
+        return true;
+
     if (game->input.pressed[INPUT_MOVE_UP]) {
         move_y = -1;
         game->player_orientation = 2;
@@ -4067,6 +4189,7 @@ static bool game_update_player(Game *game)
 
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
+    game_player_try_collect_scroll_at(game, next_x, next_y);
 
     WORLD_ART_ROLE stepped_feature_role = WORLD_ART_ROLE_FLOOR;
     if (game_dungeon_get_world_feature_role_at(game, next_x, next_y, &stepped_feature_role)) {
@@ -4384,6 +4507,7 @@ static void game_draw_dungeon_hud(Game *game)
     }
 
     Rectangle minimap_panel = game_draw_dungeon_minimap(game);
+    game_draw_player_action_bar(game);
     game_draw_debug_hud(game);
     game_draw_hovered_unit_stats(game, player_panel, minimap_panel);
 }
@@ -4506,6 +4630,7 @@ static bool game_start_new_dungeon_run(Game *game)
     game->dungeon_depth = 0;
     game->dungeon_floor_seed_count = 0;
     game->player_stats = game_get_player_base_stats();
+    game_player_clear_action_bar(game);
     game->show_dungeon_map = true;
     game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
 
@@ -4623,6 +4748,11 @@ static void game_input(Game *game)
                                       IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_LEFT);
     input->pressed[INPUT_MOVE_RIGHT] = IsKeyPressed(KEY_D) || IsKeyPressedRepeat(KEY_D) ||
                                        IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
+    input->pressed[INPUT_ACTION_SLOT_1] = IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_KP_1);
+    input->pressed[INPUT_ACTION_SLOT_2] = IsKeyPressed(KEY_TWO) || IsKeyPressed(KEY_KP_2);
+    input->pressed[INPUT_ACTION_SLOT_3] = IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3);
+    input->pressed[INPUT_ACTION_SLOT_4] = IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_KP_4);
+    input->pressed[INPUT_ACTION_SLOT_5] = IsKeyPressed(KEY_FIVE) || IsKeyPressed(KEY_KP_5);
     input->pressed[INPUT_MOUSE_LEFT] = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
     input->pressed[INPUT_MOUSE_RIGHT] = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
     input->pressed[INPUT_MOUSE_MIDDLE] = IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE);
