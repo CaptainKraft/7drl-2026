@@ -800,6 +800,19 @@ static void game_dungeon_add_world_feature(Game *game, i32 x, i32 y, World_Art_T
     };
 }
 
+static void game_dungeon_sync_stairs_theme(Game *game)
+{
+    WORLD_ART_THEME stairs_theme = game->dungeon_wall_theme;
+
+    for (u8 idx = 0; idx < game->world_feature_count; idx++) {
+        WORLD_ART_ROLE role = world_art_get_role_from_tile(game->world_features[idx].tile);
+        if (role == WORLD_ART_ROLE_STAIRS_DOWN)
+            game->world_features[idx].tile = world_art_get_down_stairs_tile(stairs_theme);
+        if (role == WORLD_ART_ROLE_STAIRS_UP)
+            game->world_features[idx].tile = world_art_get_up_stairs_tile(stairs_theme);
+    }
+}
+
 static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind)
 {
     assert(game->item_count < DUNGEON_MAX_ITEMS);
@@ -2455,22 +2468,19 @@ static void game_dungeon_populate_test_entities(Game *game, bool include_up_stai
 {
     i16 x = 0;
     i16 y = 0;
+    WORLD_ART_THEME stairs_theme = game->dungeon_wall_theme;
 
     if (game_dungeon_pick_exit_floor_cell(game, &game->dungeon_populate_rng,
                                           DUNGEON_EXIT_MIN_PATH_STEPS, &x, &y)) {
-        WORLD_ART_THEME theme =
-            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
-        game_dungeon_add_world_feature(game, x, y, world_art_get_down_stairs_tile(theme));
+        game_dungeon_add_world_feature(game, x, y, world_art_get_down_stairs_tile(stairs_theme));
 
         if (game_dungeon_build_spawn_to_exit_path(game))
             game_dungeon_cull_outside_main_path(game, &game->dungeon_cull_rng);
     }
 
     if (include_up_stairs) {
-        WORLD_ART_THEME up_stairs_theme =
-            (WORLD_ART_THEME)ck_rand_int(&game->dungeon_populate_rng, 0, WORLD_ART_THEME_COUNT);
         game_dungeon_add_world_feature(game, game->player_spawn_x, game->player_spawn_y,
-                                       world_art_get_up_stairs_tile(up_stairs_theme));
+                                       world_art_get_up_stairs_tile(stairs_theme));
     }
 
     for (i32 grunt_idx = 0;
@@ -4230,14 +4240,20 @@ void game_update(Mem mem)
     if (game_update_end_menu(game))
         return;
 
+    WORLD_ART_THEME next_wall_theme = game->dungeon_wall_theme;
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_1])
-        game->dungeon_wall_theme = WORLD_ART_THEME_1;
+        next_wall_theme = WORLD_ART_THEME_1;
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_2])
-        game->dungeon_wall_theme = WORLD_ART_THEME_2;
+        next_wall_theme = WORLD_ART_THEME_2;
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_3])
-        game->dungeon_wall_theme = WORLD_ART_THEME_3;
+        next_wall_theme = WORLD_ART_THEME_3;
     if (game->input.pressed[INPUT_SELECT_WALL_THEME_4])
-        game->dungeon_wall_theme = WORLD_ART_THEME_4;
+        next_wall_theme = WORLD_ART_THEME_4;
+
+    if (next_wall_theme != game->dungeon_wall_theme) {
+        game->dungeon_wall_theme = next_wall_theme;
+        game_dungeon_sync_stairs_theme(game);
+    }
 
     if (GAME_DEBUG_FEATURES) {
         i32 template_delta = 0;
