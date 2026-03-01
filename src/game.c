@@ -108,6 +108,7 @@
 #define DUNGEON_PLAYER_PANEL_HEART_GAP 4.0f
 
 #define DUNGEON_ACTION_BAR_SLOT_COUNT 5
+#define DUNGEON_ACTION_BAR_NO_SLOT (-1)
 #define DUNGEON_ACTION_BAR_ITEM_SIZE ((float)ITEM_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
 #define DUNGEON_ACTION_BAR_SLOT_SIZE (DUNGEON_ACTION_BAR_ITEM_SIZE + 4.0f)
 #define DUNGEON_ACTION_BAR_SLOT_GAP 4.0f
@@ -285,6 +286,7 @@ typedef struct {
     i16 y;
     UNIT_ART_KIND kind;
     u8 orientation;
+    bool is_friendly;
     Unit_Stats stats;
     bool is_awake;
     u8 turns_out_of_player_los;
@@ -389,6 +391,7 @@ typedef struct {
     u8 player_orientation;
     Unit_Stats player_stats;
     ITEM_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
+    i32 player_active_scroll_slot;
     u32 player_damage_event_count;
 
     i16 player_spawn_x;
@@ -984,7 +987,8 @@ static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
     }
 }
 
-static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, u8 orientation)
+static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, u8 orientation,
+                                  bool is_friendly)
 {
     assert(game->unit_count < DUNGEON_MAX_UNITS);
     assert(kind > UNIT_ART_NONE && kind < NUM_UNIT_ART);
@@ -997,6 +1001,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .y = (i16)y,
         .kind = kind,
         .orientation = orientation,
+        .is_friendly = is_friendly,
         .stats = game_get_unit_base_stats(kind),
         .is_awake = false,
         .turns_out_of_player_los = 0,
@@ -1802,6 +1807,17 @@ static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
     return game_dungeon_cell_has_unit(game, x, y);
 }
 
+static bool game_dungeon_cell_is_valid_scroll_target(const Game *game, i32 x, i32 y)
+{
+    if (!game_dungeon_cell_in_bounds(x, y))
+        return false;
+    if (!game_dungeon_cell_is_floor(game, x, y))
+        return false;
+    if (game_dungeon_cell_is_occupied(game, x, y))
+        return false;
+    return true;
+}
+
 static bool game_dungeon_cell_has_unit_excluding(const Game *game, i32 x, i32 y, i32 excluded_idx)
 {
     for (u8 idx = 0; idx < game->unit_count; idx++) {
@@ -1938,6 +1954,8 @@ static void game_dungeon_rebuild_biggest_threat_to_player_dijkstra_map(Game *gam
 
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
         const Dungeon_Unit *unit = &game->units[unit_idx];
+        if (unit->is_friendly)
+            continue;
         if (!game_dungeon_cell_is_floor(game, unit->x, unit->y))
             continue;
 
@@ -2011,6 +2029,32 @@ static u8 game_dungeon_get_orientation_from_step(i32 dx, i32 dy, u8 fallback)
     return fallback;
 }
 
+static u8 game_dungeon_get_orientation_from_positions(i32 origin_x, i32 origin_y, i32 target_x,
+                                                      i32 target_y, u8 fallback)
+{
+    i32 dx = target_x - origin_x;
+    i32 dy = target_y - origin_y;
+    i32 abs_dx = dx < 0 ? -dx : dx;
+    i32 abs_dy = dy < 0 ? -dy : dy;
+
+    if (abs_dx == 0 && abs_dy == 0)
+        return fallback;
+
+    if (abs_dx >= abs_dy) {
+        if (dx > 0)
+            return 0;
+        if (dx < 0)
+            return 3;
+    }
+
+    if (dy > 0)
+        return 1;
+    if (dy < 0)
+        return 2;
+
+    return fallback;
+}
+
 static void game_dungeon_take_enemy_turns(Game *game)
 {
     game_dungeon_rebuild_dijkstra_maps(game);
@@ -2030,6 +2074,8 @@ static void game_dungeon_take_enemy_turns(Game *game)
 
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
         Dungeon_Unit *unit = &game->units[unit_idx];
+        if (unit->is_friendly)
+            continue;
         i32 start_x = unit->x;
         i32 start_y = unit->y;
         if (!game_dungeon_cell_in_bounds(start_x, start_y))
@@ -2877,7 +2923,7 @@ static bool game_dungeon_populate_test_entities(Game *game, bool include_up_stai
 
         u8 orientation =
             (u8)ck_rand_int(&game->dungeon_populate_rng, 0, UNIT_ART_ORIENTATION_COUNT);
-        game_dungeon_add_unit(game, x, y, UNIT_ART_GOBLIN_GRUNT, orientation);
+        game_dungeon_add_unit(game, x, y, UNIT_ART_GOBLIN_GRUNT, orientation, false);
     }
 
     return true;
@@ -3641,7 +3687,7 @@ static bool game_point_in_rect(Vector2 point, Rectangle rect)
            point.y < (rect.y + rect.height);
 }
 
-static bool game_dungeon_get_mouse_cell(const Game *game, i32 *out_x, i32 *out_y)
+static void game_dungeon_get_mouse_cell_unclamped(const Game *game, i32 *out_x, i32 *out_y)
 {
     assert(out_x != 0);
     assert(out_y != 0);
@@ -3653,17 +3699,77 @@ static bool game_dungeon_get_mouse_cell(const Game *game, i32 *out_x, i32 *out_y
 
     float local_x = mouse_world.x - origin.x;
     float local_y = mouse_world.y - origin.y;
-    if (local_x < 0.0f || local_y < 0.0f)
-        return false;
+    *out_x = (i32)floorf(local_x / tile_size);
+    *out_y = (i32)floorf(local_y / tile_size);
+}
 
-    i32 cell_x = (i32)(local_x / tile_size);
-    i32 cell_y = (i32)(local_y / tile_size);
+static bool game_dungeon_get_mouse_cell(const Game *game, i32 *out_x, i32 *out_y)
+{
+    assert(out_x != 0);
+    assert(out_y != 0);
+
+    i32 cell_x = 0;
+    i32 cell_y = 0;
+    game_dungeon_get_mouse_cell_unclamped(game, &cell_x, &cell_y);
     if (!game_dungeon_cell_in_bounds(cell_x, cell_y))
         return false;
 
     *out_x = cell_x;
     *out_y = cell_y;
     return true;
+}
+
+static void game_dungeon_get_offscreen_scroll_target_cell(const Game *game, i32 *out_x, i32 *out_y)
+{
+    assert(out_x != 0);
+    assert(out_y != 0);
+
+    i32 mouse_cell_x = 0;
+    i32 mouse_cell_y = 0;
+    game_dungeon_get_mouse_cell_unclamped(game, &mouse_cell_x, &mouse_cell_y);
+
+    static const i32 neighbor_offsets[4][2] = {
+        {1, 0},
+        {0, 1},
+        {-1, 0},
+        {0, -1},
+    };
+
+    i32 best_x = game->player_x + neighbor_offsets[0][0];
+    i32 best_y = game->player_y + neighbor_offsets[0][1];
+    i32 best_distance_sq = 0;
+    bool has_best = false;
+
+    for (i32 offset_idx = 0; offset_idx < 4; offset_idx++) {
+        i32 candidate_x = game->player_x + neighbor_offsets[offset_idx][0];
+        i32 candidate_y = game->player_y + neighbor_offsets[offset_idx][1];
+        i32 dx = candidate_x - mouse_cell_x;
+        i32 dy = candidate_y - mouse_cell_y;
+        i32 candidate_distance_sq = dx * dx + dy * dy;
+
+        if (!has_best || candidate_distance_sq < best_distance_sq) {
+            best_x = candidate_x;
+            best_y = candidate_y;
+            best_distance_sq = candidate_distance_sq;
+            has_best = true;
+        }
+    }
+
+    *out_x = best_x;
+    *out_y = best_y;
+}
+
+static void game_player_get_active_scroll_target_cell(const Game *game, i32 *out_x, i32 *out_y)
+{
+    assert(out_x != 0);
+    assert(out_y != 0);
+
+    if (IsCursorOnScreen()) {
+        game_dungeon_get_mouse_cell_unclamped(game, out_x, out_y);
+        return;
+    }
+
+    game_dungeon_get_offscreen_scroll_target_cell(game, out_x, out_y);
 }
 
 static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color inner_fill,
@@ -3705,6 +3811,7 @@ static void game_player_clear_action_bar(Game *game)
 {
     for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++)
         game->player_action_bar[slot_idx] = ITEM_ART_NONE;
+    game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
 }
 
 static i32 game_player_find_first_empty_action_bar_slot(const Game *game)
@@ -3750,6 +3857,52 @@ static bool game_player_consume_action_bar_slot(Game *game, i32 slot_idx)
         return false;
 
     game->player_action_bar[slot_idx] = ITEM_ART_NONE;
+    if (game->player_active_scroll_slot == slot_idx)
+        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+    return true;
+}
+
+static bool game_player_has_active_scroll_target(const Game *game)
+{
+    i32 slot_idx = game->player_active_scroll_slot;
+    if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
+        return false;
+    return game->player_action_bar[slot_idx] == ITEM_KIND_SCROLL;
+}
+
+static bool game_player_activate_action_bar_slot(Game *game, i32 slot_idx)
+{
+    if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
+        return false;
+    if (game->player_action_bar[slot_idx] != ITEM_KIND_SCROLL)
+        return false;
+
+    game->player_active_scroll_slot = slot_idx;
+    return true;
+}
+
+static bool game_player_try_use_active_scroll_target(Game *game)
+{
+    if (!game_player_has_active_scroll_target(game)) {
+        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+        return false;
+    }
+
+    i32 target_x = 0;
+    i32 target_y = 0;
+    game_player_get_active_scroll_target_cell(game, &target_x, &target_y);
+    if (!game_dungeon_cell_is_valid_scroll_target(game, target_x, target_y))
+        return false;
+    if (!game->input.pressed[INPUT_MOUSE_LEFT])
+        return false;
+
+    i32 slot_idx = game->player_active_scroll_slot;
+    if (!game_player_consume_action_bar_slot(game, slot_idx))
+        return false;
+
+    u8 summon_orientation = game_dungeon_get_orientation_from_positions(
+        game->player_x, game->player_y, target_x, target_y, game->player_orientation);
+    game_dungeon_add_unit(game, target_x, target_y, UNIT_ART_RAT, summon_orientation, true);
     return true;
 }
 
@@ -3808,8 +3961,14 @@ static void game_draw_player_action_bar(Game *game)
 
         ITEM_ART_KIND slot_item = game->player_action_bar[slot_idx];
         bool has_item = slot_item != ITEM_ART_NONE;
+        bool is_active_scroll_slot = game_player_has_active_scroll_target(game) &&
+                                     game->player_active_scroll_slot == slot_idx;
         Color slot_fill = has_item ? (Color){72, 59, 40, 255} : (Color){44, 36, 27, 255};
         Color slot_border = has_item ? (Color){191, 163, 119, 255} : (Color){117, 93, 67, 255};
+        if (is_active_scroll_slot) {
+            slot_fill = (Color){86, 70, 47, 255};
+            slot_border = (Color){242, 213, 142, 255};
+        }
         DrawRectangleRounded(slot, 0.16f, 4, slot_fill);
         DrawRectangleLinesEx(slot, 1.0f, slot_border);
 
@@ -3978,6 +4137,31 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
                (Color){194, 173, 141, 255});
 }
 
+static void game_draw_scroll_target_indicator(Game *game, Vector2 origin, float tile_size)
+{
+    if (!game_player_has_active_scroll_target(game))
+        return;
+
+    i32 target_x = 0;
+    i32 target_y = 0;
+    game_player_get_active_scroll_target_cell(game, &target_x, &target_y);
+
+    bool is_valid_target = game_dungeon_cell_is_valid_scroll_target(game, target_x, target_y);
+    Color fill = is_valid_target ? (Color){104, 214, 132, 74} : (Color){224, 96, 86, 76};
+    Color border = is_valid_target ? (Color){176, 255, 196, 250} : (Color){255, 152, 137, 250};
+
+    Vector2 top_left = game_dungeon_get_cell_top_left(origin, target_x, target_y, tile_size);
+    Rectangle marker = {
+        .x = top_left.x,
+        .y = top_left.y,
+        .width = tile_size,
+        .height = tile_size,
+    };
+
+    DrawRectangleRec(marker, fill);
+    DrawRectangleLinesEx(marker, max(1.0f, tile_size * 0.1f), border);
+}
+
 static void game_draw_dungeon_dijkstra_overlay(Game *game, Vector2 origin, float tile_size)
 {
     DUNGEON_DIJKSTRA_MAP overlay_map = DUNGEON_DIJKSTRA_MAP_SHORTEST_PATH_TO_PLAYER;
@@ -4116,6 +4300,7 @@ static void game_draw_test_dungeon(Game *game)
         game_dungeon_get_cell_center(origin, game->player_x, game->player_y, tile_size);
     game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
                                          player_feet, tile_size, unit_anim_frame);
+    game_draw_scroll_target_indicator(game, origin, tile_size);
 
     if (show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
         game_dungeon_cell_is_explored(game, game->player_spawn_x, game->player_spawn_y)) {
@@ -4149,8 +4334,14 @@ static bool game_update_player(Game *game)
     i32 move_y = 0;
 
     i32 action_slot_idx = game_input_pressed_action_bar_slot(game);
-    if (action_slot_idx >= 0 && game_player_consume_action_bar_slot(game, action_slot_idx))
-        return true;
+    if (action_slot_idx >= 0)
+        game_player_activate_action_bar_slot(game, action_slot_idx);
+
+    if (!game_player_has_active_scroll_target(game))
+        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+
+    if (game_player_has_active_scroll_target(game))
+        return game_player_try_use_active_scroll_target(game);
 
     if (game->input.pressed[INPUT_MOVE_UP]) {
         move_y = -1;
@@ -4177,6 +4368,8 @@ static bool game_update_player(Game *game)
     i32 target_unit_idx = game_dungeon_get_unit_index_at(game, next_x, next_y);
     if (target_unit_idx >= 0) {
         Dungeon_Unit *target_unit = &game->units[target_unit_idx];
+        if (target_unit->is_friendly)
+            return false;
         target_unit->is_awake = true;
         target_unit->turns_out_of_player_los = 0;
 
@@ -4362,9 +4555,13 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
             .x = map_origin.x + ((float)unit.x + 0.5f) * cell_size,
             .y = map_origin.y + ((float)unit.y + 0.5f) * cell_size,
         };
-        DrawPoly(enemy_center, 4, enemy_radius, 45.0f, (Color){230, 104, 92, 255});
+        Color unit_fill =
+            unit.is_friendly ? (Color){124, 209, 158, 255} : (Color){230, 104, 92, 255};
+        Color unit_border = unit.is_friendly ? (Color){44, 91, 66, 255} : (Color){87, 32, 31, 255};
+
+        DrawPoly(enemy_center, 4, enemy_radius, 45.0f, unit_fill);
         if (enemy_radius > 1.5f) {
-            DrawPolyLinesEx(enemy_center, 4, enemy_radius, 45.0f, 1.0f, (Color){87, 32, 31, 255});
+            DrawPolyLinesEx(enemy_center, 4, enemy_radius, 45.0f, 1.0f, unit_border);
         }
     }
 
@@ -4660,6 +4857,7 @@ void game_init(Mem mem, Font font, float font_spacing)
 {
     Game *game = arena_push(mem.perm, sizeof(Game));
     memset(game, 0, sizeof(*game));
+    game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
 
     if (font.texture.id == 0)
         font = GetFontDefault();
