@@ -96,8 +96,16 @@
 #define DUNGEON_MINIMAP_LABEL_SIZE 16.0f
 #define DUNGEON_MINIMAP_LABEL_GAP 6.0f
 
+#define DUNGEON_PLAYER_PANEL_MARGIN 16.0f
+#define DUNGEON_PLAYER_PANEL_PADDING 12.0f
+#define DUNGEON_PLAYER_PANEL_HEART_SIZE 24.0f
+#define DUNGEON_PLAYER_PANEL_HEART_GAP 4.0f
+
+#define DUNGEON_HOVER_PANEL_PADDING 10.0f
+
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
 #define ITEM_KIND_SCROLL ITEM_ART_KIND_AT(6, 0)
+#define ITEM_KIND_EMPTY_HEART ITEM_ART_KIND_AT(7, 0)
 #define ITEM_KIND_HEART ITEM_ART_KIND_AT(8, 0)
 #define ITEM_KIND_RED_POTION ITEM_ART_KIND_AT(1, 1)
 #define ITEM_KIND_RED_GEM ITEM_ART_KIND_AT(6, 1)
@@ -234,10 +242,18 @@ typedef struct {
 } Dungeon_Item;
 
 typedef struct {
+    u8 max_health;
+    u8 health;
+    u8 damage;
+    u8 speed;
+} Unit_Stats;
+
+typedef struct {
     i16 x;
     i16 y;
     UNIT_ART_KIND kind;
     u8 orientation;
+    Unit_Stats stats;
     bool is_awake;
     u8 turns_out_of_player_los;
 } Dungeon_Unit;
@@ -322,6 +338,7 @@ typedef struct {
     i16 player_x;
     i16 player_y;
     u8 player_orientation;
+    Unit_Stats player_stats;
 
     i16 player_spawn_x;
     i16 player_spawn_y;
@@ -755,6 +772,54 @@ static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind)
     };
 }
 
+static Unit_Stats game_make_unit_stats(i32 max_health, i32 damage, i32 speed)
+{
+    i32 safe_max_health = max(1, max_health);
+    i32 safe_damage = max(0, damage);
+    i32 safe_speed = max(1, speed);
+    return (Unit_Stats){
+        .max_health = (u8)safe_max_health,
+        .health = (u8)safe_max_health,
+        .damage = (u8)safe_damage,
+        .speed = (u8)safe_speed,
+    };
+}
+
+static Unit_Stats game_get_player_base_stats(void)
+{
+    return game_make_unit_stats(6, 2, 1);
+}
+
+static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
+{
+    switch (kind) {
+    case UNIT_ART_GOBLIN_GRUNT:
+        return game_make_unit_stats(3, 1, 1);
+    case UNIT_ART_GOBLIN_WARRIOR:
+        return game_make_unit_stats(5, 2, 1);
+    case UNIT_ART_GOBLIN_SHAMAN:
+        return game_make_unit_stats(4, 2, 1);
+    case UNIT_ART_TROLL:
+        return game_make_unit_stats(8, 3, 1);
+    case UNIT_ART_RAT:
+        return game_make_unit_stats(2, 1, 2);
+    case UNIT_ART_SPIDER:
+        return game_make_unit_stats(3, 1, 2);
+    case UNIT_ART_SLIME:
+        return game_make_unit_stats(5, 1, 1);
+    case UNIT_ART_SKELETON_GRUNT:
+        return game_make_unit_stats(4, 1, 1);
+    case UNIT_ART_SKELETON_MAGE:
+        return game_make_unit_stats(4, 2, 1);
+    case UNIT_ART_SKELETON_KING:
+        return game_make_unit_stats(9, 3, 1);
+    case UNIT_ART_DRAGON:
+        return game_make_unit_stats(14, 4, 1);
+    default:
+        return game_make_unit_stats(4, 1, 1);
+    }
+}
+
 static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, u8 orientation)
 {
     assert(game->unit_count < DUNGEON_MAX_UNITS);
@@ -768,6 +833,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .y = (i16)y,
         .kind = kind,
         .orientation = orientation,
+        .stats = game_get_unit_base_stats(kind),
         .is_awake = false,
         .turns_out_of_player_los = 0,
     };
@@ -1464,6 +1530,15 @@ static bool game_dungeon_cell_has_unit(const Game *game, i32 x, i32 y)
             return true;
     }
     return false;
+}
+
+static const Dungeon_Unit *game_dungeon_get_unit_at(const Game *game, i32 x, i32 y)
+{
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        if (game->units[idx].x == x && game->units[idx].y == y)
+            return &game->units[idx];
+    }
+    return 0;
 }
 
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
@@ -2897,6 +2972,263 @@ static Camera2D game_get_active_camera(const Game *game)
     return cam;
 }
 
+static bool game_point_in_rect(Vector2 point, Rectangle rect)
+{
+    return point.x >= rect.x && point.y >= rect.y && point.x < (rect.x + rect.width) &&
+           point.y < (rect.y + rect.height);
+}
+
+static bool game_dungeon_get_mouse_cell(const Game *game, i32 *out_x, i32 *out_y)
+{
+    assert(out_x != 0);
+    assert(out_y != 0);
+
+    Camera2D cam = game_get_active_camera(game);
+    Vector2 mouse_world = GetScreenToWorld2D(GetMousePosition(), cam);
+    float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
+    Vector2 origin = game_dungeon_get_origin();
+
+    float local_x = mouse_world.x - origin.x;
+    float local_y = mouse_world.y - origin.y;
+    if (local_x < 0.0f || local_y < 0.0f)
+        return false;
+
+    i32 cell_x = (i32)(local_x / tile_size);
+    i32 cell_y = (i32)(local_y / tile_size);
+    if (!game_dungeon_cell_in_bounds(cell_x, cell_y))
+        return false;
+
+    *out_x = cell_x;
+    *out_y = cell_y;
+    return true;
+}
+
+static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color inner_fill,
+                                       Color border)
+{
+    Rectangle shadow = panel;
+    shadow.x += 2.0f;
+    shadow.y += 2.0f;
+    DrawRectangleRounded(shadow, 0.08f, 8, (Color){0, 0, 0, 110});
+
+    DrawRectangleRounded(panel, 0.08f, 8, outer_fill);
+    DrawRectangleRounded(
+        (Rectangle){panel.x + 3.0f, panel.y + 3.0f, panel.width - 6.0f, panel.height - 6.0f}, 0.08f,
+        8, inner_fill);
+    DrawRectangleLinesEx(panel, 2.0f, border);
+    DrawRectangleLinesEx(
+        (Rectangle){panel.x + 3.0f, panel.y + 3.0f, panel.width - 6.0f, panel.height - 6.0f}, 1.0f,
+        (Color){82, 60, 40, 255});
+}
+
+static void game_draw_health_hearts(Game *game, Vector2 top_left, i32 health, i32 max_health,
+                                    float icon_size, float gap)
+{
+    i32 clamped_max = max(1, max_health);
+    i32 clamped_health = min(max(health, 0), clamped_max);
+    int anim_frame = game_item_anim_frame();
+
+    for (i32 idx = 0; idx < clamped_max; idx++) {
+        ITEM_ART_KIND kind = idx < clamped_health ? ITEM_KIND_HEART : ITEM_KIND_EMPTY_HEART;
+        Vector2 icon_pos = {
+            .x = top_left.x + (float)idx * (icon_size + gap),
+            .y = top_left.y,
+        };
+        game_draw_item_tile(game, kind, icon_pos, icon_size, anim_frame);
+    }
+}
+
+static Rectangle game_draw_player_stats_panel(Game *game)
+{
+    char player_name[UNIT_ART_DISPLAY_NAME_CAP];
+    unit_art_get_display_name(UNIT_ART_WARLOCK, player_name, UNIT_ART_DISPLAY_NAME_CAP);
+
+    char stat_line[96];
+    snprintf(stat_line, sizeof(stat_line), "Damage %d   Speed %d   Floor %u",
+             (i32)game->player_stats.damage, (i32)game->player_stats.speed,
+             game->dungeon_floor_index + 1);
+
+    char health_text[32];
+    snprintf(health_text, sizeof(health_text), "%d/%d", (i32)game->player_stats.health,
+             (i32)game->player_stats.max_health);
+
+    float title_size = 24.0f;
+    float line_size = 17.0f;
+    i32 heart_count = max((i32)game->player_stats.max_health, 1);
+    float hearts_w = (float)heart_count * DUNGEON_PLAYER_PANEL_HEART_SIZE +
+                     (float)(heart_count - 1) * DUNGEON_PLAYER_PANEL_HEART_GAP;
+
+    Vector2 title_measure = MeasureTextEx(game->font, player_name, title_size, game->font_spacing);
+    Vector2 line_measure = MeasureTextEx(game->font, stat_line, line_size, game->font_spacing);
+    Vector2 health_measure = MeasureTextEx(game->font, health_text, line_size, game->font_spacing);
+
+    float content_w = max(title_measure.x, line_measure.x);
+    content_w = max(content_w, hearts_w + health_measure.x + 14.0f);
+
+    float panel_w = content_w + (DUNGEON_PLAYER_PANEL_PADDING * 2.0f);
+    float panel_h = (DUNGEON_PLAYER_PANEL_PADDING * 2.0f) + title_size + 10.0f +
+                    DUNGEON_PLAYER_PANEL_HEART_SIZE + 8.0f + line_size;
+
+    Rectangle panel = {
+        .x = DUNGEON_PLAYER_PANEL_MARGIN,
+        .y = DUNGEON_PLAYER_PANEL_MARGIN,
+        .width = panel_w,
+        .height = panel_h,
+    };
+
+    game_draw_dungeon_ui_panel(panel, (Color){20, 15, 12, 236}, (Color){32, 23, 17, 232},
+                               (Color){146, 113, 72, 255});
+
+    Rectangle header = {
+        .x = panel.x + 7.0f,
+        .y = panel.y + 7.0f,
+        .width = panel.width - 14.0f,
+        .height = title_size + 4.0f,
+    };
+    DrawRectangleRounded(header, 0.12f, 6, (Color){54, 38, 25, 242});
+
+    Vector2 title_pos = {
+        .x = panel.x + DUNGEON_PLAYER_PANEL_PADDING,
+        .y = panel.y + DUNGEON_PLAYER_PANEL_PADDING - 1.0f,
+    };
+    DrawTextEx(game->font, player_name, title_pos, title_size, game->font_spacing,
+               (Color){236, 215, 178, 255});
+
+    Vector2 hearts_pos = {
+        .x = panel.x + DUNGEON_PLAYER_PANEL_PADDING,
+        .y = title_pos.y + title_size + 8.0f,
+    };
+    game_draw_health_hearts(game, hearts_pos, game->player_stats.health,
+                            game->player_stats.max_health, DUNGEON_PLAYER_PANEL_HEART_SIZE,
+                            DUNGEON_PLAYER_PANEL_HEART_GAP);
+
+    Vector2 health_text_pos = {
+        .x = panel.x + panel.width - DUNGEON_PLAYER_PANEL_PADDING - health_measure.x,
+        .y = hearts_pos.y + 3.0f,
+    };
+    DrawTextEx(game->font, health_text, health_text_pos, line_size, game->font_spacing,
+               (Color){219, 196, 154, 255});
+
+    Vector2 line_pos = {
+        .x = panel.x + DUNGEON_PLAYER_PANEL_PADDING,
+        .y = hearts_pos.y + DUNGEON_PLAYER_PANEL_HEART_SIZE + 8.0f,
+    };
+    DrawTextEx(game->font, stat_line, line_pos, line_size, game->font_spacing,
+               (Color){185, 164, 133, 255});
+
+    return panel;
+}
+
+static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
+                                         Rectangle minimap_panel)
+{
+    Vector2 mouse_screen = GetMousePosition();
+    if (game_point_in_rect(mouse_screen, player_panel))
+        return;
+    if (game_point_in_rect(mouse_screen, minimap_panel))
+        return;
+
+    i32 hover_x = 0;
+    i32 hover_y = 0;
+    if (!game_dungeon_get_mouse_cell(game, &hover_x, &hover_y))
+        return;
+
+    bool has_hovered_unit = false;
+    Unit_Stats hovered_stats = {0};
+    char hovered_name[UNIT_ART_DISPLAY_NAME_CAP];
+
+    if (game->player_x == hover_x && game->player_y == hover_y &&
+        game_dungeon_cell_is_visible(game, hover_x, hover_y)) {
+        char player_name[UNIT_ART_DISPLAY_NAME_CAP];
+        unit_art_get_display_name(UNIT_ART_WARLOCK, player_name, UNIT_ART_DISPLAY_NAME_CAP);
+        snprintf(hovered_name, sizeof(hovered_name), "%s (You)", player_name);
+        hovered_stats = game->player_stats;
+        has_hovered_unit = true;
+    } else {
+        const Dungeon_Unit *unit = game_dungeon_get_unit_at(game, hover_x, hover_y);
+        if (unit == 0)
+            return;
+        if (!game_dungeon_cell_is_visible(game, unit->x, unit->y))
+            return;
+
+        unit_art_get_display_name(unit->kind, hovered_name, UNIT_ART_DISPLAY_NAME_CAP);
+        hovered_stats = unit->stats;
+        has_hovered_unit = true;
+    }
+
+    if (!has_hovered_unit)
+        return;
+
+    char health_line[32];
+    snprintf(health_line, sizeof(health_line), "Health  %d/%d", (i32)hovered_stats.health,
+             (i32)hovered_stats.max_health);
+
+    char damage_line[32];
+    snprintf(damage_line, sizeof(damage_line), "Damage  %d", (i32)hovered_stats.damage);
+
+    char speed_line[32];
+    snprintf(speed_line, sizeof(speed_line), "Speed   %d", (i32)hovered_stats.speed);
+
+    float title_size = 19.0f;
+    float line_size = 16.0f;
+    float line_gap = 4.0f;
+
+    Vector2 title_measure = MeasureTextEx(game->font, hovered_name, title_size, game->font_spacing);
+    Vector2 health_measure = MeasureTextEx(game->font, health_line, line_size, game->font_spacing);
+    Vector2 damage_measure = MeasureTextEx(game->font, damage_line, line_size, game->font_spacing);
+    Vector2 speed_measure = MeasureTextEx(game->font, speed_line, line_size, game->font_spacing);
+
+    float panel_w = max(title_measure.x, health_measure.x);
+    panel_w = max(panel_w, damage_measure.x);
+    panel_w = max(panel_w, speed_measure.x);
+    panel_w += DUNGEON_HOVER_PANEL_PADDING * 2.0f;
+
+    float panel_h = (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_size + 8.0f + (line_size * 3.0f) +
+                    (line_gap * 2.0f);
+
+    Rectangle panel = {
+        .x = mouse_screen.x + 18.0f,
+        .y = mouse_screen.y + 20.0f,
+        .width = panel_w,
+        .height = panel_h,
+    };
+
+    float screen_w = (float)GetScreenWidth();
+    float screen_h = (float)GetScreenHeight();
+
+    if (panel.x + panel.width > screen_w - 8.0f)
+        panel.x = mouse_screen.x - panel.width - 18.0f;
+    if (panel.y + panel.height > screen_h - 8.0f)
+        panel.y = screen_h - panel.height - 8.0f;
+    panel.x = clamp(panel.x, 8.0f, screen_w - panel.width - 8.0f);
+    panel.y = clamp(panel.y, 8.0f, screen_h - panel.height - 8.0f);
+
+    game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240},
+                               (Color){143, 108, 71, 255});
+
+    Vector2 title_pos = {
+        .x = panel.x + DUNGEON_HOVER_PANEL_PADDING,
+        .y = panel.y + DUNGEON_HOVER_PANEL_PADDING - 1.0f,
+    };
+    DrawTextEx(game->font, hovered_name, title_pos, title_size, game->font_spacing,
+               (Color){236, 214, 175, 255});
+
+    Vector2 line_pos = {
+        .x = panel.x + DUNGEON_HOVER_PANEL_PADDING,
+        .y = title_pos.y + title_size + 8.0f,
+    };
+    DrawTextEx(game->font, health_line, line_pos, line_size, game->font_spacing,
+               (Color){215, 194, 158, 255});
+
+    line_pos.y += line_size + line_gap;
+    DrawTextEx(game->font, damage_line, line_pos, line_size, game->font_spacing,
+               (Color){194, 173, 141, 255});
+
+    line_pos.y += line_size + line_gap;
+    DrawTextEx(game->font, speed_line, line_pos, line_size, game->font_spacing,
+               (Color){194, 173, 141, 255});
+}
+
 static void game_draw_dungeon_dijkstra_overlay(Game *game, Vector2 origin, float tile_size)
 {
     if (!game_debug_feature_is_enabled(game, DEBUG_FEATURE_SHOW_PLAYER_DIJKSTRA))
@@ -3135,7 +3467,7 @@ static void game_adjust_dungeon_zoom(Game *game, float delta)
         clamp(game->dungeon_cam.zoom + delta, DUNGEON_CAMERA_ZOOM_MIN, DUNGEON_CAMERA_ZOOM_MAX);
 }
 
-static void game_draw_dungeon_minimap(Game *game)
+static Rectangle game_draw_dungeon_minimap(Game *game)
 {
     float screen_w = (float)GetScreenWidth();
     float screen_h = (float)GetScreenHeight();
@@ -3164,20 +3496,19 @@ static void game_draw_dungeon_minimap(Game *game)
     };
     panel.x = max(panel.x, DUNGEON_MINIMAP_MARGIN);
 
-    DrawRectangleRounded(panel, 0.06f, 8, (Color){20, 33, 38, 232});
-    DrawRectangleLinesEx(panel, 1.0f, (Color){70, 101, 108, 255});
+    game_draw_dungeon_ui_panel(panel, (Color){20, 15, 12, 234}, (Color){29, 22, 17, 232},
+                               (Color){133, 103, 67, 255});
 
     Vector2 map_origin = {
         .x = panel.x + DUNGEON_MINIMAP_PANEL_PADDING,
         .y = panel.y + DUNGEON_MINIMAP_PANEL_PADDING,
     };
-    DrawRectangleRec((Rectangle){map_origin.x, map_origin.y, map_w, map_h},
-                     (Color){9, 16, 20, 255});
+    DrawRectangleRec((Rectangle){map_origin.x, map_origin.y, map_w, map_h}, (Color){10, 8, 7, 255});
 
-    Color floor_visible = (Color){166, 187, 194, 255};
-    Color floor_explored = (Color){100, 118, 125, 255};
-    Color wall_visible = (Color){123, 139, 146, 255};
-    Color wall_explored = (Color){71, 84, 90, 255};
+    Color floor_visible = (Color){161, 148, 126, 255};
+    Color floor_explored = (Color){97, 88, 74, 255};
+    Color wall_visible = (Color){121, 108, 88, 255};
+    Color wall_explored = (Color){70, 60, 47, 255};
 
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
@@ -3199,7 +3530,7 @@ static void game_draw_dungeon_minimap(Game *game)
     }
 
     DrawRectangleLinesEx((Rectangle){map_origin.x, map_origin.y, map_w, map_h}, 1.0f,
-                         (Color){58, 84, 90, 255});
+                         (Color){90, 70, 46, 255});
 
     float enemy_radius = max(1.0f, cell_size * 0.5f);
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
@@ -3231,14 +3562,18 @@ static void game_draw_dungeon_minimap(Game *game)
         DrawCircleLines((i32)(player_center.x + 0.5f), (i32)(player_center.y + 0.5f), radius,
                         (Color){101, 63, 24, 255});
     }
+
+    return panel;
 }
 
 static void game_draw_dungeon_hud(Game *game)
 {
+    Rectangle player_panel = game_draw_player_stats_panel(game);
+
     float label_size = 18.0f;
-    Vector2 origin = {18.0f, 14.0f};
-    Color text_color = (Color){219, 236, 238, 255};
-    Color subtle = (Color){167, 195, 201, 255};
+    Vector2 origin = {18.0f, player_panel.y + player_panel.height + 14.0f};
+    Color text_color = (Color){222, 201, 166, 255};
+    Color subtle = (Color){180, 160, 131, 255};
     bool show_spawn_to_exit_path =
         game_debug_feature_is_enabled(game, DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH);
 
@@ -3261,7 +3596,7 @@ static void game_draw_dungeon_hud(Game *game)
     if (GAME_DEBUG_FEATURES) {
         origin.y += 22.0f;
         DrawTextEx(game->font, "Debug controls", origin, label_size - 1.0f, game->font_spacing,
-                   (Color){187, 222, 229, 255});
+                   (Color){220, 190, 145, 255});
 
         for (i32 idx = 0; idx < NUM_DEBUG_ACTIONS; idx++) {
             const Debug_Action_Def *def = &game_debug_action_defs[idx];
@@ -3269,7 +3604,7 @@ static void game_draw_dungeon_hud(Game *game)
             origin.y += 20.0f;
             snprintf(line, sizeof(line), "[%s] %s", def->hotkey, def->name);
             DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       (Color){153, 175, 180, 255});
+                       (Color){164, 146, 121, 255});
         }
 
         for (i32 idx = 0; idx < NUM_DEBUG_FEATURES; idx++) {
@@ -3280,27 +3615,27 @@ static void game_draw_dungeon_hud(Game *game)
             snprintf(line, sizeof(line), "[%s] %s: %s", def->hotkey, def->name,
                      enabled ? "ON" : "off");
             DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       enabled ? (Color){132, 223, 200, 255} : (Color){153, 175, 180, 255});
+                       enabled ? (Color){197, 221, 166, 255} : (Color){164, 146, 121, 255});
         }
 
         origin.y += 24.0f;
         if (!show_spawn_to_exit_path) {
             snprintf(line, sizeof(line), "Player -> Exit path: hidden");
             DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       (Color){167, 195, 201, 255});
+                       (Color){180, 160, 131, 255});
         } else if (!game->has_exit) {
             snprintf(line, sizeof(line), "Player -> Exit path: no exit placed");
             DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       (Color){250, 185, 90, 255});
+                       (Color){235, 183, 111, 255});
         } else if (game->spawn_to_exit_path_len > 0) {
             i32 step_count = game->spawn_to_exit_path_len - 1;
             snprintf(line, sizeof(line), "Player -> Exit path: %d steps remaining", step_count);
             DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       (Color){128, 223, 242, 255});
+                       (Color){187, 214, 173, 255});
         } else {
             snprintf(line, sizeof(line), "Player -> Exit path: no route on this floor");
             DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                       (Color){250, 185, 90, 255});
+                       (Color){235, 183, 111, 255});
         }
     }
 
@@ -3308,10 +3643,11 @@ static void game_draw_dungeon_hud(Game *game)
         origin.y += 22.0f;
         snprintf(line, sizeof(line), "Template warning: %s", game->dungeon_template_error);
         DrawTextEx(game->font, line, origin, label_size - 1.0f, game->font_spacing,
-                   (Color){250, 185, 90, 255});
+                   (Color){235, 183, 111, 255});
     }
 
-    game_draw_dungeon_minimap(game);
+    Rectangle minimap_panel = game_draw_dungeon_minimap(game);
+    game_draw_hovered_unit_stats(game, player_panel, minimap_panel);
 }
 
 void game_init(Mem mem, Font font, float font_spacing)
@@ -3350,6 +3686,7 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->show_dungeon_map = true;
     game_debug_reset_feature_defaults(game);
     game->dungeon_wall_theme = WORLD_ART_THEME_1;
+    game->player_stats = game_get_player_base_stats();
     game->dungeon_seed = DUNGEON_SEED;
     game->dungeon_floor_index = 0;
     game->dungeon_template_index = 0;
@@ -3523,7 +3860,7 @@ void game_render(Mem mem)
     Game *game = arena_start(mem.perm, Game);
     Camera2D active_cam = game_get_active_camera(game);
 
-    ClearBackground((Color){14, 25, 30, 255});
+    ClearBackground((Color){11, 8, 7, 255});
     BeginMode2D(active_cam);
     if (game->show_dungeon_map)
         game_draw_test_dungeon(game);
