@@ -2465,7 +2465,9 @@ static void game_dungeon_take_enemy_turns(Game *game)
             continue;
 
         bool in_player_los = game_dungeon_cell_is_in_player_los(game, start_x, start_y);
+        bool woke_from_player_los = false;
         if (in_player_los) {
+            woke_from_player_los = !unit->is_awake;
             unit->is_awake = true;
             unit->turns_out_of_player_los = 0;
         } else if (unit->is_awake) {
@@ -2476,6 +2478,8 @@ static void game_dungeon_take_enemy_turns(Game *game)
         }
 
         if (!unit->is_awake)
+            continue;
+        if (woke_from_player_los)
             continue;
 
         Dungeon_Enemy_Target target = {0};
