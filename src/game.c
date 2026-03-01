@@ -1031,7 +1031,7 @@ static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
 
 static Unit_Stats game_get_player_base_stats(void)
 {
-    return game_make_unit_stats(6, 2);
+    return game_make_unit_stats(3, 2);
 }
 
 static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
@@ -1957,6 +1957,8 @@ static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
 static bool game_dungeon_cell_is_valid_scroll_target(const Game *game, i32 x, i32 y)
 {
     if (!game_dungeon_cell_in_bounds(x, y))
+        return false;
+    if (!game_dungeon_cell_is_visible(game, x, y))
         return false;
     if (!game_dungeon_cell_is_floor(game, x, y))
         return false;
@@ -4832,12 +4834,27 @@ static void game_dungeon_get_offscreen_scroll_target_cell(const Game *game, i32 
     *out_y = best_y;
 }
 
+static bool game_mouse_has_scroll_target_control(void)
+{
+    if (IsCursorOnScreen())
+        return true;
+
+    Vector2 mouse = GetMousePosition();
+    Rectangle screen_bounds = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = (float)GetScreenWidth(),
+        .height = (float)GetScreenHeight(),
+    };
+    return game_point_in_rect(mouse, screen_bounds);
+}
+
 static void game_player_get_active_scroll_target_cell(const Game *game, i32 *out_x, i32 *out_y)
 {
     assert(out_x != 0);
     assert(out_y != 0);
 
-    if (IsCursorOnScreen()) {
+    if (game_mouse_has_scroll_target_control()) {
         game_dungeon_get_mouse_cell_unclamped(game, out_x, out_y);
         return;
     }
@@ -5417,8 +5434,13 @@ static bool game_update_player(Game *game)
     if (!game_player_has_active_scroll_target(game))
         game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
 
-    if (game_player_has_active_scroll_target(game))
+    if (game_player_has_active_scroll_target(game)) {
+        if (game->input.pressed[INPUT_BACK]) {
+            game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+            return false;
+        }
         return game_player_try_use_active_scroll_target(game);
+    }
 
     if (game->input.pressed[INPUT_MOVE_UP]) {
         move_y = -1;
@@ -5930,7 +5952,7 @@ static bool game_update_end_menu(Game *game)
     if (game_end_menu_restart_requested(game))
         game_start_new_dungeon_run(game);
 
-    if (game->input.pressed[INPUT_BACK])
+    if (!GAME_DEBUG_FEATURES && game->input.pressed[INPUT_BACK])
         app_quit();
 
     return true;
@@ -6190,8 +6212,12 @@ void game_update(Mem mem)
     }
 
     bool player_took_turn = false;
-    if (game->show_dungeon_map)
+    bool back_canceled_scroll_target = false;
+    if (game->show_dungeon_map) {
+        bool had_active_scroll_target = game_player_has_active_scroll_target(game);
         player_took_turn = game_update_player(game);
+        back_canceled_scroll_target = had_active_scroll_target && game->input.pressed[INPUT_BACK];
+    }
 
     if (player_took_turn) {
         game_dungeon_take_friendly_turns(game);
@@ -6208,7 +6234,7 @@ void game_update(Mem mem)
 
     game_update_camera(game);
 
-    if (game->input.pressed[INPUT_BACK])
+    if (!GAME_DEBUG_FEATURES && game->input.pressed[INPUT_BACK] && !back_canceled_scroll_target)
         app_quit();
 }
 

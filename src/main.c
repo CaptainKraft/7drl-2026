@@ -41,6 +41,9 @@ static bool game_app_init(void *user)
     SetConfigFlags(FLAG_WINDOW_HIGHDPI | FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE);
 #endif
     InitWindow(VIRTUAL_W, VIRTUAL_H, "Game");
+#if !defined(NDEBUG)
+    SetExitKey(KEY_Q);
+#endif
 #if !defined(PLATFORM_WEB)
     MaximizeWindow();
 #endif
