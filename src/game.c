@@ -295,6 +295,7 @@ typedef struct {
     i16 x;
     i16 y;
     ITEM_ART_KIND kind;
+    UNIT_ART_KIND summon_unit_kind;
 } Dungeon_Item;
 
 typedef struct {
@@ -469,6 +470,7 @@ typedef struct {
     u8 player_orientation;
     Unit_Stats player_stats;
     ITEM_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
+    UNIT_ART_KIND player_action_bar_summon_unit_kind[DUNGEON_ACTION_BAR_SLOT_COUNT];
     i32 player_active_scroll_slot;
     u32 player_damage_event_count;
     FAMILIAR_TURN_COMMAND familiar_turn_command;
@@ -995,17 +997,23 @@ static void game_dungeon_sync_stairs_theme(Game *game)
     }
 }
 
-static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind)
+static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind,
+                                  UNIT_ART_KIND summon_unit_kind)
 {
     assert(game->item_count < DUNGEON_MAX_ITEMS);
     assert(kind > ITEM_ART_NONE && kind < NUM_ITEM_ART);
     assert(game_dungeon_cell_in_bounds(x, y));
     assert(game_dungeon_cell_is_floor(game, x, y));
+    if (kind == ITEM_KIND_SCROLL)
+        assert(summon_unit_kind > UNIT_ART_NONE && summon_unit_kind < NUM_UNIT_ART);
+    else
+        assert(summon_unit_kind == UNIT_ART_NONE);
 
     game->items[game->item_count++] = (Dungeon_Item){
         .x = (i16)x,
         .y = (i16)y,
         .kind = kind,
+        .summon_unit_kind = summon_unit_kind,
     };
 }
 
@@ -1052,6 +1060,64 @@ static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
         damage = max(0, damage - DUNGEON_DISEASED_DAMAGE_PENALTY);
 
     return damage;
+}
+
+static bool game_scroll_summon_unit_is_valid(UNIT_ART_KIND summon_unit_kind)
+{
+    return summon_unit_kind > UNIT_ART_NONE && summon_unit_kind < NUM_UNIT_ART;
+}
+
+static void game_scroll_get_display_name(UNIT_ART_KIND summon_unit_kind, char *buffer,
+                                         u32 buffer_cap)
+{
+    assert(buffer != 0);
+    assert(buffer_cap > 0);
+
+    if (!game_scroll_summon_unit_is_valid(summon_unit_kind)) {
+        snprintf(buffer, buffer_cap, "Summon");
+        return;
+    }
+
+    char unit_name[UNIT_ART_DISPLAY_NAME_CAP];
+    unit_art_get_display_name(summon_unit_kind, unit_name, UNIT_ART_DISPLAY_NAME_CAP);
+    snprintf(buffer, buffer_cap, "Summon %s", unit_name);
+}
+
+static Color game_scroll_get_summon_unit_tint(UNIT_ART_KIND summon_unit_kind)
+{
+    switch (summon_unit_kind) {
+    case UNIT_ART_GOBLIN_GRUNT:
+        return (Color){230, 191, 120, 255};
+    case UNIT_ART_GOBLIN_WARRIOR:
+        return (Color){235, 164, 98, 255};
+    case UNIT_ART_GOBLIN_SHAMAN:
+        return (Color){131, 221, 196, 255};
+    case UNIT_ART_TROLL:
+        return (Color){162, 194, 112, 255};
+    case UNIT_ART_RAT:
+        return (Color){170, 228, 144, 255};
+    case UNIT_ART_SPIDER:
+        return (Color){206, 166, 232, 255};
+    case UNIT_ART_SLIME:
+        return (Color){129, 219, 178, 255};
+    case UNIT_ART_SKELETON_GRUNT:
+        return (Color){226, 226, 201, 255};
+    case UNIT_ART_SKELETON_MAGE:
+        return (Color){170, 214, 242, 255};
+    case UNIT_ART_SKELETON_KING:
+        return (Color){236, 214, 128, 255};
+    case UNIT_ART_DRAGON:
+        return (Color){236, 143, 120, 255};
+    default:
+        return (Color){226, 208, 166, 255};
+    }
+}
+
+static Color game_dungeon_get_item_tint(ITEM_ART_KIND item_kind, UNIT_ART_KIND summon_unit_kind)
+{
+    if (item_kind == ITEM_KIND_SCROLL)
+        return game_scroll_get_summon_unit_tint(summon_unit_kind);
+    return WHITE;
 }
 
 static Unit_Stats game_get_player_base_stats(void)
@@ -3568,7 +3634,7 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *rng, i32 entrance_x, i32
         if (!found)
             return false;
 
-        game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL);
+        game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, UNIT_ART_RAT);
     }
 
     return true;
@@ -3960,8 +4026,8 @@ static ITEM_ART_KIND game_get_item_draw_kind(ITEM_ART_KIND kind, int anim_frame)
     return draw_kind;
 }
 
-static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left, float sprite_size,
-                                int anim_frame)
+static void game_draw_item_tile_tinted(Game *game, ITEM_ART_KIND kind, Vector2 top_left,
+                                       float sprite_size, int anim_frame, Color tint)
 {
     ITEM_ART_KIND draw_kind = game_get_item_draw_kind(kind, anim_frame);
 
@@ -3980,11 +4046,18 @@ static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left
         .height = sprite_size,
     };
 
-    DrawTexturePro(game->items_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+    DrawTexturePro(game->items_texture, src, dst, (Vector2){0}, 0.0f, tint);
 }
 
-static void game_draw_item_tile_with_anchor(Game *game, ITEM_ART_KIND kind, Vector2 anchor_position,
-                                            float sprite_size, int anim_frame)
+static void game_draw_item_tile(Game *game, ITEM_ART_KIND kind, Vector2 top_left, float sprite_size,
+                                int anim_frame)
+{
+    game_draw_item_tile_tinted(game, kind, top_left, sprite_size, anim_frame, WHITE);
+}
+
+static void game_draw_item_tile_with_anchor_tinted(Game *game, ITEM_ART_KIND kind,
+                                                   Vector2 anchor_position, float sprite_size,
+                                                   int anim_frame, Color tint)
 {
     ITEM_ART_KIND draw_kind = game_get_item_draw_kind(kind, anim_frame);
     Item_Art_Pixel pixel = item_art_get_pixel(draw_kind);
@@ -4005,7 +4078,14 @@ static void game_draw_item_tile_with_anchor(Game *game, ITEM_ART_KIND kind, Vect
         .height = sprite_size,
     };
 
-    DrawTexturePro(game->items_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+    DrawTexturePro(game->items_texture, src, dst, (Vector2){0}, 0.0f, tint);
+}
+
+static void game_draw_item_tile_with_anchor(Game *game, ITEM_ART_KIND kind, Vector2 anchor_position,
+                                            float sprite_size, int anim_frame)
+{
+    game_draw_item_tile_with_anchor_tinted(game, kind, anchor_position, sprite_size, anim_frame,
+                                           WHITE);
 }
 
 static void game_draw_unit_tile(Game *game, UNIT_ART_KIND kind, u8 orientation, Vector2 top_left,
@@ -4940,9 +5020,20 @@ static void game_draw_health_hearts(Game *game, Vector2 top_left, i32 health, i3
 
 static void game_player_clear_action_bar(Game *game)
 {
-    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++)
+    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
         game->player_action_bar[slot_idx] = ITEM_ART_NONE;
+        game->player_action_bar_summon_unit_kind[slot_idx] = UNIT_ART_NONE;
+    }
     game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+}
+
+static bool game_player_action_bar_slot_has_scroll(const Game *game, i32 slot_idx)
+{
+    if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
+        return false;
+    if (game->player_action_bar[slot_idx] != ITEM_KIND_SCROLL)
+        return false;
+    return game_scroll_summon_unit_is_valid(game->player_action_bar_summon_unit_kind[slot_idx]);
 }
 
 static i32 game_player_find_first_empty_action_bar_slot(const Game *game)
@@ -4955,13 +5046,17 @@ static i32 game_player_find_first_empty_action_bar_slot(const Game *game)
     return -1;
 }
 
-static bool game_player_try_add_scroll_to_action_bar(Game *game)
+static bool game_player_try_add_scroll_to_action_bar(Game *game, UNIT_ART_KIND summon_unit_kind)
 {
+    if (!game_scroll_summon_unit_is_valid(summon_unit_kind))
+        return false;
+
     i32 slot_idx = game_player_find_first_empty_action_bar_slot(game);
     if (slot_idx < 0)
         return false;
 
     game->player_action_bar[slot_idx] = ITEM_KIND_SCROLL;
+    game->player_action_bar_summon_unit_kind[slot_idx] = summon_unit_kind;
     return true;
 }
 
@@ -4972,7 +5067,7 @@ static bool game_player_try_collect_scroll_at(Game *game, i32 x, i32 y)
         return false;
     if (game->items[item_idx].kind != ITEM_KIND_SCROLL)
         return false;
-    if (!game_player_try_add_scroll_to_action_bar(game))
+    if (!game_player_try_add_scroll_to_action_bar(game, game->items[item_idx].summon_unit_kind))
         return false;
 
     game_dungeon_remove_item_at(game, item_idx);
@@ -4984,10 +5079,11 @@ static bool game_player_consume_action_bar_slot(Game *game, i32 slot_idx)
     if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
         return false;
 
-    if (game->player_action_bar[slot_idx] != ITEM_KIND_SCROLL)
+    if (!game_player_action_bar_slot_has_scroll(game, slot_idx))
         return false;
 
     game->player_action_bar[slot_idx] = ITEM_ART_NONE;
+    game->player_action_bar_summon_unit_kind[slot_idx] = UNIT_ART_NONE;
     if (game->player_active_scroll_slot == slot_idx)
         game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
     return true;
@@ -4996,16 +5092,12 @@ static bool game_player_consume_action_bar_slot(Game *game, i32 slot_idx)
 static bool game_player_has_active_scroll_target(const Game *game)
 {
     i32 slot_idx = game->player_active_scroll_slot;
-    if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
-        return false;
-    return game->player_action_bar[slot_idx] == ITEM_KIND_SCROLL;
+    return game_player_action_bar_slot_has_scroll(game, slot_idx);
 }
 
 static bool game_player_activate_action_bar_slot(Game *game, i32 slot_idx)
 {
-    if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
-        return false;
-    if (game->player_action_bar[slot_idx] != ITEM_KIND_SCROLL)
+    if (!game_player_action_bar_slot_has_scroll(game, slot_idx))
         return false;
 
     game->player_active_scroll_slot = slot_idx;
@@ -5028,12 +5120,18 @@ static bool game_player_try_use_active_scroll_target(Game *game)
         return false;
 
     i32 slot_idx = game->player_active_scroll_slot;
+    UNIT_ART_KIND summon_unit_kind = game->player_action_bar_summon_unit_kind[slot_idx];
+    if (!game_scroll_summon_unit_is_valid(summon_unit_kind)) {
+        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+        return false;
+    }
+
     if (!game_player_consume_action_bar_slot(game, slot_idx))
         return false;
 
     u8 summon_orientation = game_dungeon_get_orientation_from_positions(
         game->player_x, game->player_y, target_x, target_y, game->player_orientation);
-    game_dungeon_add_unit(game, target_x, target_y, UNIT_ART_RAT, summon_orientation, true);
+    game_dungeon_add_unit(game, target_x, target_y, summon_unit_kind, summon_orientation, true);
     return true;
 }
 
@@ -5066,6 +5164,41 @@ static Rectangle game_action_bar_panel_rect(void)
     y = clamp(y, DEBUG_HUD_PANEL_MARGIN, max_y);
 
     return (Rectangle){x, y, panel_w, panel_h};
+}
+
+static Rectangle game_action_bar_slot_rect(i32 slot_idx)
+{
+    assert(slot_idx >= 0 && slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT);
+
+    Rectangle panel = game_action_bar_panel_rect();
+    Vector2 slots_top_left = {
+        .x = panel.x + DUNGEON_ACTION_BAR_PANEL_PADDING,
+        .y = panel.y + DUNGEON_ACTION_BAR_PANEL_PADDING,
+    };
+
+    return (Rectangle){
+        .x = slots_top_left.x +
+             (float)slot_idx * (DUNGEON_ACTION_BAR_SLOT_SIZE + DUNGEON_ACTION_BAR_SLOT_GAP),
+        .y = slots_top_left.y,
+        .width = DUNGEON_ACTION_BAR_SLOT_SIZE,
+        .height = DUNGEON_ACTION_BAR_SLOT_SIZE,
+    };
+}
+
+static i32 game_action_bar_hovered_slot(const Game *game)
+{
+    Vector2 mouse = GetMousePosition();
+    Rectangle panel = game_action_bar_panel_rect();
+    if (!game_point_in_rect(mouse, panel))
+        return -1;
+
+    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
+        Rectangle slot = game_action_bar_slot_rect(slot_idx);
+        if (game_point_in_rect(mouse, slot))
+            return slot_idx;
+    }
+
+    return -1;
 }
 
 static Rectangle game_familiar_command_panel_rect(void)
@@ -5144,21 +5277,10 @@ static void game_draw_player_action_bar(Game *game)
     game_draw_dungeon_ui_panel(panel, (Color){18, 14, 11, 236}, (Color){29, 21, 16, 232},
                                (Color){132, 105, 72, 255});
 
-    Vector2 slots_top_left = {
-        .x = panel.x + DUNGEON_ACTION_BAR_PANEL_PADDING,
-        .y = panel.y + DUNGEON_ACTION_BAR_PANEL_PADDING,
-    };
-
     int anim_frame = game_item_anim_frame();
 
     for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
-        Rectangle slot = {
-            .x = slots_top_left.x +
-                 (float)slot_idx * (DUNGEON_ACTION_BAR_SLOT_SIZE + DUNGEON_ACTION_BAR_SLOT_GAP),
-            .y = slots_top_left.y,
-            .width = DUNGEON_ACTION_BAR_SLOT_SIZE,
-            .height = DUNGEON_ACTION_BAR_SLOT_SIZE,
-        };
+        Rectangle slot = game_action_bar_slot_rect(slot_idx);
 
         ITEM_ART_KIND slot_item = game->player_action_bar[slot_idx];
         bool has_item = slot_item != ITEM_ART_NONE;
@@ -5178,8 +5300,10 @@ static void game_draw_player_action_bar(Game *game)
                 .x = slot.x + floorf((slot.width - DUNGEON_ACTION_BAR_ITEM_SIZE) * 0.5f),
                 .y = slot.y + floorf((slot.height - DUNGEON_ACTION_BAR_ITEM_SIZE) * 0.5f),
             };
-            game_draw_item_tile(game, slot_item, icon_pos, DUNGEON_ACTION_BAR_ITEM_SIZE,
-                                anim_frame);
+            Color icon_tint = game_dungeon_get_item_tint(
+                slot_item, game->player_action_bar_summon_unit_kind[slot_idx]);
+            game_draw_item_tile_tinted(game, slot_item, icon_pos, DUNGEON_ACTION_BAR_ITEM_SIZE,
+                                       anim_frame, icon_tint);
         }
     }
 }
@@ -5230,14 +5354,119 @@ static Rectangle game_draw_player_stats_panel(Game *game)
     return panel;
 }
 
-static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
-                                         Rectangle minimap_panel)
+static bool game_mouse_is_over_dungeon_hud_panel(Game *game, Vector2 mouse_screen,
+                                                 Rectangle player_panel, Rectangle minimap_panel,
+                                                 Rectangle familiar_panel,
+                                                 Rectangle action_bar_panel)
+{
+    if (game_point_in_rect(mouse_screen, player_panel))
+        return true;
+    if (game_point_in_rect(mouse_screen, minimap_panel))
+        return true;
+    if (game_point_in_rect(mouse_screen, familiar_panel))
+        return true;
+    if (game_point_in_rect(mouse_screen, action_bar_panel))
+        return true;
+    if (game->debug_hud_visible) {
+        Rectangle debug_panel = game_debug_hud_panel_rect();
+        if (game_point_in_rect(mouse_screen, debug_panel))
+            return true;
+    }
+
+    return false;
+}
+
+static bool game_draw_hovered_scroll_name(Game *game, Rectangle player_panel,
+                                          Rectangle minimap_panel, Rectangle familiar_panel,
+                                          Rectangle action_bar_panel)
 {
     Vector2 mouse_screen = GetMousePosition();
-    if (game_point_in_rect(mouse_screen, player_panel))
+    UNIT_ART_KIND summon_unit_kind = UNIT_ART_NONE;
+
+    i32 hovered_slot = game_action_bar_hovered_slot(game);
+    if (hovered_slot >= 0) {
+        if (!game_player_action_bar_slot_has_scroll(game, hovered_slot))
+            return false;
+
+        summon_unit_kind = game->player_action_bar_summon_unit_kind[hovered_slot];
+    } else {
+        if (game_mouse_is_over_dungeon_hud_panel(game, mouse_screen, player_panel, minimap_panel,
+                                                 familiar_panel, action_bar_panel)) {
+            return false;
+        }
+
+        i32 hover_x = 0;
+        i32 hover_y = 0;
+        if (!game_dungeon_get_mouse_cell(game, &hover_x, &hover_y))
+            return false;
+
+        i32 item_idx = game_dungeon_get_item_index_at(game, hover_x, hover_y);
+        if (item_idx < 0)
+            return false;
+
+        const Dungeon_Item *item = &game->items[item_idx];
+        if (item->kind != ITEM_KIND_SCROLL)
+            return false;
+        if (!game_dungeon_cell_is_visible(game, item->x, item->y))
+            return false;
+        if (!game_scroll_summon_unit_is_valid(item->summon_unit_kind))
+            return false;
+
+        summon_unit_kind = item->summon_unit_kind;
+    }
+
+    if (!game_scroll_summon_unit_is_valid(summon_unit_kind))
+        return false;
+
+    char scroll_name[96];
+    game_scroll_get_display_name(summon_unit_kind, scroll_name, sizeof(scroll_name));
+
+    float text_size = 18.0f;
+    Vector2 text_measure = MeasureTextEx(game->font, scroll_name, text_size, game->font_spacing);
+    float panel_w = text_measure.x + DUNGEON_HOVER_PANEL_PADDING * 2.0f;
+    float panel_h = text_size + DUNGEON_HOVER_PANEL_PADDING * 2.0f;
+
+    Rectangle panel = {
+        .x = mouse_screen.x + 18.0f,
+        .y = mouse_screen.y + 20.0f,
+        .width = panel_w,
+        .height = panel_h,
+    };
+
+    float screen_w = (float)GetScreenWidth();
+    float screen_h = (float)GetScreenHeight();
+    if (panel.x + panel.width > screen_w - 8.0f)
+        panel.x = mouse_screen.x - panel.width - 18.0f;
+    if (panel.y + panel.height > screen_h - 8.0f)
+        panel.y = screen_h - panel.height - 8.0f;
+    panel.x = clamp(panel.x, 8.0f, screen_w - panel.width - 8.0f);
+    panel.y = clamp(panel.y, 8.0f, screen_h - panel.height - 8.0f);
+
+    game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240},
+                               (Color){143, 108, 71, 255});
+
+    Color title_color = game_scroll_get_summon_unit_tint(summon_unit_kind);
+    title_color.r = (u8)min(255, (i32)title_color.r + 16);
+    title_color.g = (u8)min(255, (i32)title_color.g + 16);
+    title_color.b = (u8)min(255, (i32)title_color.b + 16);
+
+    Vector2 text_pos = {
+        .x = panel.x + DUNGEON_HOVER_PANEL_PADDING,
+        .y = panel.y + DUNGEON_HOVER_PANEL_PADDING,
+    };
+    DrawTextEx(game->font, scroll_name, text_pos, text_size, game->font_spacing, title_color);
+    return true;
+}
+
+static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
+                                         Rectangle minimap_panel, Rectangle familiar_panel,
+                                         Rectangle action_bar_panel)
+{
+    Vector2 mouse_screen = GetMousePosition();
+    if (game_mouse_is_over_dungeon_hud_panel(game, mouse_screen, player_panel, minimap_panel,
+                                             familiar_panel, action_bar_panel)) {
         return;
-    if (game_point_in_rect(mouse_screen, minimap_panel))
-        return;
+    }
 
     i32 hover_x = 0;
     i32 hover_y = 0;
@@ -5476,8 +5705,9 @@ static void game_draw_test_dungeon(Game *game)
 
         Vector2 anchor_position = game_dungeon_get_cell_center(origin, item.x, item.y, tile_size);
         float item_size = tile_size * DUNGEON_ITEM_WORLD_SCALE;
-        game_draw_item_tile_with_anchor(game, item.kind, anchor_position, item_size,
-                                        item_anim_frame);
+        Color item_tint = game_dungeon_get_item_tint(item.kind, item.summon_unit_kind);
+        game_draw_item_tile_with_anchor_tinted(game, item.kind, anchor_position, item_size,
+                                               item_anim_frame, item_tint);
     }
 
     int unit_anim_frame = game_unit_anim_frame();
@@ -5926,6 +6156,8 @@ static void game_draw_debug_hud(Game *game)
 static void game_draw_dungeon_hud(Game *game)
 {
     Rectangle player_panel = game_draw_player_stats_panel(game);
+    Rectangle familiar_panel = game_familiar_command_panel_rect();
+    Rectangle action_bar_panel = game_action_bar_panel_rect();
 
     if (game->dungeon_template_error[0] != '\0') {
         char line[256];
@@ -5939,7 +6171,13 @@ static void game_draw_dungeon_hud(Game *game)
     game_draw_familiar_command_bar(game);
     game_draw_player_action_bar(game);
     game_draw_debug_hud(game);
-    game_draw_hovered_unit_stats(game, player_panel, minimap_panel);
+
+    bool drew_scroll_hover = game_draw_hovered_scroll_name(game, player_panel, minimap_panel,
+                                                           familiar_panel, action_bar_panel);
+    if (!drew_scroll_hover) {
+        game_draw_hovered_unit_stats(game, player_panel, minimap_panel, familiar_panel,
+                                     action_bar_panel);
+    }
 }
 
 static Rectangle game_end_menu_panel_rect(void)
