@@ -785,6 +785,15 @@ static Unit_Stats game_make_unit_stats(i32 max_health, i32 damage, i32 speed)
     };
 }
 
+static bool game_unit_stats_take_damage(Unit_Stats *stats, i32 damage)
+{
+    assert(stats != 0);
+
+    i32 next_health = (i32)stats->health - max(0, damage);
+    stats->health = (u8)max(0, next_health);
+    return stats->health == 0;
+}
+
 static Unit_Stats game_get_player_base_stats(void)
 {
     return game_make_unit_stats(6, 2, 1);
@@ -1541,6 +1550,27 @@ static const Dungeon_Unit *game_dungeon_get_unit_at(const Game *game, i32 x, i32
     return 0;
 }
 
+static i32 game_dungeon_get_unit_index_at(const Game *game, i32 x, i32 y)
+{
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        if (game->units[idx].x == x && game->units[idx].y == y)
+            return idx;
+    }
+
+    return -1;
+}
+
+static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
+{
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+
+    u8 last_idx = (u8)(game->unit_count - 1);
+    if ((u8)unit_idx != last_idx)
+        game->units[unit_idx] = game->units[last_idx];
+    game->unit_count--;
+}
+
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
 {
     if (game->player_x == x && game->player_y == y)
@@ -1684,6 +1714,18 @@ static void game_dungeon_take_enemy_turns(Game *game)
 
         if (!unit->is_awake)
             continue;
+
+        i32 to_player_x = game->player_x - start_x;
+        i32 to_player_y = game->player_y - start_y;
+        bool player_is_adjacent = (to_player_x == 0 && (to_player_y == -1 || to_player_y == 1)) ||
+                                  (to_player_y == 0 && (to_player_x == -1 || to_player_x == 1));
+        if (player_is_adjacent) {
+            unit->orientation =
+                game_dungeon_get_orientation_from_step(to_player_x, to_player_y, unit->orientation);
+            game_unit_stats_take_damage(&game->player_stats, unit->stats.damage);
+            continue;
+        }
+
         if (!has_player_dijkstra)
             continue;
 
@@ -3418,6 +3460,19 @@ static bool game_update_player(Game *game)
     i32 next_y = game->player_y + move_y;
     if (!game_dungeon_cell_is_floor(game, next_x, next_y))
         return false;
+
+    i32 target_unit_idx = game_dungeon_get_unit_index_at(game, next_x, next_y);
+    if (target_unit_idx >= 0) {
+        Dungeon_Unit *target_unit = &game->units[target_unit_idx];
+        target_unit->is_awake = true;
+        target_unit->turns_out_of_player_los = 0;
+
+        bool unit_defeated =
+            game_unit_stats_take_damage(&target_unit->stats, game->player_stats.damage);
+        if (unit_defeated)
+            game_dungeon_remove_unit_at(game, target_unit_idx);
+        return true;
+    }
 
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
