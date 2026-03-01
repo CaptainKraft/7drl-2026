@@ -279,7 +279,6 @@ typedef struct {
     u8 max_health;
     u8 health;
     u8 damage;
-    u8 speed;
 } Unit_Stats;
 
 typedef struct {
@@ -932,16 +931,14 @@ static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind)
     };
 }
 
-static Unit_Stats game_make_unit_stats(i32 max_health, i32 damage, i32 speed)
+static Unit_Stats game_make_unit_stats(i32 max_health, i32 damage)
 {
     i32 safe_max_health = max(1, max_health);
     i32 safe_damage = max(0, damage);
-    i32 safe_speed = max(1, speed);
     return (Unit_Stats){
         .max_health = (u8)safe_max_health,
         .health = (u8)safe_max_health,
         .damage = (u8)safe_damage,
-        .speed = (u8)safe_speed,
     };
 }
 
@@ -956,36 +953,36 @@ static bool game_unit_stats_take_damage(Unit_Stats *stats, i32 damage)
 
 static Unit_Stats game_get_player_base_stats(void)
 {
-    return game_make_unit_stats(6, 2, 1);
+    return game_make_unit_stats(6, 2);
 }
 
 static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
 {
     switch (kind) {
     case UNIT_ART_GOBLIN_GRUNT:
-        return game_make_unit_stats(3, 1, 1);
+        return game_make_unit_stats(3, 1);
     case UNIT_ART_GOBLIN_WARRIOR:
-        return game_make_unit_stats(5, 2, 1);
+        return game_make_unit_stats(5, 2);
     case UNIT_ART_GOBLIN_SHAMAN:
-        return game_make_unit_stats(4, 2, 1);
+        return game_make_unit_stats(4, 2);
     case UNIT_ART_TROLL:
-        return game_make_unit_stats(8, 3, 1);
+        return game_make_unit_stats(8, 3);
     case UNIT_ART_RAT:
-        return game_make_unit_stats(2, 1, 2);
+        return game_make_unit_stats(2, 1);
     case UNIT_ART_SPIDER:
-        return game_make_unit_stats(3, 1, 2);
+        return game_make_unit_stats(3, 1);
     case UNIT_ART_SLIME:
-        return game_make_unit_stats(5, 1, 1);
+        return game_make_unit_stats(5, 1);
     case UNIT_ART_SKELETON_GRUNT:
-        return game_make_unit_stats(4, 1, 1);
+        return game_make_unit_stats(4, 1);
     case UNIT_ART_SKELETON_MAGE:
-        return game_make_unit_stats(4, 2, 1);
+        return game_make_unit_stats(4, 2);
     case UNIT_ART_SKELETON_KING:
-        return game_make_unit_stats(9, 3, 1);
+        return game_make_unit_stats(9, 3);
     case UNIT_ART_DRAGON:
-        return game_make_unit_stats(14, 4, 1);
+        return game_make_unit_stats(14, 4);
     default:
-        return game_make_unit_stats(4, 1, 1);
+        return game_make_unit_stats(4, 1);
     }
 }
 
@@ -4375,9 +4372,6 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
     char damage_line[32];
     snprintf(damage_line, sizeof(damage_line), "Damage  %d", (i32)hovered_stats.damage);
 
-    char speed_line[32];
-    snprintf(speed_line, sizeof(speed_line), "Speed   %d", (i32)hovered_stats.speed);
-
     float title_size = 19.0f;
     float line_size = 16.0f;
     float line_gap = 4.0f;
@@ -4385,15 +4379,13 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
     Vector2 title_measure = MeasureTextEx(game->font, hovered_name, title_size, game->font_spacing);
     Vector2 health_measure = MeasureTextEx(game->font, health_line, line_size, game->font_spacing);
     Vector2 damage_measure = MeasureTextEx(game->font, damage_line, line_size, game->font_spacing);
-    Vector2 speed_measure = MeasureTextEx(game->font, speed_line, line_size, game->font_spacing);
 
     float panel_w = max(title_measure.x, health_measure.x);
     panel_w = max(panel_w, damage_measure.x);
-    panel_w = max(panel_w, speed_measure.x);
     panel_w += DUNGEON_HOVER_PANEL_PADDING * 2.0f;
 
-    float panel_h = (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_size + 8.0f + (line_size * 3.0f) +
-                    (line_gap * 2.0f);
+    float panel_h =
+        (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_size + 8.0f + (line_size * 2.0f) + line_gap;
 
     Rectangle panel = {
         .x = mouse_screen.x + 18.0f,
@@ -4431,10 +4423,6 @@ static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
 
     line_pos.y += line_size + line_gap;
     DrawTextEx(game->font, damage_line, line_pos, line_size, game->font_spacing,
-               (Color){194, 173, 141, 255});
-
-    line_pos.y += line_size + line_gap;
-    DrawTextEx(game->font, speed_line, line_pos, line_size, game->font_spacing,
                (Color){194, 173, 141, 255});
 }
 
