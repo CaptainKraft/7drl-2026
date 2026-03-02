@@ -90,16 +90,16 @@
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 #define DUNGEON_LOS_RADIUS_TILES 12
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
-#define DUNGEON_GOBLIN_GRUNT_COUNT 7
+#define DUNGEON_ENEMY_SPAWN_COUNT 7
 #define DUNGEON_SCROLLS_PER_FLOOR 10
 #define DUNGEON_PATH_UNREACHABLE 0x3fff
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
-#define DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE 2
-#define DUNGEON_SUMMONED_SPIDER_FOLLOW_DISTANCE 4
-#define DUNGEON_SUMMONED_SPIDER_TARGET_MIN_DISTANCE 3
-#define DUNGEON_SUMMONED_SPIDER_TARGET_MAX_DISTANCE 5
-#define DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE 3
+#define DUNGEON_FAMILIAR_BASIC_MELEE_FOLLOW_DISTANCE 2
+#define DUNGEON_FAMILIAR_BASIC_RANGED_FOLLOW_DISTANCE 4
+#define DUNGEON_FAMILIAR_BASIC_RANGED_TARGET_MIN_DISTANCE 3
+#define DUNGEON_FAMILIAR_BASIC_RANGED_TARGET_MAX_DISTANCE 5
+#define DUNGEON_FAMILIAR_BASIC_RANGED_ENEMY_AVOID_DISTANCE 3
 #define DUNGEON_MOVE_ANIM_DURATION 0.18f
 #define DUNGEON_MOVE_HOP_HEIGHT_TILES 0.16f
 #define DUNGEON_ATTACK_ANIM_DURATION 0.12f
@@ -153,6 +153,7 @@
 #define TESTING_UNIT_BAR_SLOT_SIZE 56.0f
 #define TESTING_UNIT_BAR_SLOT_SIZE_MIN 12.0f
 #define TESTING_UNIT_BAR_SLOT_GAP 4.0f
+#define TESTING_UNIT_BAR_IMPLEMENTATION_GAP 20.0f
 #define TESTING_UNIT_BAR_PANEL_PADDING 6.0f
 #define TESTING_UNIT_BAR_ROW_GAP 8.0f
 #define TESTING_UNIT_BAR_BOTTOM_MARGIN 14.0f
@@ -210,6 +211,15 @@ typedef enum {
     FAMILIAR_TURN_COMMAND_WAIT,
     FAMILIAR_TURN_COMMAND_RETURN,
 } FAMILIAR_TURN_COMMAND;
+
+typedef enum {
+    FAMILIAR_AI_BASIC_MELEE,
+    FAMILIAR_AI_BASIC_RANGED,
+} FAMILIAR_AI_KIND;
+
+typedef enum {
+    ENEMY_AI_BASIC_MELEE,
+} ENEMY_AI_KIND;
 
 typedef enum {
     DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH,
@@ -549,17 +559,15 @@ static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     ((i32)(sizeof(game_dungeon_hbw_templates) / sizeof(game_dungeon_hbw_templates[0])))
 
 static const UNIT_ART_KIND game_testing_area_familiar_unit_kinds[] = {
-    UNIT_ART_RAT,           UNIT_ART_COBRA,         UNIT_ART_SPIDER,
-    UNIT_ART_SLIME,         UNIT_ART_GOBLIN_GRUNT,  UNIT_ART_GOBLIN_WARRIOR,
-    UNIT_ART_GOBLIN_SHAMAN, UNIT_ART_TROLL,         UNIT_ART_SKELETON_GRUNT,
-    UNIT_ART_SKELETON_MAGE, UNIT_ART_SKELETON_KING, UNIT_ART_DRAGON,
+    UNIT_ART_RAT,     UNIT_ART_COBRA,     UNIT_ART_SPIDER, UNIT_ART_BEHOLDER, UNIT_ART_IMP,
+    UNIT_ART_SPIRIT,  UNIT_ART_ELEMENTAL, UNIT_ART_BAT,    UNIT_ART_REAPER,   UNIT_ART_PHOENIX,
+    UNIT_ART_GRIFFON, UNIT_ART_MAN_EATER, UNIT_ART_BEETLE, UNIT_ART_MUMMY,    UNIT_ART_TREANT,
 };
 
 static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
-    UNIT_ART_GOBLIN_GRUNT,  UNIT_ART_GOBLIN_WARRIOR, UNIT_ART_GOBLIN_SHAMAN,
-    UNIT_ART_TROLL,         UNIT_ART_SKELETON_GRUNT, UNIT_ART_SKELETON_MAGE,
-    UNIT_ART_SKELETON_KING, UNIT_ART_DRAGON,         UNIT_ART_RAT,
-    UNIT_ART_COBRA,         UNIT_ART_SPIDER,         UNIT_ART_SLIME,
+    UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN, UNIT_ART_GOBLIN_WARRIOR, UNIT_ART_TROLL,
+    UNIT_ART_DEATH_KNIGHT, UNIT_ART_SLIME,         UNIT_ART_MINOTAUR,       UNIT_ART_MIMIC,
+    UNIT_ART_CENTAUR,      UNIT_ART_SATYR,         UNIT_ART_GIANT,          UNIT_ART_YETI,
 };
 
 #define TESTING_AREA_FAMILIAR_KIND_COUNT                                                           \
@@ -570,9 +578,20 @@ static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
     ((i32)(sizeof(game_testing_area_enemy_unit_kinds) /                                            \
            sizeof(game_testing_area_enemy_unit_kinds[0])))
 
+#define TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT 3
+#define TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT 1
+
 _Static_assert(TESTING_AREA_FAMILIAR_KIND_COUNT > 0,
                "Testing area familiar list must not be empty");
 _Static_assert(TESTING_AREA_ENEMY_KIND_COUNT > 0, "Testing area enemy list must not be empty");
+_Static_assert(TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT > 0,
+               "Implemented familiar list must not be empty");
+_Static_assert(TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT <= TESTING_AREA_FAMILIAR_KIND_COUNT,
+               "Implemented familiar list cannot exceed testing area familiar list");
+_Static_assert(TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT > 0,
+               "Implemented enemy list must not be empty");
+_Static_assert(TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT <= TESTING_AREA_ENEMY_KIND_COUNT,
+               "Implemented enemy list cannot exceed testing area enemy list");
 
 static i32 game_debug_hud_utility_button_count(const Game *game)
 {
@@ -596,6 +615,16 @@ static bool game_testing_area_unit_kind_in_list(UNIT_ART_KIND kind,
     }
 
     return false;
+}
+
+static bool game_testing_area_unit_kind_is_implemented(bool is_friendly, UNIT_ART_KIND kind)
+{
+    const UNIT_ART_KIND *kind_list =
+        is_friendly ? game_testing_area_familiar_unit_kinds : game_testing_area_enemy_unit_kinds;
+    i32 implemented_kind_count = is_friendly ? TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT
+                                             : TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT;
+
+    return game_testing_area_unit_kind_in_list(kind, kind_list, implemented_kind_count);
 }
 
 static bool game_debug_testing_unit_kind_is_selectable(bool is_friendly, UNIT_ART_KIND kind)
@@ -1183,7 +1212,7 @@ static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
 
 static bool game_scroll_summon_unit_is_valid(UNIT_ART_KIND summon_unit_kind)
 {
-    return summon_unit_kind > UNIT_ART_NONE && summon_unit_kind < NUM_UNIT_ART;
+    return game_testing_area_unit_kind_is_implemented(true, summon_unit_kind);
 }
 
 static void game_scroll_get_display_name(UNIT_ART_KIND summon_unit_kind, char *buffer,
@@ -1205,30 +1234,60 @@ static void game_scroll_get_display_name(UNIT_ART_KIND summon_unit_kind, char *b
 static Color game_scroll_get_summon_unit_tint(UNIT_ART_KIND summon_unit_kind)
 {
     switch (summon_unit_kind) {
-    case UNIT_ART_GOBLIN_GRUNT:
-        return (Color){230, 191, 120, 255};
-    case UNIT_ART_GOBLIN_WARRIOR:
-        return (Color){235, 164, 98, 255};
-    case UNIT_ART_GOBLIN_SHAMAN:
-        return (Color){131, 221, 196, 255};
-    case UNIT_ART_TROLL:
-        return (Color){162, 194, 112, 255};
     case UNIT_ART_RAT:
         return (Color){184, 166, 145, 255};
     case UNIT_ART_COBRA:
         return (Color){170, 228, 144, 255};
     case UNIT_ART_SPIDER:
         return (Color){206, 166, 232, 255};
+    case UNIT_ART_BEHOLDER:
+        return (Color){212, 176, 246, 255};
+    case UNIT_ART_IMP:
+        return (Color){239, 134, 109, 255};
+    case UNIT_ART_SPIRIT:
+        return (Color){173, 215, 248, 255};
+    case UNIT_ART_ELEMENTAL:
+        return (Color){145, 206, 255, 255};
+    case UNIT_ART_BAT:
+        return (Color){152, 145, 176, 255};
+    case UNIT_ART_REAPER:
+        return (Color){204, 198, 214, 255};
+    case UNIT_ART_PHOENIX:
+        return (Color){245, 169, 92, 255};
+    case UNIT_ART_GRIFFON:
+        return (Color){228, 201, 148, 255};
+    case UNIT_ART_MAN_EATER:
+        return (Color){132, 190, 116, 255};
+    case UNIT_ART_BEETLE:
+        return (Color){164, 203, 112, 255};
+    case UNIT_ART_MUMMY:
+        return (Color){210, 191, 142, 255};
+    case UNIT_ART_TREANT:
+        return (Color){154, 186, 121, 255};
+    case UNIT_ART_GOBLIN_GRUNT:
+        return (Color){230, 191, 120, 255};
+    case UNIT_ART_GOBLIN_SHAMAN:
+        return (Color){131, 221, 196, 255};
+    case UNIT_ART_GOBLIN_WARRIOR:
+        return (Color){235, 164, 98, 255};
+    case UNIT_ART_TROLL:
+        return (Color){162, 194, 112, 255};
+    case UNIT_ART_DEATH_KNIGHT:
+        return (Color){177, 168, 220, 255};
     case UNIT_ART_SLIME:
         return (Color){129, 219, 178, 255};
-    case UNIT_ART_SKELETON_GRUNT:
-        return (Color){226, 226, 201, 255};
-    case UNIT_ART_SKELETON_MAGE:
-        return (Color){170, 214, 242, 255};
-    case UNIT_ART_SKELETON_KING:
-        return (Color){236, 214, 128, 255};
-    case UNIT_ART_DRAGON:
-        return (Color){236, 143, 120, 255};
+    case UNIT_ART_MINOTAUR:
+        return (Color){205, 144, 110, 255};
+    case UNIT_ART_MIMIC:
+        return (Color){201, 170, 131, 255};
+    case UNIT_ART_CENTAUR:
+        return (Color){216, 185, 139, 255};
+    case UNIT_ART_SATYR:
+        return (Color){189, 217, 140, 255};
+    case UNIT_ART_GIANT:
+        return (Color){194, 202, 164, 255};
+    case UNIT_ART_YETI:
+        return (Color){180, 218, 234, 255};
     default:
         return (Color){226, 208, 166, 255};
     }
@@ -1249,31 +1308,107 @@ static Unit_Stats game_get_player_base_stats(void)
 static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
 {
     switch (kind) {
-    case UNIT_ART_GOBLIN_GRUNT:
-        return game_make_unit_stats(3, 1);
-    case UNIT_ART_GOBLIN_WARRIOR:
-        return game_make_unit_stats(5, 2);
-    case UNIT_ART_GOBLIN_SHAMAN:
-        return game_make_unit_stats(4, 2);
-    case UNIT_ART_TROLL:
-        return game_make_unit_stats(8, 3);
     case UNIT_ART_RAT:
+        return game_make_unit_stats(2, 1);
     case UNIT_ART_COBRA:
         return game_make_unit_stats(2, 1);
     case UNIT_ART_SPIDER:
         return game_make_unit_stats(1, 0);
-    case UNIT_ART_SLIME:
-        return game_make_unit_stats(5, 1);
-    case UNIT_ART_SKELETON_GRUNT:
-        return game_make_unit_stats(4, 1);
-    case UNIT_ART_SKELETON_MAGE:
+    case UNIT_ART_BEHOLDER:
         return game_make_unit_stats(4, 2);
-    case UNIT_ART_SKELETON_KING:
-        return game_make_unit_stats(9, 3);
-    case UNIT_ART_DRAGON:
-        return game_make_unit_stats(14, 4);
+    case UNIT_ART_IMP:
+        return game_make_unit_stats(3, 1);
+    case UNIT_ART_SPIRIT:
+        return game_make_unit_stats(3, 1);
+    case UNIT_ART_ELEMENTAL:
+        return game_make_unit_stats(6, 2);
+    case UNIT_ART_BAT:
+        return game_make_unit_stats(2, 1);
+    case UNIT_ART_REAPER:
+        return game_make_unit_stats(5, 3);
+    case UNIT_ART_PHOENIX:
+        return game_make_unit_stats(7, 2);
+    case UNIT_ART_GRIFFON:
+        return game_make_unit_stats(6, 2);
+    case UNIT_ART_MAN_EATER:
+        return game_make_unit_stats(7, 3);
+    case UNIT_ART_BEETLE:
+        return game_make_unit_stats(5, 1);
+    case UNIT_ART_MUMMY:
+        return game_make_unit_stats(6, 2);
+    case UNIT_ART_TREANT:
+        return game_make_unit_stats(9, 2);
+    case UNIT_ART_GOBLIN_GRUNT:
+        return game_make_unit_stats(3, 1);
+    case UNIT_ART_GOBLIN_SHAMAN:
+        return game_make_unit_stats(4, 1);
+    case UNIT_ART_GOBLIN_WARRIOR:
+        return game_make_unit_stats(5, 2);
+    case UNIT_ART_TROLL:
+        return game_make_unit_stats(8, 3);
+    case UNIT_ART_DEATH_KNIGHT:
+        return game_make_unit_stats(10, 4);
+    case UNIT_ART_SLIME:
+        return game_make_unit_stats(6, 1);
+    case UNIT_ART_MINOTAUR:
+        return game_make_unit_stats(11, 4);
+    case UNIT_ART_MIMIC:
+        return game_make_unit_stats(7, 3);
+    case UNIT_ART_CENTAUR:
+        return game_make_unit_stats(6, 2);
+    case UNIT_ART_SATYR:
+        return game_make_unit_stats(5, 2);
+    case UNIT_ART_GIANT:
+        return game_make_unit_stats(15, 5);
+    case UNIT_ART_YETI:
+        return game_make_unit_stats(12, 3);
     default:
         return game_make_unit_stats(4, 1);
+    }
+}
+
+static FAMILIAR_AI_KIND game_get_familiar_ai_kind(UNIT_ART_KIND kind)
+{
+    switch (kind) {
+    case UNIT_ART_SPIDER:
+        return FAMILIAR_AI_BASIC_RANGED;
+    case UNIT_ART_RAT:
+    case UNIT_ART_COBRA:
+    case UNIT_ART_BEHOLDER:
+    case UNIT_ART_IMP:
+    case UNIT_ART_SPIRIT:
+    case UNIT_ART_ELEMENTAL:
+    case UNIT_ART_BAT:
+    case UNIT_ART_REAPER:
+    case UNIT_ART_PHOENIX:
+    case UNIT_ART_GRIFFON:
+    case UNIT_ART_MAN_EATER:
+    case UNIT_ART_BEETLE:
+    case UNIT_ART_MUMMY:
+    case UNIT_ART_TREANT:
+    default:
+        return FAMILIAR_AI_BASIC_MELEE;
+    }
+}
+
+static ENEMY_AI_KIND game_get_enemy_ai_kind(UNIT_ART_KIND kind)
+{
+    switch (kind) {
+    case UNIT_ART_GOBLIN_GRUNT:
+    case UNIT_ART_GOBLIN_SHAMAN:
+    case UNIT_ART_GOBLIN_WARRIOR:
+    case UNIT_ART_TROLL:
+    case UNIT_ART_DEATH_KNIGHT:
+    case UNIT_ART_SLIME:
+    case UNIT_ART_MINOTAUR:
+    case UNIT_ART_MIMIC:
+    case UNIT_ART_CENTAUR:
+    case UNIT_ART_SATYR:
+    case UNIT_ART_GIANT:
+    case UNIT_ART_YETI:
+        return ENEMY_AI_BASIC_MELEE;
+    default:
+        return ENEMY_AI_BASIC_MELEE;
     }
 }
 
@@ -2599,11 +2734,10 @@ static i32 game_dungeon_find_most_threatening_enemy_in_view(
     return best_threat.unit_index;
 }
 
-static i32
-game_dungeon_find_spider_web_target(const Game *game, i32 spider_x, i32 spider_y,
-                                    const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
-                                    bool player_distance_valid, i16 *out_target_distance,
-                                    i16 *out_nearest_enemy_distance)
+static i32 game_dungeon_find_basic_ranged_familiar_target(
+    const Game *game, i32 familiar_x, i32 familiar_y,
+    const i16 player_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT], bool player_distance_valid,
+    i16 *out_target_distance, i16 *out_nearest_enemy_distance)
 {
     assert(out_target_distance != 0);
     assert(out_nearest_enemy_distance != 0);
@@ -2611,18 +2745,18 @@ game_dungeon_find_spider_web_target(const Game *game, i32 spider_x, i32 spider_y
     *out_target_distance = DUNGEON_PATH_UNREACHABLE;
     *out_nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
 
-    if (!game_dungeon_cell_in_bounds(spider_x, spider_y))
+    if (!game_dungeon_cell_in_bounds(familiar_x, familiar_y))
         return -1;
 
-    i16 goal_x[1] = {(i16)spider_x};
-    i16 goal_y[1] = {(i16)spider_y};
-    i16 distance_from_spider[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
-    if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_spider))
+    i16 goal_x[1] = {(i16)familiar_x};
+    i16 goal_y[1] = {(i16)familiar_y};
+    i16 distance_from_familiar[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_familiar))
         return -1;
 
     bool has_best = false;
     i32 best_target_idx = -1;
-    i16 best_spider_distance = DUNGEON_PATH_UNREACHABLE;
+    i16 best_familiar_distance = DUNGEON_PATH_UNREACHABLE;
     i16 best_player_distance = DUNGEON_PATH_UNREACHABLE;
     i16 nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
 
@@ -2636,15 +2770,15 @@ game_dungeon_find_spider_web_target(const Game *game, i32 spider_x, i32 spider_y
             continue;
         if (!game_dungeon_cell_is_in_player_los(game, unit->x, unit->y))
             continue;
-        if (!game_dungeon_unit_can_see_cell(game, spider_x, spider_y, unit->x, unit->y))
+        if (!game_dungeon_unit_can_see_cell(game, familiar_x, familiar_y, unit->x, unit->y))
             continue;
 
-        i16 spider_distance = distance_from_spider[unit->y][unit->x];
-        if (spider_distance <= 0 || spider_distance >= DUNGEON_PATH_UNREACHABLE)
+        i16 familiar_distance = distance_from_familiar[unit->y][unit->x];
+        if (familiar_distance <= 0 || familiar_distance >= DUNGEON_PATH_UNREACHABLE)
             continue;
 
-        if (spider_distance < nearest_enemy_distance)
-            nearest_enemy_distance = spider_distance;
+        if (familiar_distance < nearest_enemy_distance)
+            nearest_enemy_distance = familiar_distance;
 
         i16 enemy_player_distance = game_dungeon_get_player_distance_for_threat(
             game, player_distance, player_distance_valid, unit->x, unit->y);
@@ -2652,12 +2786,12 @@ game_dungeon_find_spider_web_target(const Game *game, i32 spider_x, i32 spider_y
         bool is_better = false;
         if (!has_best) {
             is_better = true;
-        } else if (spider_distance < best_spider_distance) {
+        } else if (familiar_distance < best_familiar_distance) {
             is_better = true;
-        } else if (spider_distance == best_spider_distance &&
+        } else if (familiar_distance == best_familiar_distance &&
                    enemy_player_distance < best_player_distance) {
             is_better = true;
-        } else if (spider_distance == best_spider_distance &&
+        } else if (familiar_distance == best_familiar_distance &&
                    enemy_player_distance == best_player_distance &&
                    (i32)unit_idx < best_target_idx) {
             is_better = true;
@@ -2668,14 +2802,14 @@ game_dungeon_find_spider_web_target(const Game *game, i32 spider_x, i32 spider_y
 
         has_best = true;
         best_target_idx = unit_idx;
-        best_spider_distance = spider_distance;
+        best_familiar_distance = familiar_distance;
         best_player_distance = enemy_player_distance;
     }
 
     if (!has_best)
         return -1;
 
-    *out_target_distance = best_spider_distance;
+    *out_target_distance = best_familiar_distance;
     *out_nearest_enemy_distance = nearest_enemy_distance;
     return best_target_idx;
 }
@@ -2906,10 +3040,9 @@ static i32 game_dungeon_get_distance_to_range_error(i16 distance, i32 min_distan
     return 0;
 }
 
-static bool game_dungeon_try_move_spider_to_distance_range(Game *game, i32 unit_idx, i32 anchor_x,
-                                                           i32 anchor_y, i32 desired_min_distance,
-                                                           i32 desired_max_distance,
-                                                           i32 min_enemy_distance)
+static bool game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
+    Game *game, i32 unit_idx, i32 anchor_x, i32 anchor_y, i32 desired_min_distance,
+    i32 desired_max_distance, i32 min_enemy_distance)
 {
     assert(unit_idx >= 0);
     assert(unit_idx < game->unit_count);
@@ -3051,9 +3184,10 @@ static void game_dungeon_take_friendly_unit_turn(
     if (!game_dungeon_cell_in_bounds(start_x, start_y))
         return;
 
-    i32 follow_distance = DUNGEON_SUMMONED_RAT_FOLLOW_DISTANCE;
-    if (unit->kind == UNIT_ART_SPIDER)
-        follow_distance = DUNGEON_SUMMONED_SPIDER_FOLLOW_DISTANCE;
+    FAMILIAR_AI_KIND ai_kind = game_get_familiar_ai_kind(unit->kind);
+    i32 follow_distance = DUNGEON_FAMILIAR_BASIC_MELEE_FOLLOW_DISTANCE;
+    if (ai_kind == FAMILIAR_AI_BASIC_RANGED)
+        follow_distance = DUNGEON_FAMILIAR_BASIC_RANGED_FOLLOW_DISTANCE;
 
     if (unit->is_returning_to_player) {
         if (player_distance_valid) {
@@ -3063,10 +3197,10 @@ static void game_dungeon_take_friendly_unit_turn(
         }
 
         if (unit->is_returning_to_player) {
-            if (unit->kind == UNIT_ART_SPIDER) {
-                game_dungeon_try_move_spider_to_distance_range(
+            if (ai_kind == FAMILIAR_AI_BASIC_RANGED) {
+                game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
                     game, unit_idx, game->player_x, game->player_y, follow_distance,
-                    follow_distance, DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
+                    follow_distance, DUNGEON_FAMILIAR_BASIC_RANGED_ENEMY_AVOID_DISTANCE);
             } else {
                 game_dungeon_try_move_unit_to_player_distance(
                     game, unit_idx, follow_distance, player_distance, player_distance_valid);
@@ -3081,10 +3215,11 @@ static void game_dungeon_take_friendly_unit_turn(
         }
     }
 
-    if (unit->kind == UNIT_ART_SPIDER) {
+    switch (ai_kind) {
+    case FAMILIAR_AI_BASIC_RANGED: {
         i16 target_enemy_distance = DUNGEON_PATH_UNREACHABLE;
         i16 nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
-        i32 target_enemy_idx = game_dungeon_find_spider_web_target(
+        i32 target_enemy_idx = game_dungeon_find_basic_ranged_familiar_target(
             game, start_x, start_y, player_distance, player_distance_valid, &target_enemy_distance,
             &nearest_enemy_distance);
         if (target_enemy_idx >= 0) {
@@ -3096,10 +3231,10 @@ static void game_dungeon_take_friendly_unit_turn(
                 start_x, start_y, enemy_x, enemy_y, unit->orientation);
 
             bool no_enemy_too_close =
-                nearest_enemy_distance >= DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE;
+                nearest_enemy_distance >= DUNGEON_FAMILIAR_BASIC_RANGED_ENEMY_AVOID_DISTANCE;
             bool in_web_range =
-                target_enemy_distance >= DUNGEON_SUMMONED_SPIDER_TARGET_MIN_DISTANCE &&
-                target_enemy_distance <= DUNGEON_SUMMONED_SPIDER_TARGET_MAX_DISTANCE;
+                target_enemy_distance >= DUNGEON_FAMILIAR_BASIC_RANGED_TARGET_MIN_DISTANCE &&
+                target_enemy_distance <= DUNGEON_FAMILIAR_BASIC_RANGED_TARGET_MAX_DISTANCE;
             if (no_enemy_too_close && in_web_range) {
                 float attack_delay = game_dungeon_get_unit_move_anim_remaining(target_enemy);
                 game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, enemy_x, enemy_y,
@@ -3112,19 +3247,23 @@ static void game_dungeon_take_friendly_unit_turn(
                 return;
             }
 
-            game_dungeon_try_move_spider_to_distance_range(
-                game, unit_idx, enemy_x, enemy_y, DUNGEON_SUMMONED_SPIDER_TARGET_MIN_DISTANCE,
-                DUNGEON_SUMMONED_SPIDER_TARGET_MAX_DISTANCE,
-                DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
+            game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
+                game, unit_idx, enemy_x, enemy_y, DUNGEON_FAMILIAR_BASIC_RANGED_TARGET_MIN_DISTANCE,
+                DUNGEON_FAMILIAR_BASIC_RANGED_TARGET_MAX_DISTANCE,
+                DUNGEON_FAMILIAR_BASIC_RANGED_ENEMY_AVOID_DISTANCE);
             return;
         }
 
         unit->orientation = game_dungeon_get_orientation_from_positions(
             start_x, start_y, game->player_x, game->player_y, unit->orientation);
-        game_dungeon_try_move_spider_to_distance_range(
+        game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
             game, unit_idx, game->player_x, game->player_y, follow_distance, follow_distance,
-            DUNGEON_SUMMONED_SPIDER_ENEMY_AVOID_DISTANCE);
+            DUNGEON_FAMILIAR_BASIC_RANGED_ENEMY_AVOID_DISTANCE);
         return;
+    }
+    case FAMILIAR_AI_BASIC_MELEE:
+    default:
+        break;
     }
 
     i32 target_enemy_idx = game_dungeon_find_most_threatening_enemy_in_view(
@@ -3294,53 +3433,60 @@ static void game_dungeon_take_enemy_turns(Game *game)
         if (!game_dungeon_find_nearest_enemy_target(game, start_x, start_y, &target))
             continue;
 
-        i32 target_x = target.target_x;
-        i32 target_y = target.target_y;
-        float attack_delay = 0.0f;
-
-        if (target.target_is_player) {
-            target_x = game->player_x;
-            target_y = game->player_y;
-            attack_delay = game_dungeon_get_player_move_anim_remaining(game);
-        } else {
-            if (target.target_unit_idx < 0 || target.target_unit_idx >= game->unit_count)
-                continue;
-
-            Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
-            if (!target_unit->is_friendly || target_unit->x != target.target_x ||
-                target_unit->y != target.target_y)
-                continue;
-            attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
-        }
-
-        if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, target_x, target_y)) {
-            unit->orientation = game_dungeon_get_orientation_from_step(
-                target_x - start_x, target_y - start_y, unit->orientation);
-            game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
-                                                     attack_delay);
-            i32 attack_damage = game_dungeon_get_unit_attack_damage(unit);
+        ENEMY_AI_KIND ai_kind = game_get_enemy_ai_kind(unit->kind);
+        switch (ai_kind) {
+        case ENEMY_AI_BASIC_MELEE:
+        default: {
+            i32 target_x = target.target_x;
+            i32 target_y = target.target_y;
+            float attack_delay = 0.0f;
 
             if (target.target_is_player) {
-                game->player_damage_event_count++;
-                if (game->player_damage_event_count == 0)
-                    game->player_damage_event_count = 1;
-                unit->last_damaged_player_event = game->player_damage_event_count;
-
-                bool player_defeated =
-                    game_unit_stats_take_damage(&game->player_stats, attack_damage);
-                if (player_defeated)
-                    return;
+                target_x = game->player_x;
+                target_y = game->player_y;
+                attack_delay = game_dungeon_get_player_move_anim_remaining(game);
             } else {
-                Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
-                bool target_defeated =
-                    game_unit_stats_take_damage(&target_unit->stats, attack_damage);
-                if (target_defeated)
-                    game_dungeon_remove_unit_at(game, target.target_unit_idx);
-            }
-            continue;
-        }
+                if (target.target_unit_idx < 0 || target.target_unit_idx >= game->unit_count)
+                    continue;
 
-        game_dungeon_try_move_unit_towards_cell(game, next_enemy_idx, target_x, target_y);
+                Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
+                if (!target_unit->is_friendly || target_unit->x != target.target_x ||
+                    target_unit->y != target.target_y) {
+                    continue;
+                }
+                attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
+            }
+
+            if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, target_x, target_y)) {
+                unit->orientation = game_dungeon_get_orientation_from_step(
+                    target_x - start_x, target_y - start_y, unit->orientation);
+                game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
+                                                         attack_delay);
+                i32 attack_damage = game_dungeon_get_unit_attack_damage(unit);
+
+                if (target.target_is_player) {
+                    game->player_damage_event_count++;
+                    if (game->player_damage_event_count == 0)
+                        game->player_damage_event_count = 1;
+                    unit->last_damaged_player_event = game->player_damage_event_count;
+
+                    bool player_defeated =
+                        game_unit_stats_take_damage(&game->player_stats, attack_damage);
+                    if (player_defeated)
+                        return;
+                } else {
+                    Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
+                    bool target_defeated =
+                        game_unit_stats_take_damage(&target_unit->stats, attack_damage);
+                    if (target_defeated)
+                        game_dungeon_remove_unit_at(game, target.target_unit_idx);
+                }
+                continue;
+            }
+
+            game_dungeon_try_move_unit_towards_cell(game, next_enemy_idx, target_x, target_y);
+        } break;
+        }
     }
 }
 
@@ -3971,7 +4117,6 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summo
 {
     assert(position_rng != 0);
     assert(summon_kind_rng != 0);
-    (void)summon_kind_rng;
 
     i16 distance_map[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
     i32 max_distance = 0;
@@ -4007,7 +4152,9 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summo
         if (!found)
             return false;
 
-        UNIT_ART_KIND summon_unit_kind = UNIT_ART_SPIDER;
+        i32 summon_kind_idx =
+            ck_rand_int(summon_kind_rng, 0, TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT);
+        UNIT_ART_KIND summon_unit_kind = game_testing_area_familiar_unit_kinds[summon_kind_idx];
         game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, summon_unit_kind);
     }
 
@@ -4106,15 +4253,18 @@ static bool game_dungeon_populate_test_entities(Game *game, bool include_up_stai
         return false;
     }
 
-    for (i32 grunt_idx = 0;
-         grunt_idx < DUNGEON_GOBLIN_GRUNT_COUNT && game->unit_count < DUNGEON_MAX_UNITS;
-         grunt_idx++) {
+    for (i32 enemy_idx = 0;
+         enemy_idx < DUNGEON_ENEMY_SPAWN_COUNT && game->unit_count < DUNGEON_MAX_UNITS;
+         enemy_idx++) {
         if (!game_dungeon_pick_enemy_spawn_floor_cell(game, &game->dungeon_populate_rng, &x, &y))
             break;
 
         u8 orientation =
             (u8)ck_rand_int(&game->dungeon_populate_rng, 0, UNIT_ART_ORIENTATION_COUNT);
-        game_dungeon_add_unit(game, x, y, UNIT_ART_GOBLIN_GRUNT, orientation, false);
+        i32 enemy_kind_idx =
+            ck_rand_int(&game->dungeon_populate_rng, 0, TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT);
+        UNIT_ART_KIND enemy_kind = game_testing_area_enemy_unit_kinds[enemy_kind_idx];
+        game_dungeon_add_unit(game, x, y, enemy_kind, orientation, false);
     }
 
     return true;
@@ -4193,7 +4343,7 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
         return false;
     if (game->item_count != DUNGEON_SCROLLS_PER_FLOOR)
         return false;
-    if (game->unit_count != DUNGEON_GOBLIN_GRUNT_COUNT)
+    if (game->unit_count != DUNGEON_ENEMY_SPAWN_COUNT)
         return false;
 
     game_dungeon_build_spawn_to_exit_path(game);
@@ -5890,21 +6040,54 @@ static i32 game_action_bar_hovered_slot(const Game *game)
 
 static float game_testing_unit_bar_slot_size(void)
 {
+    i32 familiar_split_gap_count =
+        TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT > 0 &&
+                TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT < TESTING_AREA_FAMILIAR_KIND_COUNT
+            ? 1
+            : 0;
+    i32 enemy_split_gap_count =
+        TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT > 0 &&
+                TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT < TESTING_AREA_ENEMY_KIND_COUNT
+            ? 1
+            : 0;
+    i32 max_split_gap_count = max(familiar_split_gap_count, enemy_split_gap_count);
     i32 max_slots = max(TESTING_AREA_FAMILIAR_KIND_COUNT, TESTING_AREA_ENEMY_KIND_COUNT);
-    float available_w = max(120.0f, (float)GetScreenWidth() - (DEBUG_HUD_PANEL_MARGIN * 2.0f) -
-                                        (TESTING_UNIT_BAR_PANEL_PADDING * 2.0f) -
-                                        ((float)(max_slots - 1) * TESTING_UNIT_BAR_SLOT_GAP));
+    float available_w =
+        max(120.0f, (float)GetScreenWidth() - (DEBUG_HUD_PANEL_MARGIN * 2.0f) -
+                        (TESTING_UNIT_BAR_PANEL_PADDING * 2.0f) -
+                        ((float)(max_slots - 1) * TESTING_UNIT_BAR_SLOT_GAP) -
+                        (float)max_split_gap_count * TESTING_UNIT_BAR_IMPLEMENTATION_GAP);
     float max_slot_size = available_w / (float)max_slots;
     float slot_size = min(TESTING_UNIT_BAR_SLOT_SIZE, max_slot_size);
     slot_size = max(TESTING_UNIT_BAR_SLOT_SIZE_MIN, slot_size);
     return floorf(slot_size);
 }
 
-static Rectangle game_testing_unit_bar_panel_rect(i32 slot_count, bool is_enemy_row)
+static bool game_testing_unit_bar_has_implementation_split(i32 slot_count,
+                                                           i32 implemented_slot_count)
+{
+    return implemented_slot_count > 0 && implemented_slot_count < slot_count;
+}
+
+static float game_testing_unit_bar_slots_width(i32 slot_count, i32 implemented_slot_count,
+                                               float slot_size)
+{
+    if (slot_count <= 0)
+        return 0.0f;
+
+    float slots_w =
+        (float)slot_count * slot_size + (float)(slot_count - 1) * TESTING_UNIT_BAR_SLOT_GAP;
+    if (game_testing_unit_bar_has_implementation_split(slot_count, implemented_slot_count))
+        slots_w += TESTING_UNIT_BAR_IMPLEMENTATION_GAP;
+    return slots_w;
+}
+
+static Rectangle game_testing_unit_bar_panel_rect(i32 slot_count, i32 implemented_slot_count,
+                                                  bool is_enemy_row)
 {
     float slot_size = game_testing_unit_bar_slot_size();
     float slots_w =
-        (float)slot_count * slot_size + (float)(slot_count - 1) * TESTING_UNIT_BAR_SLOT_GAP;
+        game_testing_unit_bar_slots_width(slot_count, implemented_slot_count, slot_size);
     float panel_w = slots_w + TESTING_UNIT_BAR_PANEL_PADDING * 2.0f;
     float panel_h = slot_size + TESTING_UNIT_BAR_PANEL_PADDING * 2.0f;
 
@@ -5925,19 +6108,28 @@ static Rectangle game_testing_unit_bar_panel_rect(i32 slot_count, bool is_enemy_
 
 static Rectangle game_testing_familiar_unit_bar_panel_rect(void)
 {
-    return game_testing_unit_bar_panel_rect(TESTING_AREA_FAMILIAR_KIND_COUNT, false);
+    return game_testing_unit_bar_panel_rect(TESTING_AREA_FAMILIAR_KIND_COUNT,
+                                            TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT, false);
 }
 
 static Rectangle game_testing_enemy_unit_bar_panel_rect(void)
 {
-    return game_testing_unit_bar_panel_rect(TESTING_AREA_ENEMY_KIND_COUNT, true);
+    return game_testing_unit_bar_panel_rect(TESTING_AREA_ENEMY_KIND_COUNT,
+                                            TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT, true);
 }
 
-static Rectangle game_testing_unit_bar_slot_rect(Rectangle panel, i32 slot_idx, float slot_size)
+static Rectangle game_testing_unit_bar_slot_rect(Rectangle panel, i32 slot_idx, i32 slot_count,
+                                                 i32 implemented_slot_count, float slot_size)
 {
+    float slot_x = panel.x + TESTING_UNIT_BAR_PANEL_PADDING +
+                   (float)slot_idx * (slot_size + TESTING_UNIT_BAR_SLOT_GAP);
+    if (game_testing_unit_bar_has_implementation_split(slot_count, implemented_slot_count) &&
+        slot_idx >= implemented_slot_count) {
+        slot_x += TESTING_UNIT_BAR_IMPLEMENTATION_GAP;
+    }
+
     return (Rectangle){
-        .x = panel.x + TESTING_UNIT_BAR_PANEL_PADDING +
-             (float)slot_idx * (slot_size + TESTING_UNIT_BAR_SLOT_GAP),
+        .x = slot_x,
         .y = panel.y + TESTING_UNIT_BAR_PANEL_PADDING,
         .width = slot_size,
         .height = slot_size,
@@ -5945,13 +6137,14 @@ static Rectangle game_testing_unit_bar_slot_rect(Rectangle panel, i32 slot_idx, 
 }
 
 static i32 game_testing_unit_bar_hovered_slot(Vector2 mouse, Rectangle panel, i32 slot_count,
-                                              float slot_size)
+                                              i32 implemented_slot_count, float slot_size)
 {
     if (!game_point_in_rect(mouse, panel))
         return -1;
 
     for (i32 slot_idx = 0; slot_idx < slot_count; slot_idx++) {
-        Rectangle slot = game_testing_unit_bar_slot_rect(panel, slot_idx, slot_size);
+        Rectangle slot = game_testing_unit_bar_slot_rect(panel, slot_idx, slot_count,
+                                                         implemented_slot_count, slot_size);
         if (game_point_in_rect(mouse, slot))
             return slot_idx;
     }
@@ -5975,8 +6168,9 @@ static bool game_debug_testing_try_select_unit_from_action_bars(Game *game, bool
     float slot_size = game_testing_unit_bar_slot_size();
 
     Rectangle familiar_panel = game_testing_familiar_unit_bar_panel_rect();
-    i32 familiar_slot = game_testing_unit_bar_hovered_slot(
-        mouse, familiar_panel, TESTING_AREA_FAMILIAR_KIND_COUNT, slot_size);
+    i32 familiar_slot =
+        game_testing_unit_bar_hovered_slot(mouse, familiar_panel, TESTING_AREA_FAMILIAR_KIND_COUNT,
+                                           TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT, slot_size);
     if (familiar_slot >= 0) {
         game_debug_begin_testing_unit_placement(
             game, game_testing_area_familiar_unit_kinds[familiar_slot], true);
@@ -5986,8 +6180,9 @@ static bool game_debug_testing_try_select_unit_from_action_bars(Game *game, bool
         return true;
 
     Rectangle enemy_panel = game_testing_enemy_unit_bar_panel_rect();
-    i32 enemy_slot = game_testing_unit_bar_hovered_slot(mouse, enemy_panel,
-                                                        TESTING_AREA_ENEMY_KIND_COUNT, slot_size);
+    i32 enemy_slot =
+        game_testing_unit_bar_hovered_slot(mouse, enemy_panel, TESTING_AREA_ENEMY_KIND_COUNT,
+                                           TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT, slot_size);
     if (enemy_slot >= 0) {
         game_debug_begin_testing_unit_placement(
             game, game_testing_area_enemy_unit_kinds[enemy_slot], false);
@@ -6139,7 +6334,8 @@ static void game_draw_player_action_bar(Game *game)
 }
 
 static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kinds,
-                                       i32 unit_kind_count, bool is_friendly_row, Rectangle panel)
+                                       i32 unit_kind_count, i32 implemented_kind_count,
+                                       bool is_friendly_row, Rectangle panel)
 {
     Color outer_fill = is_friendly_row ? (Color){14, 20, 16, 236} : (Color){25, 14, 14, 236};
     Color inner_fill = is_friendly_row ? (Color){22, 31, 24, 232} : (Color){35, 20, 20, 232};
@@ -6156,7 +6352,8 @@ static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kin
     UNIT_ART_KIND selected_kind = game_debug_selected_testing_unit_kind(game);
 
     for (i32 slot_idx = 0; slot_idx < unit_kind_count; slot_idx++) {
-        Rectangle slot = game_testing_unit_bar_slot_rect(panel, slot_idx, slot_size);
+        Rectangle slot = game_testing_unit_bar_slot_rect(panel, slot_idx, unit_kind_count,
+                                                         implemented_kind_count, slot_size);
         bool hovered = game_point_in_rect(mouse, slot);
 
         UNIT_ART_KIND unit_kind = unit_kinds[slot_idx];
@@ -6192,11 +6389,13 @@ static void game_draw_testing_unit_action_bars(Game *game)
 {
     Rectangle familiar_panel = game_testing_familiar_unit_bar_panel_rect();
     game_draw_testing_unit_bar(game, game_testing_area_familiar_unit_kinds,
-                               TESTING_AREA_FAMILIAR_KIND_COUNT, true, familiar_panel);
+                               TESTING_AREA_FAMILIAR_KIND_COUNT,
+                               TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT, true, familiar_panel);
 
     Rectangle enemy_panel = game_testing_enemy_unit_bar_panel_rect();
     game_draw_testing_unit_bar(game, game_testing_area_enemy_unit_kinds,
-                               TESTING_AREA_ENEMY_KIND_COUNT, false, enemy_panel);
+                               TESTING_AREA_ENEMY_KIND_COUNT,
+                               TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT, false, enemy_panel);
 }
 
 static Rectangle game_draw_player_stats_panel(Game *game)
