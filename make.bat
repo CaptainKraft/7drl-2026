@@ -1,85 +1,128 @@
 @echo off
+setlocal
 
-set bin=game.exe
-set warn=-Werror -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations -D_CRT_SECURE_NO_WARNINGS
+set "PROJ_DIR=%~dp0"
+if "%PROJ_DIR:~-1%"=="\" set "PROJ_DIR=%PROJ_DIR:~0,-1%"
 
-if "%1" == "release" goto :release
-if "%1" == "init"    goto :init
-if "%1" == "web"     goto :web
-if "%1" == "run"     goto :run
+set "SDIR=%PROJ_DIR%\src"
+set "LDIR=%PROJ_DIR%\lib"
+set "BDIR=%PROJ_DIR%\build"
+set "BIN=game.exe"
 
-if not exist build (
-    echo Call 'make init' first
-    exit /b
+set "CC=clang"
+set "CFLAGS_COMMON=-std=c11 -I%SDIR% -fdiagnostics-absolute-paths -D_CRT_SECURE_NO_WARNINGS"
+set "CFLAGS_DEBUG=-g -O0 -DDEBUG"
+set "CFLAGS_RELEASE=-O2 -DNDEBUG"
+
+set "RAYLIB_DIR=%PROJ_DIR%\..\raylib"
+set "RAYLIB_BUILD_DIR=%RAYLIB_DIR%\build-clang"
+set "RAYLIB_DESKTOP_LIB=%LDIR%\libraylib-win.lib"
+set "LFLAGS=%RAYLIB_DESKTOP_LIB% -lopengl32 -lgdi32 -lwinmm -lkernel32 -luser32 -lshell32 -lole32 -lmsvcrt -lucrt -lvcruntime -llegacy_stdio_definitions -loldnames -Wl,/NODEFAULTLIB:libcmt"
+
+set "TARGET=%~1"
+if "%TARGET%"=="" set "TARGET=build"
+
+if /I "%TARGET%"=="build" goto :build
+if /I "%TARGET%"=="release" goto :release
+if /I "%TARGET%"=="init" goto :init
+if /I "%TARGET%"=="libs" goto :libs
+if /I "%TARGET%"=="run" goto :run
+if /I "%TARGET%"=="clean" goto :clean
+
+echo Unknown target: %TARGET%
+echo Usage: make.bat [build^|release^|init^|libs^|run^|clean]
+exit /b 1
+
+:ensure_init
+if not exist "%BDIR%" (
+    echo Build directory missing. Run "make.bat init" first.
+    exit /b 1
 )
+if not exist "%RAYLIB_DESKTOP_LIB%" (
+    echo Missing %RAYLIB_DESKTOP_LIB%
+    echo Run "make.bat libs" first.
+    exit /b 1
+)
+exit /b 0
 
-:debug
-pushd build
-set cflags=-g -std=c11 -fdiagnostics-absolute-paths -I..\src -I..\src\ray
-set lflags=-L..\lib -Xlinker -subsystem:console -static
-set   libs=..\lib\libraylib-win.a -lopengl32 -lgdi32 -lwinmm -lkernel32 -luser32 -lshell32 -lole32
-set    src=..\src\main.c ..\src\game.c .\*.o
-
+:build
+call :ensure_init || exit /b 1
+set "CFLAGS=%CFLAGS_COMMON% %CFLAGS_DEBUG%"
+pushd "%BDIR%"
 @echo on
-clang -o output\%bin% %src% %cflags% %warn% %lflags% %libs%
+%CC% "%SDIR%\*.c" "%BDIR%\*.o" -o "%BDIR%\%BIN%" %CFLAGS% %LFLAGS%
 @echo off
 popd
-goto :done
+exit /b %ERRORLEVEL%
 
 :release
-pushd build
-set cflags=-O3 -std=c11 -fdiagnostics-absolute-paths -I..\src -I..\src\ray
-set lflags=-L..\lib -Xlinker -subsystem:console -static
-set   libs=..\lib\libraylib-win.a -lopengl32 -lgdi32 -lwinmm -lkernel32 -luser32 -lshell32 -lole32
-set    src=..\src\main.c ..\src\game.c .\*.o
-
+call :ensure_init || exit /b 1
+set "CFLAGS=%CFLAGS_COMMON% %CFLAGS_RELEASE%"
+pushd "%BDIR%"
 @echo on
-clang -o output\%bin% %src% %cflags% %warn% %lflags% %libs%
+%CC% "%SDIR%\*.c" "%BDIR%\*.o" -o "%BDIR%\%BIN%" %CFLAGS% %LFLAGS%
 @echo off
 popd
-goto :done
+exit /b %ERRORLEVEL%
 
 :init
-ctags -R --c-kinds=+pf --fields=+iaS --extras=+q ..\src\ray\raylib.h .
+if exist "%BDIR%" rd /s /q "%BDIR%"
+mkdir "%BDIR%"
+mkdir "%BDIR%\assets"
+xcopy /E /I /Q /Y "%PROJ_DIR%\assets" "%BDIR%\assets" >nul
 
-rem cleanup old build files and start fresh
-rd /s /q build
-mkdir build
-mkdir build\assets
-mkdir build\output
-mkdir build\output\assets
-copy assets build\output\assets\ >NUL
-pushd build
+where ctags >nul 2>nul
+if not errorlevel 1 (
+    ctags -R --fields=+iaS --extras=+q --c-kinds=+p "%SDIR%\ray\raylib.h" "%PROJ_DIR%"
+)
 
-rem compile library source files to object files
-set cflags=-g -std=c11 -fdiagnostics-absolute-paths -I..\src -I..\src\ray
-set    src=..\src\ck\*.c ..\src\microui\microui.c
-
+set "CFLAGS=%CFLAGS_COMMON% %CFLAGS_RELEASE%"
+pushd "%BDIR%"
 @echo on
-clang -c %src% %cflags% %warn%
+%CC% -c "%SDIR%\ck\*.c" "%SDIR%\stb\stb.c" "%SDIR%\microui\microui.c" %CFLAGS%
 @echo off
 popd
-goto :done
+exit /b %ERRORLEVEL%
 
-:web
-pushd build
-set cflags=-std=c11 -I..\src -I..\src\ray -sINITIAL_MEMORY=1073741824 -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3
-set raylib_lib=..\lib\libraylib-web.a
-set preload=--preload-file assets
-set   src1=..\src\main.c ..\src\game.c
-set   src2=..\src\ck\ck_ui.c ..\src\ck\ck_string.c ..\src\ck\ck_math.c ..\src\ck\ck_memory.c ..\src\microui\microui.c
+:libs
+if not exist "%LDIR%" mkdir "%LDIR%"
+if not exist "%RAYLIB_DIR%" (
+    echo Missing raylib checkout at %RAYLIB_DIR%
+    echo Clone it with:
+    echo   git clone https://github.com/raysan5/raylib "%RAYLIB_DIR%"
+    exit /b 1
+)
 
 @echo on
-emcc -o game.html %src1% %src2% %cflags% %raylib_lib% -s USE_GLFW=3 -s ASYNCIFY %preload%
+cmake -S "%RAYLIB_DIR%" -B "%RAYLIB_BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBUILD_SHARED_LIBS=OFF -DBUILD_EXAMPLES=OFF
+if errorlevel 1 @echo off & exit /b 1
+cmake --build "%RAYLIB_BUILD_DIR%" --config Release
+if errorlevel 1 @echo off & exit /b 1
+copy /Y "%RAYLIB_BUILD_DIR%\raylib\raylib.lib" "%RAYLIB_DESKTOP_LIB%" >nul
 @echo off
-popd
-goto :done
+
+if not exist "%RAYLIB_DESKTOP_LIB%" (
+    echo Failed to copy raylib desktop library.
+    exit /b 1
+)
+
+echo Copied %RAYLIB_DESKTOP_LIB%
+exit /b 0
 
 :run
-pushd build\output
+if not exist "%BDIR%\%BIN%" (
+    echo Missing %BDIR%\%BIN%
+    echo Run "make.bat build" first.
+    exit /b 1
+)
+pushd "%BDIR%"
 @echo on
-%bin%
+"%BDIR%\%BIN%"
 @echo off
 popd
+exit /b %ERRORLEVEL%
 
-:done
+:clean
+if exist "%BDIR%" rd /s /q "%BDIR%"
+if exist "%PROJ_DIR%\.build" rd /s /q "%PROJ_DIR%\.build"
+exit /b 0
