@@ -191,7 +191,9 @@
 #define ITEM_KIND_GREEN_HERB ITEM_ART_KIND_AT(9, 5)
 #define ITEM_KIND_MAP ITEM_ART_KIND_AT(15, 5)
 
-#if !defined(NDEBUG)
+#if defined(GAME_DISABLE_DEBUG_FEATURES)
+#define GAME_DEBUG_FEATURES 0
+#elif defined(DEBUG)
 #define GAME_DEBUG_FEATURES 1
 #else
 #define GAME_DEBUG_FEATURES 0
@@ -8638,9 +8640,6 @@ static bool game_update_end_menu(Game *game)
     if (game_end_menu_restart_requested(game))
         game_start_new_dungeon_run(game);
 
-    if (!GAME_DEBUG_FEATURES && game->input.pressed[INPUT_BACK])
-        app_quit();
-
     return true;
 }
 
@@ -8917,21 +8916,17 @@ void game_update(Mem mem)
     }
 
     bool player_took_turn = false;
-    bool back_canceled_context_mode = false;
     bool skipped_player_update_for_debug_action = placed_debug_testing_unit;
 
     if (game_debug_testing_unit_placement_is_active(game) && game->input.pressed[INPUT_BACK]) {
         game->debug_testing_unit_placement_active = false;
         game_center_dungeon_camera_on_player(game);
-        back_canceled_context_mode = true;
         skipped_player_update_for_debug_action = true;
     }
 
     if (game->show_dungeon_map && !game_debug_testing_unit_placement_is_active(game) &&
         !skipped_player_update_for_debug_action) {
-        bool had_active_scroll_target = game_player_has_active_scroll_target(game);
         player_took_turn = game_update_player(game);
-        back_canceled_context_mode = had_active_scroll_target && game->input.pressed[INPUT_BACK];
     }
 
     if (player_took_turn) {
@@ -8955,9 +8950,6 @@ void game_update(Mem mem)
     }
 
     game_update_camera(game);
-
-    if (!GAME_DEBUG_FEATURES && game->input.pressed[INPUT_BACK] && !back_canceled_context_mode)
-        app_quit();
 }
 
 void game_render(Mem mem)

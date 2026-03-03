@@ -46,6 +46,6 @@ Dungeon developer-only controls are centralized as data in `src/game.c`:
 
 Release safety:
 
-- Debug features are compiled behind `GAME_DEBUG_FEATURES` (`!defined(NDEBUG)`).
+- Debug features are compiled behind `GAME_DEBUG_FEATURES` (`defined(DEBUG)`, unless `GAME_DISABLE_DEBUG_FEATURES` is set).
 - `make build` uses `-DDEBUG` (developer build).
-- `make release` uses `-DNDEBUG`, which disables these debug controls so players cannot access them.
+- `make release` uses `-DNDEBUG`, and `make web` uses `-DGAME_DISABLE_DEBUG_FEATURES`, so players cannot access debug controls.

@@ -27,12 +27,12 @@ CFLAGS_COMMON = -std=c11 -I$(SDIR) -fdiagnostics-absolute-paths
 CFLAGS_DEBUG = -g -O0 -DDEBUG
 CFLAGS_RELEASE = -O2 -DNDEBUG
 CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_DEBUG)
-WEB_CFLAGS = $(CFLAGS_COMMON) -DPLATFORM_WEB
+WEB_CFLAGS = $(CFLAGS_COMMON) -O2 -DGAME_DISABLE_DEBUG_FEATURES -DPLATFORM_WEB
 RAYLIB_DIR = ~/dev/raylib
 RAYLIB_DESKTOP_LIB = $(LDIR)/libraylib-mac.a
 LFLAGS  = -framework CoreVideo -framework IOKit -framework Cocoa -framework GLUT -framework OpenGL $(RAYLIB_DESKTOP_LIB)
 RAYLIB_WEB_LIB = $(LDIR)/libraylib-web.a
-WEB_LFLAGS = $(RAYLIB_WEB_LIB) --preload-file assets@assets -s USE_GLFW=3 -s INITIAL_MEMORY=67108864 -s ASYNCIFY
+WEB_LFLAGS = $(RAYLIB_WEB_LIB) --preload-file assets@assets -s USE_GLFW=3 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=1048576 -s ASYNCIFY
 WEB_SHELL = $(PROJ_DIR)/tools/web_shell.html
 
 default: build
@@ -46,7 +46,7 @@ release: build
 web:
 	pushd $(WEB_BDIR); $(WEB_CC) $(WEB_SRC) -o $(BDIR)/index.html $(WEB_CFLAGS) $(WEB_LFLAGS) --shell-file $(WEB_SHELL)
 	pushd $(BDIR); zip -r web.zip index.html index.js index.wasm index.data
-	#butler push $(BDIR)/web.zip captainkraft/7drl-2026:html5
+	butler push $(BDIR)/web.zip captainkraft/a-familiar-rogue:html5
 
 init: CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_RELEASE)
 init:
