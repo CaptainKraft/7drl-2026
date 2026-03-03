@@ -1207,12 +1207,6 @@ static bool game_unit_stats_heal(Unit_Stats *stats, i32 amount)
     return did_heal;
 }
 
-static bool game_unit_kind_is_goblin(UNIT_ART_KIND kind)
-{
-    return kind == UNIT_ART_GOBLIN_GRUNT || kind == UNIT_ART_GOBLIN_SHAMAN ||
-           kind == UNIT_ART_GOBLIN_WARRIOR;
-}
-
 static void game_dungeon_clear_webbed_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -4008,8 +4002,9 @@ static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
     if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_shaman))
         return;
 
-    i32 nearest_goblin_idx = -1;
-    i16 nearest_goblin_distance = DUNGEON_PATH_UNREACHABLE;
+    i32 nearest_ally_idx = -1;
+    i16 nearest_ally_distance = DUNGEON_PATH_UNREACHABLE;
+    bool has_any_ally = false;
     i32 heal_target_idx = -1;
     i16 heal_target_distance = DUNGEON_PATH_UNREACHABLE;
     i32 heal_target_missing_health = -1;
@@ -4021,8 +4016,9 @@ static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
         const Dungeon_Unit *candidate = &game->units[candidate_idx];
         if (candidate->is_friendly != unit->is_friendly)
             continue;
-        if (!game_unit_kind_is_goblin(candidate->kind))
-            continue;
+
+        has_any_ally = true;
+
         if (!game_dungeon_cell_is_floor(game, candidate->x, candidate->y))
             continue;
 
@@ -4030,10 +4026,10 @@ static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
         if (distance <= 0 || distance >= DUNGEON_PATH_UNREACHABLE)
             continue;
 
-        if (nearest_goblin_idx < 0 || distance < nearest_goblin_distance ||
-            (distance == nearest_goblin_distance && (i32)candidate_idx < nearest_goblin_idx)) {
-            nearest_goblin_idx = candidate_idx;
-            nearest_goblin_distance = distance;
+        if (nearest_ally_idx < 0 || distance < nearest_ally_distance ||
+            (distance == nearest_ally_distance && (i32)candidate_idx < nearest_ally_idx)) {
+            nearest_ally_idx = candidate_idx;
+            nearest_ally_distance = distance;
         }
 
         i32 missing_health = (i32)candidate->stats.max_health - (i32)candidate->stats.health;
@@ -4064,8 +4060,8 @@ static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
         return;
     }
 
-    if (nearest_goblin_idx >= 0) {
-        const Dungeon_Unit *follow_target = &game->units[nearest_goblin_idx];
+    if (nearest_ally_idx >= 0) {
+        const Dungeon_Unit *follow_target = &game->units[nearest_ally_idx];
         unit->orientation = game_dungeon_get_orientation_from_positions(
             start_x, start_y, follow_target->x, follow_target->y, unit->orientation);
         game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
@@ -4073,6 +4069,12 @@ static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
             DUNGEON_GOBLIN_SHAMAN_FOLLOW_MIN_DISTANCE, DUNGEON_GOBLIN_SHAMAN_FOLLOW_MAX_DISTANCE,
             DUNGEON_GOBLIN_SHAMAN_HOSTILE_AVOID_DISTANCE);
         return;
+    }
+
+    if (!has_any_ally) {
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, game->player_x, game->player_y, unit->orientation);
+        game_dungeon_try_move_unit_away_from_cell(game, unit_idx, game->player_x, game->player_y);
     }
 }
 
@@ -7467,7 +7469,8 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         snprintf(buffer, buffer_cap, "Melee goblin with reliable frontline damage");
         return;
     case UNIT_ART_GOBLIN_SHAMAN:
-        snprintf(buffer, buffer_cap, "Support goblin that follows and heals nearby goblins");
+        snprintf(buffer, buffer_cap,
+                 "Support goblin that follows allies, heals them, and flees when alone");
         return;
     case UNIT_ART_GOBLIN_WARRIOR:
         snprintf(buffer, buffer_cap, "Heavy melee goblin with high damage");

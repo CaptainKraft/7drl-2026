@@ -61,8 +61,9 @@ This document will act as a specification for entities and AI behaviors.
 
 ### Goblin Shaman
 - 3hp, 1dmg
-- follow nearest goblin, follow range: 3-5
-- when goblin in range has less than max health, heal goblin for 2hp, heal cooldown is 5 turns
+- follow nearest ally, follow range: 3-5
+- when ally in range has less than max health, heal ally for 2hp, heal cooldown is 5 turns
+- when no allies left on the level, flee from the player
 
 ### Goblin Warrior
 - 5hp, 3dmg
