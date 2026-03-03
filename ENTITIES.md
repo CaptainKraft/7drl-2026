@@ -10,6 +10,11 @@ This document will act as a specification for entities and AI behaviors.
 
 ### Webbed
 - skip every other turn
+- wears off in 5 turns
+
+### Troll Blood
+- come back to life 5 turns after death
+- this effect goes away if damaged by fire
 
 ---
 
@@ -42,16 +47,37 @@ This document will act as a specification for entities and AI behaviors.
 - move towards the closest tile that is within a straight line of the target
 - if target is in a straight line from current position, dash to target and attack
 
+### Kamikaze
+- move toward target
+- when adjacent, explode dealing area damage
+
 ---
 
 ## Enemies
 
 ### Goblin Grunt
-- 3hp, 1dmg
-- basic melee behavior
+- 3hp, 2dmg
+- basic melee
 
 ### Goblin Shaman
-- TBD...
+- 3hp, 1dmg
+- follow nearest goblin, follow range: 3-5
+- when goblin in range has less than max health, heal goblin for 2hp, heal cooldown is 5 turns
+
+### Goblin Warrior
+- 5hp, 3dmg
+- basic melee
+
+### Slime
+- 4hp, 1dmg
+- basic melee
+- on death, spawns 2 slimes with half max health
+    - 4hp splits into 2hp splits into 1hp, then the 1hp slimes will not spawn new ones
+
+### Troll
+- 6hp, 4dmg
+- basic melee
+- has Troll Blood
 
 ---
 
@@ -79,9 +105,9 @@ This document will act as a specification for entities and AI behaviors.
 - follow player, follow range: 3-5
 
 ### Beetle
-- 1hp, 1dmg
-- basic melee
-- explodes, doing 3dmg in an aoe of dist 3
+- 1hp, 3dmg
+- kamikaze 3area
+    - explosion deals fire dmg
 
 ---
 
