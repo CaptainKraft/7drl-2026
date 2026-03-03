@@ -564,9 +564,9 @@ static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     ((i32)(sizeof(game_dungeon_hbw_templates) / sizeof(game_dungeon_hbw_templates[0])))
 
 static const UNIT_ART_KIND game_testing_area_familiar_unit_kinds[] = {
-    UNIT_ART_RAT,     UNIT_ART_COBRA,     UNIT_ART_SPIDER, UNIT_ART_BEHOLDER, UNIT_ART_IMP,
-    UNIT_ART_SPIRIT,  UNIT_ART_ELEMENTAL, UNIT_ART_BAT,    UNIT_ART_REAPER,   UNIT_ART_PHOENIX,
-    UNIT_ART_GRIFFON, UNIT_ART_MAN_EATER, UNIT_ART_BEETLE, UNIT_ART_MUMMY,    UNIT_ART_TREANT,
+    UNIT_ART_RAT,     UNIT_ART_COBRA,     UNIT_ART_SPIDER,    UNIT_ART_BAT,    UNIT_ART_BEHOLDER,
+    UNIT_ART_IMP,     UNIT_ART_SPIRIT,    UNIT_ART_ELEMENTAL, UNIT_ART_REAPER, UNIT_ART_PHOENIX,
+    UNIT_ART_GRIFFON, UNIT_ART_MAN_EATER, UNIT_ART_BEETLE,    UNIT_ART_MUMMY,  UNIT_ART_TREANT,
 };
 
 static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
@@ -6438,9 +6438,7 @@ static bool game_debug_try_place_selected_testing_unit_at_mouse(Game *game, bool
     game_dungeon_add_unit(game, target_x, target_y, unit_kind, orientation, place_friendly);
     if (game->unit_count > 0) {
         Dungeon_Unit *placed_unit = &game->units[game->unit_count - 1];
-        if (place_friendly) {
-            placed_unit->skip_friendly_turn_once = true;
-        } else {
+        if (!place_friendly) {
             bool in_player_los = game_dungeon_cell_is_in_player_los(game, target_x, target_y);
             placed_unit->is_awake = in_player_los;
             placed_unit->turns_out_of_player_los = 0;
@@ -7915,14 +7913,24 @@ static bool game_start_new_dungeon_run(Game *game)
     game_player_clear_action_bar(game);
     game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
     game->show_dungeon_map = true;
+#if GAME_DEBUG_FEATURES
+    game->debug_in_testing_area = true;
+    game->debug_hud_visible = game->debug_in_testing_area;
+#else
     game->debug_in_testing_area = false;
+#endif
     game->debug_testing_unit_placement_active = false;
     game->debug_testing_unit_placement_is_friendly = false;
     game->debug_testing_unit_placement_kind = (u8)game_testing_area_enemy_unit_kinds[0];
     game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
 
-    if (!game_build_test_dungeon_for_depth(game, game->dungeon_depth, WORLD_ART_ROLE_FLOOR))
-        return false;
+    if (game->debug_in_testing_area) {
+        if (!game_build_debug_testing_area(game))
+            return false;
+    } else {
+        if (!game_build_test_dungeon_for_depth(game, game->dungeon_depth, WORLD_ART_ROLE_FLOOR))
+            return false;
+    }
 
     game_center_dungeon_camera_on_player(game);
     game->end_menu_state = END_MENU_NONE;
