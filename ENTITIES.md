@@ -51,6 +51,10 @@ This document will act as a specification for entities and AI behaviors.
 - move toward target
 - when adjacent, explode dealing area damage
 
+### Turret
+- does not move
+- attacks horizontally/vertically/diagonally aligned enemy within range
+
 ---
 
 ## Enemies
@@ -109,6 +113,10 @@ This document will act as a specification for entities and AI behaviors.
 - 1hp, 3dmg
 - kamikaze 3area
     - explosion deals fire dmg
+
+### Beholder
+- 10hp, 2dmg
+- turrent 10range
 
 ---
 
