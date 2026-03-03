@@ -50,6 +50,9 @@ This document will act as a specification for entities and AI behaviors.
 - 3hp, 1dmg
 - basic melee behavior
 
+### Goblin Shaman
+- TBD...
+
 ---
 
 ## Familiars
@@ -74,6 +77,11 @@ This document will act as a specification for entities and AI behaviors.
 - can move up to 2 tiles per turn
 - dash, cooldown: 5 turns
 - follow player, follow range: 3-5
+
+### Beetle
+- 1hp, 1dmg
+- basic melee
+- explodes, doing 3dmg in an aoe of dist 3
 
 ---
 

@@ -1220,22 +1220,6 @@ static bool game_scroll_summon_unit_is_valid(UNIT_ART_KIND summon_unit_kind)
     return game_testing_area_unit_kind_is_implemented(true, summon_unit_kind);
 }
 
-static void game_scroll_get_display_name(UNIT_ART_KIND summon_unit_kind, char *buffer,
-                                         u32 buffer_cap)
-{
-    assert(buffer != 0);
-    assert(buffer_cap > 0);
-
-    if (!game_scroll_summon_unit_is_valid(summon_unit_kind)) {
-        snprintf(buffer, buffer_cap, "Summon");
-        return;
-    }
-
-    char unit_name[UNIT_ART_DISPLAY_NAME_CAP];
-    unit_art_get_display_name(summon_unit_kind, unit_name, UNIT_ART_DISPLAY_NAME_CAP);
-    snprintf(buffer, buffer_cap, "Summon %s", unit_name);
-}
-
 static Color game_scroll_get_summon_unit_tint(UNIT_ART_KIND summon_unit_kind)
 {
     switch (summon_unit_kind) {
@@ -6950,59 +6934,180 @@ static bool game_mouse_is_over_dungeon_hud_panel(Game *game, Vector2 mouse_scree
     return false;
 }
 
-static bool game_draw_hovered_scroll_name(Game *game, Rectangle player_panel,
-                                          Rectangle minimap_panel, Rectangle familiar_panel,
-                                          Rectangle action_bar_panel)
+typedef struct {
+    UNIT_ART_KIND kind;
+    Unit_Stats stats;
+    i32 damage;
+    char name[UNIT_ART_DISPLAY_NAME_CAP];
+} Dungeon_Hovered_Unit;
+
+static void game_fill_hovered_unit_from_kind(Dungeon_Hovered_Unit *hovered, UNIT_ART_KIND kind)
 {
-    if (game->debug_in_testing_area)
-        return false;
+    assert(hovered != 0);
+    assert(kind > UNIT_ART_NONE && kind < NUM_UNIT_ART);
 
-    Vector2 mouse_screen = GetMousePosition();
-    UNIT_ART_KIND summon_unit_kind = UNIT_ART_NONE;
+    hovered->kind = kind;
+    hovered->stats = game_get_unit_base_stats(kind);
+    hovered->damage = (i32)hovered->stats.damage;
+    unit_art_get_display_name(kind, hovered->name, UNIT_ART_DISPLAY_NAME_CAP);
+}
 
-    i32 hovered_slot = game_action_bar_hovered_slot(game);
-    if (hovered_slot >= 0) {
-        if (!game_player_action_bar_slot_has_scroll(game, hovered_slot))
-            return false;
+static void game_fill_hovered_unit_from_world_unit(Dungeon_Hovered_Unit *hovered,
+                                                   const Dungeon_Unit *unit)
+{
+    assert(hovered != 0);
+    assert(unit != 0);
 
-        summon_unit_kind = game->player_action_bar_summon_unit_kind[hovered_slot];
-    } else {
-        if (game_mouse_is_over_dungeon_hud_panel(game, mouse_screen, player_panel, minimap_panel,
-                                                 familiar_panel, action_bar_panel)) {
-            return false;
-        }
+    hovered->kind = unit->kind;
+    hovered->stats = unit->stats;
+    hovered->damage = game_dungeon_get_unit_attack_damage(unit);
+    unit_art_get_display_name(unit->kind, hovered->name, UNIT_ART_DISPLAY_NAME_CAP);
+}
 
-        i32 hover_x = 0;
-        i32 hover_y = 0;
-        if (!game_dungeon_get_mouse_cell(game, &hover_x, &hover_y))
-            return false;
+static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, u32 buffer_cap)
+{
+    assert(buffer != 0);
+    assert(buffer_cap > 0);
 
-        i32 item_idx = game_dungeon_get_item_index_at(game, hover_x, hover_y);
-        if (item_idx < 0)
-            return false;
-
-        const Dungeon_Item *item = &game->items[item_idx];
-        if (item->kind != ITEM_KIND_SCROLL)
-            return false;
-        if (!game_dungeon_cell_is_visible(game, item->x, item->y))
-            return false;
-        if (!game_scroll_summon_unit_is_valid(item->summon_unit_kind))
-            return false;
-
-        summon_unit_kind = item->summon_unit_kind;
+    switch (kind) {
+    case UNIT_ART_RAT:
+        snprintf(buffer, buffer_cap, "Melee unit that inflicts disease");
+        return;
+    case UNIT_ART_COBRA:
+        snprintf(buffer, buffer_cap, "Melee unit that inflicts poison");
+        return;
+    case UNIT_ART_SPIDER:
+        snprintf(buffer, buffer_cap, "Ranged unit that webs enemies");
+        return;
+    case UNIT_ART_BAT:
+        snprintf(buffer, buffer_cap, "Fast melee unit that dashes into enemies");
+        return;
+    default:
+        break;
     }
 
-    if (!game_scroll_summon_unit_is_valid(summon_unit_kind))
+    if (game_testing_area_unit_kind_in_list(kind, game_testing_area_enemy_unit_kinds,
+                                            TESTING_AREA_ENEMY_KIND_COUNT)) {
+        snprintf(buffer, buffer_cap, "Description text needed...");
+        return;
+    }
+
+    snprintf(buffer, buffer_cap, "Unimplemented unit");
+}
+
+static bool game_try_get_hovered_unit(Game *game, Rectangle player_panel, Rectangle minimap_panel,
+                                      Rectangle familiar_panel, Rectangle action_bar_panel,
+                                      Dungeon_Hovered_Unit *out_hovered)
+{
+    assert(out_hovered != 0);
+
+    Vector2 mouse_screen = GetMousePosition();
+
+    if (!game->debug_in_testing_area) {
+        i32 hovered_slot = game_action_bar_hovered_slot(game);
+        if (hovered_slot >= 0) {
+            if (!game_player_action_bar_slot_has_scroll(game, hovered_slot))
+                return false;
+
+            UNIT_ART_KIND summon_unit_kind = game->player_action_bar_summon_unit_kind[hovered_slot];
+            if (!game_scroll_summon_unit_is_valid(summon_unit_kind))
+                return false;
+
+            game_fill_hovered_unit_from_kind(out_hovered, summon_unit_kind);
+            return true;
+        }
+    }
+
+    if (game->debug_in_testing_area) {
+        float slot_size = game_testing_unit_bar_slot_size();
+        Rectangle familiar_unit_panel = game_testing_familiar_unit_bar_panel_rect();
+        i32 familiar_slot = game_testing_unit_bar_hovered_slot(
+            mouse_screen, familiar_unit_panel, TESTING_AREA_FAMILIAR_KIND_COUNT,
+            TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT, slot_size);
+        if (familiar_slot >= 0) {
+            game_fill_hovered_unit_from_kind(out_hovered,
+                                             game_testing_area_familiar_unit_kinds[familiar_slot]);
+            return true;
+        }
+
+        Rectangle enemy_unit_panel = game_testing_enemy_unit_bar_panel_rect();
+        i32 enemy_slot = game_testing_unit_bar_hovered_slot(
+            mouse_screen, enemy_unit_panel, TESTING_AREA_ENEMY_KIND_COUNT,
+            TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT, slot_size);
+        if (enemy_slot >= 0) {
+            game_fill_hovered_unit_from_kind(out_hovered,
+                                             game_testing_area_enemy_unit_kinds[enemy_slot]);
+            return true;
+        }
+    }
+
+    if (game_mouse_is_over_dungeon_hud_panel(game, mouse_screen, player_panel, minimap_panel,
+                                             familiar_panel, action_bar_panel)) {
+        return false;
+    }
+
+    i32 hover_x = 0;
+    i32 hover_y = 0;
+    if (!game_dungeon_get_mouse_cell(game, &hover_x, &hover_y))
         return false;
 
-    char scroll_name[96];
-    game_scroll_get_display_name(summon_unit_kind, scroll_name, sizeof(scroll_name));
+    const Dungeon_Unit *unit = game_dungeon_get_unit_at(game, hover_x, hover_y);
+    if (unit != 0 && game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
+        game_fill_hovered_unit_from_world_unit(out_hovered, unit);
+        return true;
+    }
 
-    float text_size = 18.0f;
-    Vector2 text_measure = MeasureTextEx(game->font, scroll_name, text_size, game->font_spacing);
-    float panel_w = text_measure.x + DUNGEON_HOVER_PANEL_PADDING * 2.0f;
-    float panel_h = text_size + DUNGEON_HOVER_PANEL_PADDING * 2.0f;
+    i32 item_idx = game_dungeon_get_item_index_at(game, hover_x, hover_y);
+    if (item_idx < 0)
+        return false;
 
+    const Dungeon_Item *item = &game->items[item_idx];
+    if (item->kind != ITEM_KIND_SCROLL)
+        return false;
+    if (!game_dungeon_cell_is_visible(game, item->x, item->y))
+        return false;
+    if (!game_scroll_summon_unit_is_valid(item->summon_unit_kind))
+        return false;
+
+    game_fill_hovered_unit_from_kind(out_hovered, item->summon_unit_kind);
+    return true;
+}
+
+static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
+                                           Rectangle minimap_panel, Rectangle familiar_panel,
+                                           Rectangle action_bar_panel)
+{
+    Dungeon_Hovered_Unit hovered = {0};
+    if (!game_try_get_hovered_unit(game, player_panel, minimap_panel, familiar_panel,
+                                   action_bar_panel, &hovered)) {
+        return;
+    }
+
+    char stats_line[48];
+    snprintf(stats_line, sizeof(stats_line), "HP %d/%d, DMG %d", (i32)hovered.stats.health,
+             (i32)hovered.stats.max_health, hovered.damage);
+
+    char description_line[192];
+    game_get_hovered_unit_description(hovered.kind, description_line, sizeof(description_line));
+
+    float title_size = 19.0f;
+    float stats_size = 16.0f;
+    float description_size = 15.0f;
+    float line_gap = 4.0f;
+
+    Vector2 title_measure = MeasureTextEx(game->font, hovered.name, title_size, game->font_spacing);
+    Vector2 description_measure =
+        MeasureTextEx(game->font, description_line, description_size, game->font_spacing);
+
+    float panel_w = max(title_measure.x, description_measure.x);
+    Vector2 stats_measure = MeasureTextEx(game->font, stats_line, stats_size, game->font_spacing);
+    panel_w = max(panel_w, stats_measure.x);
+    panel_w += DUNGEON_HOVER_PANEL_PADDING * 2.0f;
+
+    float panel_h = (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_size + 8.0f + stats_size +
+                    line_gap + description_size;
+
+    Vector2 mouse_screen = GetMousePosition();
     Rectangle panel = {
         .x = mouse_screen.x + 18.0f,
         .y = mouse_screen.y + 20.0f,
@@ -7012,6 +7117,7 @@ static bool game_draw_hovered_scroll_name(Game *game, Rectangle player_panel,
 
     float screen_w = (float)GetScreenWidth();
     float screen_h = (float)GetScreenHeight();
+
     if (panel.x + panel.width > screen_w - 8.0f)
         panel.x = mouse_screen.x - panel.width - 18.0f;
     if (panel.y + panel.height > screen_h - 8.0f)
@@ -7022,120 +7128,24 @@ static bool game_draw_hovered_scroll_name(Game *game, Rectangle player_panel,
     game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240},
                                (Color){143, 108, 71, 255});
 
-    Color title_color = game_scroll_get_summon_unit_tint(summon_unit_kind);
+    Color title_color = game_scroll_get_summon_unit_tint(hovered.kind);
     title_color.r = (u8)min(255, (i32)title_color.r + 16);
     title_color.g = (u8)min(255, (i32)title_color.g + 16);
     title_color.b = (u8)min(255, (i32)title_color.b + 16);
 
     Vector2 text_pos = {
         .x = panel.x + DUNGEON_HOVER_PANEL_PADDING,
-        .y = panel.y + DUNGEON_HOVER_PANEL_PADDING,
-    };
-    DrawTextEx(game->font, scroll_name, text_pos, text_size, game->font_spacing, title_color);
-    return true;
-}
-
-static void game_draw_hovered_unit_stats(Game *game, Rectangle player_panel,
-                                         Rectangle minimap_panel, Rectangle familiar_panel,
-                                         Rectangle action_bar_panel)
-{
-    Vector2 mouse_screen = GetMousePosition();
-    if (game_mouse_is_over_dungeon_hud_panel(game, mouse_screen, player_panel, minimap_panel,
-                                             familiar_panel, action_bar_panel)) {
-        return;
-    }
-
-    i32 hover_x = 0;
-    i32 hover_y = 0;
-    if (!game_dungeon_get_mouse_cell(game, &hover_x, &hover_y))
-        return;
-
-    bool has_hovered_unit = false;
-    Unit_Stats hovered_stats = {0};
-    i32 hovered_damage = 0;
-    char hovered_name[UNIT_ART_DISPLAY_NAME_CAP];
-
-    if (game->player_x == hover_x && game->player_y == hover_y &&
-        game_dungeon_cell_is_visible(game, hover_x, hover_y)) {
-        snprintf(hovered_name, sizeof(hovered_name), "You");
-        hovered_stats = game->player_stats;
-        hovered_damage = (i32)game->player_stats.damage;
-        has_hovered_unit = true;
-    } else {
-        const Dungeon_Unit *unit = game_dungeon_get_unit_at(game, hover_x, hover_y);
-        if (unit == 0)
-            return;
-        if (!game_dungeon_cell_is_visible(game, unit->x, unit->y))
-            return;
-
-        unit_art_get_display_name(unit->kind, hovered_name, UNIT_ART_DISPLAY_NAME_CAP);
-        hovered_stats = unit->stats;
-        hovered_damage = game_dungeon_get_unit_attack_damage(unit);
-        has_hovered_unit = true;
-    }
-
-    if (!has_hovered_unit)
-        return;
-
-    char health_line[32];
-    snprintf(health_line, sizeof(health_line), "Health  %d/%d", (i32)hovered_stats.health,
-             (i32)hovered_stats.max_health);
-
-    char damage_line[32];
-    snprintf(damage_line, sizeof(damage_line), "Damage  %d", hovered_damage);
-
-    float title_size = 19.0f;
-    float line_size = 16.0f;
-    float line_gap = 4.0f;
-
-    Vector2 title_measure = MeasureTextEx(game->font, hovered_name, title_size, game->font_spacing);
-    Vector2 health_measure = MeasureTextEx(game->font, health_line, line_size, game->font_spacing);
-    Vector2 damage_measure = MeasureTextEx(game->font, damage_line, line_size, game->font_spacing);
-
-    float panel_w = max(title_measure.x, health_measure.x);
-    panel_w = max(panel_w, damage_measure.x);
-    panel_w += DUNGEON_HOVER_PANEL_PADDING * 2.0f;
-
-    float panel_h =
-        (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_size + 8.0f + (line_size * 2.0f) + line_gap;
-
-    Rectangle panel = {
-        .x = mouse_screen.x + 18.0f,
-        .y = mouse_screen.y + 20.0f,
-        .width = panel_w,
-        .height = panel_h,
-    };
-
-    float screen_w = (float)GetScreenWidth();
-    float screen_h = (float)GetScreenHeight();
-
-    if (panel.x + panel.width > screen_w - 8.0f)
-        panel.x = mouse_screen.x - panel.width - 18.0f;
-    if (panel.y + panel.height > screen_h - 8.0f)
-        panel.y = screen_h - panel.height - 8.0f;
-    panel.x = clamp(panel.x, 8.0f, screen_w - panel.width - 8.0f);
-    panel.y = clamp(panel.y, 8.0f, screen_h - panel.height - 8.0f);
-
-    game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240},
-                               (Color){143, 108, 71, 255});
-
-    Vector2 title_pos = {
-        .x = panel.x + DUNGEON_HOVER_PANEL_PADDING,
         .y = panel.y + DUNGEON_HOVER_PANEL_PADDING - 1.0f,
     };
-    DrawTextEx(game->font, hovered_name, title_pos, title_size, game->font_spacing,
-               (Color){236, 214, 175, 255});
+    DrawTextEx(game->font, hovered.name, text_pos, title_size, game->font_spacing, title_color);
 
-    Vector2 line_pos = {
-        .x = panel.x + DUNGEON_HOVER_PANEL_PADDING,
-        .y = title_pos.y + title_size + 8.0f,
-    };
-    DrawTextEx(game->font, health_line, line_pos, line_size, game->font_spacing,
+    text_pos.y += title_size + 8.0f;
+    DrawTextEx(game->font, stats_line, text_pos, stats_size, game->font_spacing,
                (Color){215, 194, 158, 255});
+    text_pos.y += stats_size + line_gap;
 
-    line_pos.y += line_size + line_gap;
-    DrawTextEx(game->font, damage_line, line_pos, line_size, game->font_spacing,
-               (Color){194, 173, 141, 255});
+    DrawTextEx(game->font, description_line, text_pos, description_size, game->font_spacing,
+               (Color){178, 163, 136, 255});
 }
 
 static void game_draw_scroll_target_indicator(Game *game, Vector2 origin, float tile_size)
@@ -7781,15 +7791,8 @@ static void game_draw_dungeon_hud(Game *game)
         game_draw_player_action_bar(game);
     game_draw_debug_hud(game);
 
-    bool drew_scroll_hover = false;
-    if (!game->debug_in_testing_area) {
-        drew_scroll_hover = game_draw_hovered_scroll_name(game, player_panel, minimap_panel,
-                                                          familiar_panel, action_bar_panel);
-    }
-    if (!drew_scroll_hover) {
-        game_draw_hovered_unit_stats(game, player_panel, minimap_panel, familiar_panel,
-                                     action_bar_panel);
-    }
+    game_draw_hovered_unit_tooltip(game, player_panel, minimap_panel, familiar_panel,
+                                   action_bar_panel);
 }
 
 static Rectangle game_end_menu_panel_rect(void)
