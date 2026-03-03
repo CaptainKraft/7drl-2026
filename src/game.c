@@ -107,12 +107,23 @@
 #define DUNGEON_FAMILIAR_BAT_FOLLOW_MAX_DISTANCE 5
 #define DUNGEON_FAMILIAR_BAT_MAX_MOVE_TILES 2
 #define DUNGEON_FAMILIAR_BAT_DASH_COOLDOWN_TURNS 5
+#define DUNGEON_GOBLIN_SHAMAN_FOLLOW_MIN_DISTANCE 3
+#define DUNGEON_GOBLIN_SHAMAN_FOLLOW_MAX_DISTANCE 5
+#define DUNGEON_GOBLIN_SHAMAN_HOSTILE_AVOID_DISTANCE 2
+#define DUNGEON_GOBLIN_SHAMAN_HEAL_RANGE_MIN_DISTANCE 3
+#define DUNGEON_GOBLIN_SHAMAN_HEAL_RANGE_MAX_DISTANCE 5
+#define DUNGEON_GOBLIN_SHAMAN_HEAL_AMOUNT 2
+#define DUNGEON_GOBLIN_SHAMAN_HEAL_COOLDOWN_TURNS 5
 #define DUNGEON_MOVE_ANIM_DURATION 0.18f
 #define DUNGEON_MOVE_HOP_HEIGHT_TILES 0.16f
 #define DUNGEON_ATTACK_ANIM_DURATION 0.12f
 #define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
 #define DUNGEON_DISEASED_DAMAGE_PENALTY 1
 #define DUNGEON_POISON_DAMAGE_PER_TURN 1
+#define DUNGEON_WEBBED_DURATION_TURNS 5
+#define DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS 5
+#define DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE 3
+#define DUNGEON_BEETLE_KAMIKAZE_AREA_RADIUS ((DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE - 1) / 2)
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
 #define DUNGEON_WEB_PROJECTILE_CAPACITY DUNGEON_MAX_UNITS
@@ -223,7 +234,14 @@ typedef enum {
     UNIT_AI_BASIC_MELEE,
     UNIT_AI_DEFEND_RANGED,
     UNIT_AI_DASH,
+    UNIT_AI_GOBLIN_SHAMAN,
+    UNIT_AI_KAMIKAZE,
 } UNIT_AI_KIND;
+
+typedef enum {
+    DAMAGE_KIND_NORMAL,
+    DAMAGE_KIND_FIRE,
+} DAMAGE_KIND;
 
 typedef enum {
     DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH,
@@ -335,6 +353,9 @@ typedef struct {
     float poisoned_particle_spawn_timer;
     bool is_webbed;
     bool webbed_skip_next_turn;
+    u8 webbed_turns_remaining;
+    bool has_troll_blood;
+    u8 shaman_heal_cooldown_turns;
     u32 last_damaged_player_event;
     bool move_anim_active;
     bool attack_anim_active;
@@ -374,6 +395,15 @@ typedef struct {
     u8 orientation;
     bool move_anim_active;
 } Dungeon_Defeated_Unit_Visual;
+
+typedef struct {
+    i16 x;
+    i16 y;
+    u8 orientation;
+    bool is_friendly;
+    u32 revive_turn;
+    bool active;
+} Dungeon_Troll_Blood_Revive;
 
 typedef struct {
     i16 x;
@@ -490,6 +520,9 @@ typedef struct {
     Dungeon_Defeated_Unit_Visual defeated_unit_visuals[DUNGEON_MAX_UNITS];
     u8 defeated_unit_visual_cursor;
 
+    Dungeon_Troll_Blood_Revive troll_blood_revives[DUNGEON_MAX_UNITS];
+    u32 dungeon_turn_count;
+
     i16 player_x;
     i16 player_y;
     float player_move_anim_from_x;
@@ -522,6 +555,7 @@ typedef struct {
 } Game;
 
 static void game_player_clear_action_bar(Game *game);
+static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y);
 
 static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
@@ -564,14 +598,14 @@ static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     ((i32)(sizeof(game_dungeon_hbw_templates) / sizeof(game_dungeon_hbw_templates[0])))
 
 static const UNIT_ART_KIND game_testing_area_familiar_unit_kinds[] = {
-    UNIT_ART_RAT,     UNIT_ART_COBRA,     UNIT_ART_SPIDER,    UNIT_ART_BAT,    UNIT_ART_BEHOLDER,
-    UNIT_ART_IMP,     UNIT_ART_SPIRIT,    UNIT_ART_ELEMENTAL, UNIT_ART_REAPER, UNIT_ART_PHOENIX,
-    UNIT_ART_GRIFFON, UNIT_ART_MAN_EATER, UNIT_ART_BEETLE,    UNIT_ART_MUMMY,  UNIT_ART_TREANT,
+    UNIT_ART_RAT,      UNIT_ART_COBRA,   UNIT_ART_SPIDER,    UNIT_ART_BAT,       UNIT_ART_BEETLE,
+    UNIT_ART_BEHOLDER, UNIT_ART_IMP,     UNIT_ART_SPIRIT,    UNIT_ART_ELEMENTAL, UNIT_ART_REAPER,
+    UNIT_ART_PHOENIX,  UNIT_ART_GRIFFON, UNIT_ART_MAN_EATER, UNIT_ART_MUMMY,     UNIT_ART_TREANT,
 };
 
 static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
-    UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN, UNIT_ART_GOBLIN_WARRIOR, UNIT_ART_TROLL,
-    UNIT_ART_DEATH_KNIGHT, UNIT_ART_SLIME,         UNIT_ART_MINOTAUR,       UNIT_ART_MIMIC,
+    UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN, UNIT_ART_GOBLIN_WARRIOR, UNIT_ART_SLIME,
+    UNIT_ART_TROLL,        UNIT_ART_DEATH_KNIGHT,  UNIT_ART_MINOTAUR,       UNIT_ART_MIMIC,
     UNIT_ART_CENTAUR,      UNIT_ART_SATYR,         UNIT_ART_GIANT,          UNIT_ART_YETI,
 };
 
@@ -583,8 +617,8 @@ static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
     ((i32)(sizeof(game_testing_area_enemy_unit_kinds) /                                            \
            sizeof(game_testing_area_enemy_unit_kinds[0])))
 
-#define TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT 4
-#define TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT 1
+#define TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT 5
+#define TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT 5
 
 _Static_assert(TESTING_AREA_FAMILIAR_KIND_COUNT > 0,
                "Testing area familiar list must not be empty");
@@ -1162,6 +1196,32 @@ static bool game_unit_stats_take_damage(Unit_Stats *stats, i32 damage)
     return (i32)stats->health <= 0;
 }
 
+static bool game_unit_stats_heal(Unit_Stats *stats, i32 amount)
+{
+    assert(stats != 0);
+
+    i32 safe_amount = max(0, amount);
+    i32 next_health = min((i32)stats->max_health, (i32)stats->health + safe_amount);
+    bool did_heal = next_health > (i32)stats->health;
+    stats->health = (u8)next_health;
+    return did_heal;
+}
+
+static bool game_unit_kind_is_goblin(UNIT_ART_KIND kind)
+{
+    return kind == UNIT_ART_GOBLIN_GRUNT || kind == UNIT_ART_GOBLIN_SHAMAN ||
+           kind == UNIT_ART_GOBLIN_WARRIOR;
+}
+
+static void game_dungeon_clear_webbed_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    unit->is_webbed = false;
+    unit->webbed_skip_next_turn = false;
+    unit->webbed_turns_remaining = 0;
+}
+
 static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -1197,11 +1257,9 @@ static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
     if (unit->is_friendly)
         return;
 
-    if (unit->is_webbed)
-        return;
-
     unit->is_webbed = true;
     unit->webbed_skip_next_turn = true;
+    unit->webbed_turns_remaining = DUNGEON_WEBBED_DURATION_TURNS;
 }
 
 static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
@@ -1322,23 +1380,23 @@ static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
     case UNIT_ART_MAN_EATER:
         return game_make_unit_stats(7, 3);
     case UNIT_ART_BEETLE:
-        return game_make_unit_stats(5, 1);
+        return game_make_unit_stats(1, 3);
     case UNIT_ART_MUMMY:
         return game_make_unit_stats(6, 2);
     case UNIT_ART_TREANT:
         return game_make_unit_stats(9, 2);
     case UNIT_ART_GOBLIN_GRUNT:
-        return game_make_unit_stats(3, 1);
+        return game_make_unit_stats(3, 2);
     case UNIT_ART_GOBLIN_SHAMAN:
-        return game_make_unit_stats(4, 1);
+        return game_make_unit_stats(3, 1);
     case UNIT_ART_GOBLIN_WARRIOR:
-        return game_make_unit_stats(5, 2);
+        return game_make_unit_stats(5, 3);
     case UNIT_ART_TROLL:
-        return game_make_unit_stats(8, 3);
+        return game_make_unit_stats(6, 4);
     case UNIT_ART_DEATH_KNIGHT:
         return game_make_unit_stats(10, 4);
     case UNIT_ART_SLIME:
-        return game_make_unit_stats(6, 1);
+        return game_make_unit_stats(4, 1);
     case UNIT_ART_MINOTAUR:
         return game_make_unit_stats(11, 4);
     case UNIT_ART_MIMIC:
@@ -1363,8 +1421,11 @@ static UNIT_AI_KIND game_get_unit_ai_kind(UNIT_ART_KIND kind)
         return UNIT_AI_DEFEND_RANGED;
     case UNIT_ART_BAT:
         return UNIT_AI_DASH;
-    case UNIT_ART_GOBLIN_GRUNT:
     case UNIT_ART_GOBLIN_SHAMAN:
+        return UNIT_AI_GOBLIN_SHAMAN;
+    case UNIT_ART_BEETLE:
+        return UNIT_AI_KAMIKAZE;
+    case UNIT_ART_GOBLIN_GRUNT:
     case UNIT_ART_GOBLIN_WARRIOR:
     case UNIT_ART_TROLL:
     case UNIT_ART_DEATH_KNIGHT:
@@ -1412,6 +1473,9 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .poisoned_particle_spawn_timer = 0.0f,
         .is_webbed = false,
         .webbed_skip_next_turn = false,
+        .webbed_turns_remaining = 0,
+        .has_troll_blood = kind == UNIT_ART_TROLL,
+        .shaman_heal_cooldown_turns = 0,
         .move_anim_active = false,
         .attack_anim_active = false,
         .has_acted_this_turn = false,
@@ -2258,6 +2322,91 @@ static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
     game->unit_count--;
 }
 
+static void game_dungeon_enqueue_troll_blood_revive(Game *game, const Dungeon_Unit *unit)
+{
+    assert(game != 0);
+    assert(unit != 0);
+
+    for (i32 idx = 0; idx < DUNGEON_MAX_UNITS; idx++) {
+        Dungeon_Troll_Blood_Revive *entry = &game->troll_blood_revives[idx];
+        if (entry->active)
+            continue;
+
+        *entry = (Dungeon_Troll_Blood_Revive){
+            .x = unit->x,
+            .y = unit->y,
+            .orientation = unit->orientation,
+            .is_friendly = unit->is_friendly,
+            .revive_turn = game->dungeon_turn_count + DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS + 1,
+            .active = true,
+        };
+        return;
+    }
+}
+
+static void game_dungeon_spawn_slime_children(Game *game, const Dungeon_Unit *defeated_unit)
+{
+    assert(game != 0);
+    assert(defeated_unit != 0);
+
+    i32 child_max_health = (i32)defeated_unit->stats.max_health / 2;
+    if (child_max_health <= 0)
+        return;
+
+    static const i32 spawn_offsets[8][2] = {
+        {1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1},
+    };
+
+    i32 spawned_count = 0;
+    for (i32 offset_idx = 0; offset_idx < (i32)(sizeof(spawn_offsets) / sizeof(spawn_offsets[0])) &&
+                             spawned_count < 2 && game->unit_count < DUNGEON_MAX_UNITS;
+         offset_idx++) {
+        i32 spawn_x = defeated_unit->x + spawn_offsets[offset_idx][0];
+        i32 spawn_y = defeated_unit->y + spawn_offsets[offset_idx][1];
+        if (!game_dungeon_cell_is_floor(game, spawn_x, spawn_y))
+            continue;
+        if (game_dungeon_cell_is_occupied(game, spawn_x, spawn_y))
+            continue;
+
+        game_dungeon_add_unit(game, spawn_x, spawn_y, UNIT_ART_SLIME, defeated_unit->orientation,
+                              defeated_unit->is_friendly);
+        Dungeon_Unit *child = &game->units[game->unit_count - 1];
+        child->stats.max_health = (u8)child_max_health;
+        child->stats.health = (u8)child_max_health;
+        child->stats.damage = defeated_unit->stats.damage;
+        child->is_awake = defeated_unit->is_awake;
+        child->turns_out_of_player_los = 0;
+        spawned_count++;
+    }
+}
+
+static bool game_dungeon_apply_damage_to_unit(Game *game, i32 unit_idx, i32 damage,
+                                              DAMAGE_KIND damage_kind)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    if (damage_kind == DAMAGE_KIND_FIRE && unit->kind == UNIT_ART_TROLL)
+        unit->has_troll_blood = false;
+
+    bool unit_defeated = game_unit_stats_take_damage(&unit->stats, damage);
+    if (!unit_defeated)
+        return false;
+
+    Dungeon_Unit defeated_unit = *unit;
+    game_dungeon_remove_unit_at(game, unit_idx);
+
+    if (defeated_unit.kind == UNIT_ART_SLIME && defeated_unit.stats.max_health > 1)
+        game_dungeon_spawn_slime_children(game, &defeated_unit);
+
+    if (defeated_unit.kind == UNIT_ART_TROLL && defeated_unit.has_troll_blood)
+        game_dungeon_enqueue_troll_blood_revive(game, &defeated_unit);
+
+    return true;
+}
+
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
 {
     if (game->player_x == x && game->player_y == y)
@@ -2370,6 +2519,117 @@ game_dungeon_build_player_distance_field(const Game *game,
     i16 goal_x[1] = {game->player_x};
     i16 goal_y[1] = {game->player_y};
     return game_dungeon_build_distance_field(game, goal_x, goal_y, 1, out_distance);
+}
+
+static bool game_dungeon_find_nearest_unoccupied_floor_cell(const Game *game, i32 origin_x,
+                                                            i32 origin_y, i32 *out_x, i32 *out_y)
+{
+    assert(game != 0);
+    assert(out_x != 0);
+    assert(out_y != 0);
+
+    if (!game_dungeon_cell_in_bounds(origin_x, origin_y))
+        return false;
+    if (!game_dungeon_cell_is_floor(game, origin_x, origin_y))
+        return false;
+
+    i16 goal_x[1] = {(i16)origin_x};
+    i16 goal_y[1] = {(i16)origin_y};
+    i16 distance_from_origin[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_origin))
+        return false;
+
+    bool has_best = false;
+    i16 best_distance = DUNGEON_PATH_UNREACHABLE;
+    i32 best_x = origin_x;
+    i32 best_y = origin_y;
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y))
+                continue;
+            if (game_dungeon_cell_is_occupied(game, x, y))
+                continue;
+
+            i16 distance = distance_from_origin[y][x];
+            if (distance < 0 || distance >= DUNGEON_PATH_UNREACHABLE)
+                continue;
+
+            bool is_better = false;
+            if (!has_best) {
+                is_better = true;
+            } else if (distance < best_distance) {
+                is_better = true;
+            } else if (distance == best_distance && (y < best_y || (y == best_y && x < best_x))) {
+                is_better = true;
+            }
+
+            if (!is_better)
+                continue;
+
+            has_best = true;
+            best_distance = distance;
+            best_x = x;
+            best_y = y;
+        }
+    }
+
+    if (!has_best)
+        return false;
+
+    *out_x = best_x;
+    *out_y = best_y;
+    return true;
+}
+
+static void game_dungeon_process_troll_blood_revives(Game *game)
+{
+    assert(game != 0);
+
+    bool revived_unit = false;
+    for (i32 idx = 0; idx < DUNGEON_MAX_UNITS; idx++) {
+        Dungeon_Troll_Blood_Revive *entry = &game->troll_blood_revives[idx];
+        if (!entry->active)
+            continue;
+        if (entry->revive_turn > game->dungeon_turn_count)
+            continue;
+        if (game->unit_count >= DUNGEON_MAX_UNITS)
+            continue;
+
+        i32 revive_x = 0;
+        i32 revive_y = 0;
+        if (!game_dungeon_find_nearest_unoccupied_floor_cell(game, entry->x, entry->y, &revive_x,
+                                                             &revive_y)) {
+            continue;
+        }
+
+        game_dungeon_add_unit(game, revive_x, revive_y, UNIT_ART_TROLL, entry->orientation,
+                              entry->is_friendly);
+        Dungeon_Unit *revived = &game->units[game->unit_count - 1];
+        revived->is_awake = false;
+        revived->turns_out_of_player_los = 0;
+        revived->is_diseased = false;
+        revived->diseased_particle_spawn_timer = 0.0f;
+        revived->is_poisoned = false;
+        revived->poisoned_particle_spawn_timer = 0.0f;
+        game_dungeon_clear_webbed_status(revived);
+        revived->has_troll_blood = true;
+        revived->shaman_heal_cooldown_turns = 0;
+
+        entry->active = false;
+        revived_unit = true;
+    }
+
+    if (revived_unit)
+        game_dungeon_rebuild_line_of_sight(game);
+}
+
+static void game_dungeon_advance_turn(Game *game)
+{
+    assert(game != 0);
+
+    game->dungeon_turn_count++;
+    game_dungeon_process_troll_blood_revives(game);
 }
 
 static bool game_dungeon_threat_source_has_higher_priority(const Dungeon_Threat_Source *a,
@@ -3049,18 +3309,25 @@ static bool game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
         return false;
     }
 
-    i16 enemy_goal_x[DUNGEON_MAX_UNITS];
-    i16 enemy_goal_y[DUNGEON_MAX_UNITS];
+    i16 enemy_goal_x[DUNGEON_MAX_UNITS + 1];
+    i16 enemy_goal_y[DUNGEON_MAX_UNITS + 1];
     i32 enemy_goal_count = 0;
     for (u8 idx = 0; idx < game->unit_count; idx++) {
         const Dungeon_Unit *enemy = &game->units[idx];
-        if (enemy->is_friendly)
+        if (enemy->is_friendly == unit->is_friendly)
             continue;
         if (!game_dungeon_cell_is_floor(game, enemy->x, enemy->y))
             continue;
 
         enemy_goal_x[enemy_goal_count] = enemy->x;
         enemy_goal_y[enemy_goal_count] = enemy->y;
+        enemy_goal_count++;
+    }
+
+    if (!unit->is_friendly && game_dungeon_cell_is_floor(game, game->player_x, game->player_y) &&
+        enemy_goal_count < (DUNGEON_MAX_UNITS + 1)) {
+        enemy_goal_x[enemy_goal_count] = game->player_x;
+        enemy_goal_y[enemy_goal_count] = game->player_y;
         enemy_goal_count++;
     }
 
@@ -3545,9 +3812,8 @@ static bool game_dungeon_try_take_bat_dash_attack(Game *game, i32 unit_idx,
         target_unit->turns_out_of_player_los = 0;
     }
 
-    bool target_defeated = game_unit_stats_take_damage(&target_unit->stats, attack_damage);
-    if (target_defeated)
-        game_dungeon_remove_unit_at(game, target->target_unit_idx);
+    game_dungeon_apply_damage_to_unit(game, target->target_unit_idx, attack_damage,
+                                      DAMAGE_KIND_NORMAL);
 
     unit->dash_cooldown_turns = DUNGEON_FAMILIAR_BAT_DASH_COOLDOWN_TURNS;
     return true;
@@ -3617,13 +3883,197 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
         else if (unit->is_friendly && unit->kind == UNIT_ART_COBRA)
             game_dungeon_apply_poisoned_status(target_unit);
 
-        bool target_defeated = game_unit_stats_take_damage(&target_unit->stats, attack_damage);
-        if (target_defeated)
-            game_dungeon_remove_unit_at(game, target->target_unit_idx);
+        game_dungeon_apply_damage_to_unit(game, target->target_unit_idx, attack_damage,
+                                          DAMAGE_KIND_NORMAL);
         return;
     }
 
     game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
+}
+
+static bool game_dungeon_cell_is_in_kamikaze_area(i32 center_x, i32 center_y, i32 target_x,
+                                                  i32 target_y)
+{
+    i32 dx = target_x - center_x;
+    if (dx < 0)
+        dx = -dx;
+    i32 dy = target_y - center_y;
+    if (dy < 0)
+        dy = -dy;
+
+    return dx <= DUNGEON_BEETLE_KAMIKAZE_AREA_RADIUS && dy <= DUNGEON_BEETLE_KAMIKAZE_AREA_RADIUS;
+}
+
+static void game_dungeon_trigger_kamikaze_explosion(Game *game, i32 unit_idx)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+
+    Dungeon_Unit exploding_unit = game->units[unit_idx];
+    i32 center_x = exploding_unit.x;
+    i32 center_y = exploding_unit.y;
+    bool source_is_friendly = exploding_unit.is_friendly;
+    i32 explosion_damage = game_dungeon_get_unit_attack_damage(&exploding_unit);
+
+    game_dungeon_remove_unit_at(game, unit_idx);
+
+    if (!source_is_friendly &&
+        game_dungeon_cell_is_in_kamikaze_area(center_x, center_y, game->player_x, game->player_y)) {
+        game_unit_stats_take_damage(&game->player_stats, explosion_damage);
+    }
+
+    for (i32 target_idx = game->unit_count - 1; target_idx >= 0; target_idx--) {
+        Dungeon_Unit *target = &game->units[target_idx];
+        if (target->is_friendly == source_is_friendly)
+            continue;
+        if (!game_dungeon_cell_is_in_kamikaze_area(center_x, center_y, target->x, target->y))
+            continue;
+
+        if (source_is_friendly && !target->is_friendly) {
+            target->is_awake = true;
+            target->turns_out_of_player_los = 0;
+        }
+
+        game_dungeon_apply_damage_to_unit(game, target_idx, explosion_damage, DAMAGE_KIND_FIRE);
+    }
+}
+
+static void game_dungeon_take_kamikaze_turn(Game *game, i32 unit_idx,
+                                            const Dungeon_Enemy_Target *target)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+    assert(target != 0);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return;
+
+    i32 target_x = target->target_x;
+    i32 target_y = target->target_y;
+    float attack_delay = 0.0f;
+
+    if (target->target_is_player) {
+        target_x = game->player_x;
+        target_y = game->player_y;
+        attack_delay = game_dungeon_get_player_move_anim_remaining(game);
+    } else {
+        if (target->target_unit_idx < 0 || target->target_unit_idx >= game->unit_count)
+            return;
+
+        const Dungeon_Unit *target_unit = &game->units[target->target_unit_idx];
+        if (target_unit->is_friendly == unit->is_friendly)
+            return;
+
+        target_x = target_unit->x;
+        target_y = target_unit->y;
+        attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
+    }
+
+    unit->orientation = game_dungeon_get_orientation_from_positions(start_x, start_y, target_x,
+                                                                    target_y, unit->orientation);
+
+    if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, target_x, target_y)) {
+        game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
+                                                 attack_delay);
+        game_dungeon_trigger_kamikaze_explosion(game, unit_idx);
+        return;
+    }
+
+    game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
+}
+
+static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return;
+
+    if (unit->shaman_heal_cooldown_turns > 0)
+        unit->shaman_heal_cooldown_turns--;
+
+    i16 goal_x[1] = {(i16)start_x};
+    i16 goal_y[1] = {(i16)start_y};
+    i16 distance_from_shaman[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_shaman))
+        return;
+
+    i32 nearest_goblin_idx = -1;
+    i16 nearest_goblin_distance = DUNGEON_PATH_UNREACHABLE;
+    i32 heal_target_idx = -1;
+    i16 heal_target_distance = DUNGEON_PATH_UNREACHABLE;
+    i32 heal_target_missing_health = -1;
+
+    for (u8 candidate_idx = 0; candidate_idx < game->unit_count; candidate_idx++) {
+        if ((i32)candidate_idx == unit_idx)
+            continue;
+
+        const Dungeon_Unit *candidate = &game->units[candidate_idx];
+        if (candidate->is_friendly != unit->is_friendly)
+            continue;
+        if (!game_unit_kind_is_goblin(candidate->kind))
+            continue;
+        if (!game_dungeon_cell_is_floor(game, candidate->x, candidate->y))
+            continue;
+
+        i16 distance = distance_from_shaman[candidate->y][candidate->x];
+        if (distance <= 0 || distance >= DUNGEON_PATH_UNREACHABLE)
+            continue;
+
+        if (nearest_goblin_idx < 0 || distance < nearest_goblin_distance ||
+            (distance == nearest_goblin_distance && (i32)candidate_idx < nearest_goblin_idx)) {
+            nearest_goblin_idx = candidate_idx;
+            nearest_goblin_distance = distance;
+        }
+
+        i32 missing_health = (i32)candidate->stats.max_health - (i32)candidate->stats.health;
+        bool in_heal_range = distance >= DUNGEON_GOBLIN_SHAMAN_HEAL_RANGE_MIN_DISTANCE &&
+                             distance <= DUNGEON_GOBLIN_SHAMAN_HEAL_RANGE_MAX_DISTANCE;
+        if (missing_health <= 0 || !in_heal_range)
+            continue;
+
+        if (heal_target_idx < 0 || missing_health > heal_target_missing_health ||
+            (missing_health == heal_target_missing_health && distance < heal_target_distance) ||
+            (missing_health == heal_target_missing_health && distance == heal_target_distance &&
+             (i32)candidate_idx < heal_target_idx)) {
+            heal_target_idx = candidate_idx;
+            heal_target_distance = distance;
+            heal_target_missing_health = missing_health;
+        }
+    }
+
+    if (heal_target_idx >= 0 && unit->shaman_heal_cooldown_turns == 0) {
+        Dungeon_Unit *heal_target = &game->units[heal_target_idx];
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, heal_target->x, heal_target->y, unit->orientation);
+        float heal_delay = game_dungeon_get_unit_move_anim_remaining(heal_target);
+        game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, heal_target->x,
+                                                 heal_target->y, heal_delay);
+        game_unit_stats_heal(&heal_target->stats, DUNGEON_GOBLIN_SHAMAN_HEAL_AMOUNT);
+        unit->shaman_heal_cooldown_turns = DUNGEON_GOBLIN_SHAMAN_HEAL_COOLDOWN_TURNS;
+        return;
+    }
+
+    if (nearest_goblin_idx >= 0) {
+        const Dungeon_Unit *follow_target = &game->units[nearest_goblin_idx];
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, follow_target->x, follow_target->y, unit->orientation);
+        game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
+            game, unit_idx, follow_target->x, follow_target->y,
+            DUNGEON_GOBLIN_SHAMAN_FOLLOW_MIN_DISTANCE, DUNGEON_GOBLIN_SHAMAN_FOLLOW_MAX_DISTANCE,
+            DUNGEON_GOBLIN_SHAMAN_HOSTILE_AVOID_DISTANCE);
+        return;
+    }
 }
 
 static void game_dungeon_take_friendly_unit_turn(
@@ -3657,6 +4107,7 @@ static void game_dungeon_take_friendly_unit_turn(
         follow_min_distance = DUNGEON_FAMILIAR_BAT_FOLLOW_MIN_DISTANCE;
         follow_max_distance = DUNGEON_FAMILIAR_BAT_FOLLOW_MAX_DISTANCE;
         break;
+    case UNIT_AI_KAMIKAZE:
     case UNIT_AI_BASIC_MELEE:
     default:
         break;
@@ -3797,6 +4248,18 @@ static void game_dungeon_take_friendly_unit_turn(
             DUNGEON_FAMILIAR_BAT_MAX_MOVE_TILES);
         return;
     }
+    case UNIT_AI_KAMIKAZE: {
+        Dungeon_Enemy_Target target = {0};
+        if (game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &target)) {
+            game_dungeon_take_kamikaze_turn(game, unit_idx, &target);
+            return;
+        }
+
+        game_dungeon_try_follow_player_with_enemy_avoidance(
+            game, unit_idx, follow_min_distance, follow_max_distance, player_distance,
+            player_distance_valid, DUNGEON_FAMILIAR_FOLLOW_ENEMY_AVOID_DISTANCE, 1);
+        return;
+    }
     case UNIT_AI_BASIC_MELEE:
     default:
         break;
@@ -3866,10 +4329,8 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
             continue;
         }
 
-        bool unit_defeated =
-            game_unit_stats_take_damage(&unit->stats, DUNGEON_POISON_DAMAGE_PER_TURN);
-        if (unit_defeated) {
-            game_dungeon_remove_unit_at(game, unit_idx);
+        if (game_dungeon_apply_damage_to_unit(game, unit_idx, DUNGEON_POISON_DAMAGE_PER_TURN,
+                                              DAMAGE_KIND_NORMAL)) {
             continue;
         }
 
@@ -3931,26 +4392,39 @@ static void game_dungeon_take_enemy_turns(Game *game)
             continue;
 
         if (unit->is_webbed) {
-            if (unit->webbed_skip_next_turn) {
-                unit->webbed_skip_next_turn = false;
-                continue;
+            if (unit->webbed_turns_remaining == 0) {
+                game_dungeon_clear_webbed_status(unit);
+            } else {
+                bool skip_turn = unit->webbed_skip_next_turn;
+                unit->webbed_skip_next_turn = !unit->webbed_skip_next_turn;
+                unit->webbed_turns_remaining--;
+                if (unit->webbed_turns_remaining == 0)
+                    game_dungeon_clear_webbed_status(unit);
+                if (skip_turn)
+                    continue;
             }
-
-            unit->webbed_skip_next_turn = true;
         }
-
-        Dungeon_Enemy_Target target = {0};
-        if (!game_dungeon_find_nearest_visible_hostile_target(game, next_enemy_idx, &target))
-            continue;
 
         UNIT_AI_KIND ai_kind = game_get_unit_ai_kind(unit->kind);
         switch (ai_kind) {
+        case UNIT_AI_GOBLIN_SHAMAN:
+            game_dungeon_take_goblin_shaman_turn(game, next_enemy_idx);
+            break;
+        case UNIT_AI_KAMIKAZE: {
+            Dungeon_Enemy_Target target = {0};
+            if (game_dungeon_find_nearest_visible_hostile_target(game, next_enemy_idx, &target))
+                game_dungeon_take_kamikaze_turn(game, next_enemy_idx, &target);
+            break;
+        }
         case UNIT_AI_DEFEND_RANGED:
         case UNIT_AI_DASH:
         case UNIT_AI_BASIC_MELEE:
-        default:
-            game_dungeon_take_basic_melee_turn(game, next_enemy_idx, &target);
+        default: {
+            Dungeon_Enemy_Target target = {0};
+            if (game_dungeon_find_nearest_visible_hostile_target(game, next_enemy_idx, &target))
+                game_dungeon_take_basic_melee_turn(game, next_enemy_idx, &target);
             break;
+        }
         }
 
         if ((i32)game->player_stats.health <= 0)
@@ -4752,6 +5226,8 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     game->web_projectile_cursor = 0;
     memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
     game->defeated_unit_visual_cursor = 0;
+    memset(game->troll_blood_revives, 0, sizeof(game->troll_blood_revives));
+    game->dungeon_turn_count = 0;
     game->player_x = -1;
     game->player_y = -1;
     game->player_move_anim_from_x = -1.0f;
@@ -4926,6 +5402,8 @@ static bool game_build_debug_testing_area(Game *game)
     game->web_projectile_cursor = 0;
     memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
     game->defeated_unit_visual_cursor = 0;
+    memset(game->troll_blood_revives, 0, sizeof(game->troll_blood_revives));
+    game->dungeon_turn_count = 0;
 
     game->player_x = -1;
     game->player_y = -1;
@@ -6982,6 +7460,24 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
     case UNIT_ART_BAT:
         snprintf(buffer, buffer_cap, "Fast melee unit that dashes into enemies");
         return;
+    case UNIT_ART_BEETLE:
+        snprintf(buffer, buffer_cap, "Kamikaze unit that explodes in a 3x3 fire blast");
+        return;
+    case UNIT_ART_GOBLIN_GRUNT:
+        snprintf(buffer, buffer_cap, "Melee goblin with reliable frontline damage");
+        return;
+    case UNIT_ART_GOBLIN_SHAMAN:
+        snprintf(buffer, buffer_cap, "Support goblin that follows and heals nearby goblins");
+        return;
+    case UNIT_ART_GOBLIN_WARRIOR:
+        snprintf(buffer, buffer_cap, "Heavy melee goblin with high damage");
+        return;
+    case UNIT_ART_SLIME:
+        snprintf(buffer, buffer_cap, "Splits into two smaller slimes when defeated");
+        return;
+    case UNIT_ART_TROLL:
+        snprintf(buffer, buffer_cap, "Revives after death unless burned by fire");
+        return;
     default:
         break;
     }
@@ -7417,10 +7913,8 @@ static bool game_update_player(Game *game)
         target_unit->is_awake = true;
         target_unit->turns_out_of_player_los = 0;
 
-        bool unit_defeated =
-            game_unit_stats_take_damage(&target_unit->stats, game->player_stats.damage);
-        if (unit_defeated)
-            game_dungeon_remove_unit_at(game, target_unit_idx);
+        game_dungeon_apply_damage_to_unit(game, target_unit_idx, game->player_stats.damage,
+                                          DAMAGE_KIND_NORMAL);
         return true;
     }
 
@@ -8252,6 +8746,7 @@ void game_update(Mem mem)
             game_dungeon_take_friendly_turns(game);
 
         game_dungeon_take_enemy_turns(game);
+        game_dungeon_advance_turn(game);
     }
 
     game_dungeon_update_unit_animations(game);
