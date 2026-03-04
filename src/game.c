@@ -83,6 +83,8 @@
 #define DUNGEON_MAX_UNITS 64
 #define DUNGEON_CELL_COUNT (DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT)
 #define DUNGEON_MAX_FLOOR_DEPTH 512
+#define DUNGEON_RUN_FLOOR_COUNT 5
+#define DUNGEON_FINAL_FLOOR_DEPTH (DUNGEON_RUN_FLOOR_COUNT - 1)
 #define DUNGEON_EXIT_MIN_PATH_STEPS 80
 #define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
 #define DUNGEON_MAIN_PATH_KEEP_PERCENT 50
@@ -214,6 +216,7 @@ typedef enum {
     INPUT_FAMILIAR_RETURN,
     INPUT_BACK,
     INPUT_CONFIRM,
+    INPUT_TOGGLE_MINIMAP,
     INPUT_DEBUG_TOGGLE_HUD,
     INPUT_MOUSE_LEFT,
     INPUT_MOUSE_RIGHT,
@@ -288,7 +291,7 @@ typedef struct {
 static const Debug_Action_Def game_debug_action_defs[NUM_DEBUG_ACTIONS] = {
     {
         .action = DEBUG_ACTION_TOGGLE_VIEW,
-        .name = "Toggle map/preview",
+        .name = "Toggle dungeon/preview",
     },
     {
         .action = DEBUG_ACTION_NEXT_FLOOR,
@@ -474,7 +477,8 @@ typedef struct {
     Camera2D preview_cam;
     Font font;
     float font_spacing;
-    bool show_dungeon_map;
+    bool show_dungeon_view;
+    bool show_minimap;
     END_MENU_STATE end_menu_state;
     bool debug_hud_visible;
     u32 debug_feature_mask;
@@ -794,7 +798,7 @@ static void game_open_end_menu(Game *game, END_MENU_STATE menu_state)
         return;
 
     game->end_menu_state = menu_state;
-    game->show_dungeon_map = true;
+    game->show_dungeon_view = true;
 }
 
 static Rectangle game_debug_hud_panel_rect(const Game *game)
@@ -853,12 +857,12 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
 #if GAME_DEBUG_FEATURES
     switch (action) {
     case DEBUG_ACTION_TOGGLE_VIEW:
-        game->show_dungeon_map = !game->show_dungeon_map;
+        game->show_dungeon_view = !game->show_dungeon_view;
         break;
     case DEBUG_ACTION_NEXT_FLOOR:
         if (game->debug_in_testing_area)
             break;
-        if (game->dungeon_depth + 1 < DUNGEON_MAX_FLOOR_DEPTH) {
+        if (game->dungeon_depth + 1 < DUNGEON_RUN_FLOOR_COUNT) {
             game->dungeon_depth++;
             *out_rebuild_floor = true;
         }
@@ -871,7 +875,7 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
         game->debug_testing_unit_placement_active = false;
         game->debug_testing_unit_placement_is_friendly = false;
         game->debug_testing_unit_placement_kind = (u8)game_testing_area_enemy_unit_kinds[0];
-        game->show_dungeon_map = true;
+        game->show_dungeon_view = true;
         if (!game->debug_in_testing_area)
             game->dungeon_depth = 0;
         *out_rebuild_floor = true;
@@ -4971,6 +4975,83 @@ static i32 game_abs_i32(i32 value)
     return value < 0 ? -value : value;
 }
 
+static u32 game_dungeon_clamp_run_depth(u32 depth)
+{
+    if (depth > DUNGEON_FINAL_FLOOR_DEPTH)
+        return DUNGEON_FINAL_FLOOR_DEPTH;
+    return depth;
+}
+
+static i32 game_pick_weighted_index(RNG *rng, const u8 *weights, i32 weight_count)
+{
+    assert(rng != 0);
+    assert(weights != 0);
+    assert(weight_count > 0);
+
+    i32 total_weight = 0;
+    for (i32 idx = 0; idx < weight_count; idx++)
+        total_weight += (i32)weights[idx];
+
+    if (total_weight <= 0)
+        return 0;
+
+    i32 pick = ck_rand_int(rng, 0, total_weight);
+    i32 cumulative_weight = 0;
+    for (i32 idx = 0; idx < weight_count; idx++) {
+        cumulative_weight += (i32)weights[idx];
+        if (pick < cumulative_weight)
+            return idx;
+    }
+
+    return weight_count - 1;
+}
+
+static UNIT_ART_KIND game_dungeon_pick_enemy_kind_for_depth(RNG *rng, u32 depth)
+{
+    static const u8
+        enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT][TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
+            {34, 26, 10, 30, 0}, {28, 24, 18, 20, 10}, {22, 20, 24, 12, 22},
+            {14, 17, 30, 8, 31}, {9, 12, 34, 5, 40},
+        };
+
+    u32 depth_idx = game_dungeon_clamp_run_depth(depth);
+    i32 enemy_kind_idx = game_pick_weighted_index(rng, enemy_kind_weights[depth_idx],
+                                                  TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT);
+    return game_testing_area_enemy_unit_kinds[enemy_kind_idx];
+}
+
+static UNIT_ART_KIND game_dungeon_pick_scroll_summon_kind_for_depth(RNG *rng, u32 depth)
+{
+    static const u8 summon_kind_weights[DUNGEON_RUN_FLOOR_COUNT]
+                                       [TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT] = {
+                                           {36, 30, 18, 10, 6, 0},   {28, 24, 18, 14, 10, 6},
+                                           {18, 17, 19, 17, 16, 13}, {11, 11, 15, 21, 19, 23},
+                                           {6, 6, 12, 20, 22, 34},
+                                       };
+
+    u32 depth_idx = game_dungeon_clamp_run_depth(depth);
+    i32 summon_kind_idx = game_pick_weighted_index(rng, summon_kind_weights[depth_idx],
+                                                   TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT);
+    return game_testing_area_familiar_unit_kinds[summon_kind_idx];
+}
+
+static bool game_dungeon_cell_is_in_los_range_from_origin(const Game *game, i32 origin_x,
+                                                          i32 origin_y, i32 target_x, i32 target_y)
+{
+    if (!game_dungeon_cell_in_bounds(origin_x, origin_y))
+        return false;
+    if (!game_dungeon_cell_in_bounds(target_x, target_y))
+        return false;
+
+    i32 dx = target_x - origin_x;
+    i32 dy = target_y - origin_y;
+    i32 radius = DUNGEON_LOS_RADIUS_TILES;
+    if (dx * dx + dy * dy > radius * radius)
+        return false;
+
+    return game_dungeon_has_line_of_sight(game, origin_x, origin_y, target_x, target_y);
+}
+
 static bool game_dungeon_cell_is_offscreen_from_entry_point(i32 x, i32 y, i32 entry_x, i32 entry_y)
 {
     if (!game_dungeon_cell_in_bounds(entry_x, entry_y))
@@ -5035,7 +5116,8 @@ static bool game_dungeon_pick_random_floor_cell(Game *game, RNG *rng, bool requi
     return false;
 }
 
-static bool game_dungeon_pick_enemy_spawn_floor_cell(Game *game, RNG *rng, i16 *out_x, i16 *out_y)
+static bool game_dungeon_pick_enemy_spawn_floor_cell(Game *game, RNG *rng, i32 stairs_up_x,
+                                                     i32 stairs_up_y, i16 *out_x, i16 *out_y)
 {
     for (i32 attempt = 0; attempt < 512; attempt++) {
         i32 x = ck_rand_int(rng, 0, DUNGEON_COL_COUNT);
@@ -5043,6 +5125,8 @@ static bool game_dungeon_pick_enemy_spawn_floor_cell(Game *game, RNG *rng, i16 *
         if (!game_dungeon_cell_is_floor(game, x, y))
             continue;
         if (game_dungeon_cell_is_occupied(game, x, y))
+            continue;
+        if (game_dungeon_cell_is_in_los_range_from_origin(game, stairs_up_x, stairs_up_y, x, y))
             continue;
         if (!game_dungeon_cell_is_offscreen_from_floor_entries(game, x, y))
             continue;
@@ -5061,6 +5145,8 @@ static bool game_dungeon_pick_enemy_spawn_floor_cell(Game *game, RNG *rng, i16 *
         if (!game_dungeon_cell_is_floor(game, x, y))
             continue;
         if (game_dungeon_cell_is_occupied(game, x, y))
+            continue;
+        if (game_dungeon_cell_is_in_los_range_from_origin(game, stairs_up_x, stairs_up_y, x, y))
             continue;
         if (!game_dungeon_cell_is_offscreen_from_floor_entries(game, x, y))
             continue;
@@ -5249,7 +5335,7 @@ static bool game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
 }
 
 static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summon_kind_rng,
-                                       i32 entrance_x, i32 entrance_y)
+                                       i32 entrance_x, i32 entrance_y, u32 depth)
 {
     assert(position_rng != 0);
     assert(summon_kind_rng != 0);
@@ -5288,9 +5374,8 @@ static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summo
         if (!found)
             return false;
 
-        i32 summon_kind_idx =
-            ck_rand_int(summon_kind_rng, 0, TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT);
-        UNIT_ART_KIND summon_unit_kind = game_testing_area_familiar_unit_kinds[summon_kind_idx];
+        UNIT_ART_KIND summon_unit_kind =
+            game_dungeon_pick_scroll_summon_kind_for_depth(summon_kind_rng, depth);
         game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, summon_unit_kind);
     }
 
@@ -5364,11 +5449,13 @@ static bool game_dungeon_spawn_is_in_largest_component(const Game *game)
     return spawn_component_size > 0 && spawn_component_size == largest_component_size;
 }
 
-static bool game_dungeon_populate_test_entities(Game *game, bool include_up_stairs)
+static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool include_up_stairs)
 {
     i16 x = 0;
     i16 y = 0;
     WORLD_ART_THEME stairs_theme = game->dungeon_wall_theme;
+    i32 stairs_up_x = -1;
+    i32 stairs_up_y = -1;
 
     if (game_dungeon_pick_exit_floor_cell(game, &game->dungeon_populate_rng,
                                           DUNGEON_EXIT_MIN_PATH_STEPS, &x, &y)) {
@@ -5381,32 +5468,35 @@ static bool game_dungeon_populate_test_entities(Game *game, bool include_up_stai
     if (include_up_stairs) {
         game_dungeon_add_world_feature(game, game->player_spawn_x, game->player_spawn_y,
                                        world_art_get_up_stairs_tile(stairs_theme));
+        stairs_up_x = game->player_spawn_x;
+        stairs_up_y = game->player_spawn_y;
     }
 
     if (!game_dungeon_spawn_scrolls(game, &game->dungeon_populate_rng,
                                     &game->dungeon_scroll_kind_rng, game->player_spawn_x,
-                                    game->player_spawn_y)) {
+                                    game->player_spawn_y, depth)) {
         return false;
     }
 
     for (i32 enemy_idx = 0;
          enemy_idx < DUNGEON_ENEMY_SPAWN_COUNT && game->unit_count < DUNGEON_MAX_UNITS;
          enemy_idx++) {
-        if (!game_dungeon_pick_enemy_spawn_floor_cell(game, &game->dungeon_populate_rng, &x, &y))
+        if (!game_dungeon_pick_enemy_spawn_floor_cell(game, &game->dungeon_populate_rng,
+                                                      stairs_up_x, stairs_up_y, &x, &y))
             break;
 
         u8 orientation =
             (u8)ck_rand_int(&game->dungeon_populate_rng, 0, UNIT_ART_ORIENTATION_COUNT);
-        i32 enemy_kind_idx =
-            ck_rand_int(&game->dungeon_populate_rng, 0, TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT);
-        UNIT_ART_KIND enemy_kind = game_testing_area_enemy_unit_kinds[enemy_kind_idx];
+        UNIT_ART_KIND enemy_kind =
+            game_dungeon_pick_enemy_kind_for_depth(&game->dungeon_populate_rng, depth);
         game_dungeon_add_unit(game, x, y, enemy_kind, orientation, false);
     }
 
     return true;
 }
 
-static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool include_up_stairs)
+static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_index,
+                                              bool include_up_stairs)
 {
     game->dungeon_floor_index = floor_index;
     game_seed_dungeon_rng_streams(game);
@@ -5477,7 +5567,7 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 floor_index, bool 
     if (!game_dungeon_spawn_is_in_largest_component(game))
         return false;
 
-    if (!game_dungeon_populate_test_entities(game, include_up_stairs))
+    if (!game_dungeon_populate_test_entities(game, depth, include_up_stairs))
         return false;
     if (game->item_count != DUNGEON_SCROLLS_PER_FLOOR)
         return false;
@@ -5520,7 +5610,8 @@ static bool game_dungeon_resolve_floor_index_for_depth(Game *game, u32 depth, u3
 
         for (i32 attempt = 0; attempt < DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT; attempt++) {
             u32 candidate_floor_index = start_floor_index + (u32)attempt;
-            if (!game_build_test_dungeon_candidate(game, candidate_floor_index, include_up_stairs))
+            if (!game_build_test_dungeon_candidate(game, resolving_depth, candidate_floor_index,
+                                                   include_up_stairs))
                 continue;
 
             game->dungeon_floor_seed_by_depth[resolving_depth] = candidate_floor_index;
@@ -5548,7 +5639,7 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
         return false;
 
     bool include_up_stairs = depth > 0;
-    if (!game_build_test_dungeon_candidate(game, floor_index, include_up_stairs)) {
+    if (!game_build_test_dungeon_candidate(game, depth, floor_index, include_up_stairs)) {
         snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
                  "Failed to regenerate level %u", depth + 1);
         return false;
@@ -5621,7 +5712,7 @@ static bool game_build_debug_testing_area(Game *game)
     game_dungeon_clear_spawn_to_exit_path(game);
     game_dungeon_reset_visibility(game);
 
-    game->show_dungeon_map = true;
+    game->show_dungeon_view = true;
     game->end_menu_state = END_MENU_NONE;
     game->dungeon_depth = 0;
     game->dungeon_floor_index = 0;
@@ -6638,7 +6729,7 @@ static void game_dungeon_update_status_particles(Game *game)
         particle->position.y += particle->velocity.y * frame_time;
     }
 
-    if (!game->show_dungeon_map)
+    if (!game->show_dungeon_view)
         return;
 
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
@@ -6763,8 +6854,8 @@ static float game_round_camera_value_to_screen_px(float value, float zoom)
 
 static Camera2D game_get_active_camera(const Game *game)
 {
-    Camera2D cam = game->show_dungeon_map ? game->dungeon_cam : game->preview_cam;
-    if (!game->show_dungeon_map)
+    Camera2D cam = game->show_dungeon_view ? game->dungeon_cam : game->preview_cam;
+    if (!game->show_dungeon_view)
         return cam;
 
     cam.offset.x = roundf(cam.offset.x);
@@ -7073,7 +7164,7 @@ static bool game_debug_try_place_selected_testing_unit_at_mouse(Game *game, bool
         return false;
     if (!game_debug_testing_unit_placement_is_active(game))
         return false;
-    if (!game->show_dungeon_map)
+    if (!game->show_dungeon_view)
         return false;
     if (!game->input.pressed[INPUT_MOUSE_LEFT])
         return false;
@@ -7297,7 +7388,7 @@ static bool game_debug_testing_try_select_unit_from_action_bars(Game *game, bool
         return false;
     if (!game->debug_in_testing_area)
         return false;
-    if (!game->show_dungeon_map)
+    if (!game->show_dungeon_view)
         return false;
     if (!game->input.pressed[INPUT_MOUSE_LEFT])
         return false;
@@ -7342,7 +7433,7 @@ static bool game_debug_testing_point_is_over_unit_bars(const Game *game, Vector2
 #if GAME_DEBUG_FEATURES
     if (!game->debug_in_testing_area)
         return false;
-    if (!game->show_dungeon_map)
+    if (!game->show_dungeon_view)
         return false;
 
     Rectangle familiar_panel = game_testing_familiar_unit_bar_panel_rect();
@@ -7539,7 +7630,8 @@ static void game_draw_testing_unit_action_bars(Game *game)
 static Rectangle game_draw_player_stats_panel(Game *game)
 {
     char floor_line[32];
-    snprintf(floor_line, sizeof(floor_line), "Floor %u", game->dungeon_depth + 1);
+    snprintf(floor_line, sizeof(floor_line), "Floor %u/%d", game->dungeon_depth + 1,
+             DUNGEON_RUN_FLOOR_COUNT);
 
     float floor_size = 17.0f;
     i32 heart_count = max((i32)game->player_stats.max_health, 1);
@@ -8126,7 +8218,12 @@ static bool game_update_player(Game *game)
     WORLD_ART_ROLE stepped_feature_role = WORLD_ART_ROLE_FLOOR;
     if (game_dungeon_get_world_feature_role_at(game, next_x, next_y, &stepped_feature_role)) {
         if (stepped_feature_role == WORLD_ART_ROLE_STAIRS_DOWN) {
-            if (game->dungeon_depth + 1 < DUNGEON_MAX_FLOOR_DEPTH &&
+            if (game->dungeon_depth >= DUNGEON_FINAL_FLOOR_DEPTH) {
+                game_open_end_menu(game, END_MENU_WIN);
+                return false;
+            }
+
+            if (game->dungeon_depth + 1 < DUNGEON_RUN_FLOOR_COUNT &&
                 game_build_test_dungeon_for_depth(game, game->dungeon_depth + 1,
                                                   WORLD_ART_ROLE_STAIRS_UP)) {
                 game_center_dungeon_camera_on_player(game);
@@ -8150,7 +8247,7 @@ static bool game_update_player(Game *game)
 
 static void game_update_camera(Game *game)
 {
-    if (!game->show_dungeon_map)
+    if (!game->show_dungeon_view)
         return;
 
     game_update_dungeon_camera_offset(game);
@@ -8475,7 +8572,9 @@ static void game_draw_dungeon_hud(Game *game)
                    (Color){235, 183, 111, 255});
     }
 
-    Rectangle minimap_panel = game_draw_dungeon_minimap(game);
+    Rectangle minimap_panel = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (game->show_minimap)
+        minimap_panel = game_draw_dungeon_minimap(game);
     game_draw_familiar_command_bar(game);
     if (game->debug_in_testing_area)
         game_draw_testing_unit_action_bars(game);
@@ -8537,8 +8636,9 @@ static void game_draw_end_menu(Game *game)
     const char *title = is_win_menu ? "You Win" : "You Died";
     const char *subtitle =
         is_win_menu ? "You conquer this run of the dungeon." : "Your warlock falls in the dungeon.";
-    const char *button_text = "Restart";
-    const char *hint_text = "Click Restart or press Enter";
+    const char *button_text = is_win_menu ? "Play Again" : "Restart";
+    const char *hint_text =
+        is_win_menu ? "Click Play Again or press Enter" : "Click Restart or press Enter";
 
     Rectangle panel = game_end_menu_panel_rect();
     Rectangle button = game_end_menu_restart_button_rect(panel);
@@ -8607,7 +8707,7 @@ static bool game_start_new_dungeon_run(Game *game)
     game->player_stats = game_get_player_base_stats();
     game_player_clear_action_bar(game);
     game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
-    game->show_dungeon_map = true;
+    game->show_dungeon_view = true;
 #if GAME_DEBUG_FEATURES
     game->debug_in_testing_area = true;
     game->debug_hud_visible = game->debug_in_testing_area;
@@ -8677,7 +8777,8 @@ void game_init(Mem mem, Font font, float font_spacing)
     assert(game->world_texture.id != 0);
     SetTextureFilter(game->world_texture, TEXTURE_FILTER_POINT);
 
-    game->show_dungeon_map = true;
+    game->show_dungeon_view = true;
+    game->show_minimap = true;
     game->end_menu_state = END_MENU_NONE;
     game->debug_hud_visible = false;
     game->debug_in_testing_area = false;
@@ -8753,6 +8854,7 @@ static void game_input(Game *game)
     input->pressed[INPUT_MOUSE_RIGHT] = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
     input->pressed[INPUT_MOUSE_MIDDLE] = IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE);
     input->pressed[INPUT_BACK] = IsKeyPressed(KEY_ESCAPE);
+    input->pressed[INPUT_TOGGLE_MINIMAP] = IsKeyPressed(KEY_M);
     input->pressed[INPUT_DEBUG_TOGGLE_HUD] = IsKeyPressed(KEY_GRAVE);
 
     input->released[INPUT_MOUSE_LEFT] = IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
@@ -8775,6 +8877,9 @@ void game_update(Mem mem)
 
     if (game_update_end_menu(game))
         return;
+
+    if (game->input.pressed[INPUT_TOGGLE_MINIMAP])
+        game->show_minimap = !game->show_minimap;
 
     bool rebuild_floor = false;
     bool debug_hud_consumed_left_click = false;
@@ -8837,21 +8942,21 @@ void game_update(Mem mem)
 
             button = game_debug_hud_next_button_rect(panel, &cursor_y);
             if (!handled_click && game_point_in_rect(mouse, button)) {
-                if (game->show_dungeon_map)
+                if (game->show_dungeon_view)
                     game_adjust_dungeon_zoom(game, -DUNGEON_CAMERA_ZOOM_STEP);
                 handled_click = true;
             }
 
             button = game_debug_hud_next_button_rect(panel, &cursor_y);
             if (!handled_click && game_point_in_rect(mouse, button)) {
-                if (game->show_dungeon_map)
+                if (game->show_dungeon_view)
                     game_adjust_dungeon_zoom(game, DUNGEON_CAMERA_ZOOM_STEP);
                 handled_click = true;
             }
 
             button = game_debug_hud_next_button_rect(panel, &cursor_y);
             if (!handled_click && game_point_in_rect(mouse, button)) {
-                if (game->show_dungeon_map)
+                if (game->show_dungeon_view)
                     game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
                 handled_click = true;
             }
@@ -8881,7 +8986,7 @@ void game_update(Mem mem)
     if (placed_debug_testing_unit)
         game_center_dungeon_camera_on_player(game);
 
-    if (!game->show_dungeon_map) {
+    if (!game->show_dungeon_view) {
         float frame_time = GetFrameTime();
         if (frame_time <= 0.0f)
             frame_time = CAMERA_FALLBACK_FRAME_TIME;
@@ -8924,7 +9029,7 @@ void game_update(Mem mem)
         skipped_player_update_for_debug_action = true;
     }
 
-    if (game->show_dungeon_map && !game_debug_testing_unit_placement_is_active(game) &&
+    if (game->show_dungeon_view && !game_debug_testing_unit_placement_is_active(game) &&
         !skipped_player_update_for_debug_action) {
         player_took_turn = game_update_player(game);
     }
@@ -8959,14 +9064,14 @@ void game_render(Mem mem)
 
     ClearBackground((Color){11, 8, 7, 255});
     BeginMode2D(active_cam);
-    if (game->show_dungeon_map)
+    if (game->show_dungeon_view)
         game_draw_test_dungeon(game);
     else
         game_draw_art_previews(game);
     EndMode2D();
 
     if (!game_end_menu_is_active(game)) {
-        if (game->show_dungeon_map)
+        if (game->show_dungeon_view)
             game_draw_dungeon_hud(game);
         else if (GAME_DEBUG_FEATURES)
             game_draw_debug_hud(game);
