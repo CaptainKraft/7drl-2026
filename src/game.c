@@ -83,7 +83,7 @@
 #define DUNGEON_MAX_UNITS 64
 #define DUNGEON_CELL_COUNT (DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT)
 #define DUNGEON_MAX_FLOOR_DEPTH 512
-#define DUNGEON_RUN_FLOOR_COUNT 5
+#define DUNGEON_RUN_FLOOR_COUNT 10
 #define DUNGEON_FINAL_FLOOR_DEPTH (DUNGEON_RUN_FLOOR_COUNT - 1)
 #define DUNGEON_EXIT_MIN_PATH_STEPS 80
 #define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
@@ -92,7 +92,8 @@
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 #define DUNGEON_LOS_RADIUS_TILES 12
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
-#define DUNGEON_ENEMY_SPAWN_COUNT 7
+#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN 4
+#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MAX 10
 #define DUNGEON_SCROLLS_PER_FLOOR 10
 #define DUNGEON_PATH_UNREACHABLE 0x3fff
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
@@ -4980,6 +4981,18 @@ static u32 game_dungeon_clamp_run_depth(u32 depth)
     return depth;
 }
 
+static i32 game_dungeon_enemy_spawn_count_for_depth(u32 depth)
+{
+    u32 depth_idx = game_dungeon_clamp_run_depth(depth);
+    if (DUNGEON_FINAL_FLOOR_DEPTH <= 0)
+        return DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN;
+
+    i32 depth_span = DUNGEON_FINAL_FLOOR_DEPTH;
+    i32 spawn_span = DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MAX - DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN;
+    i32 ramp = (spawn_span * (i32)depth_idx + depth_span / 2) / depth_span;
+    return DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN + ramp;
+}
+
 static i32 game_pick_weighted_index(RNG *rng, const u8 *weights, i32 weight_count)
 {
     assert(rng != 0);
@@ -5008,8 +5021,9 @@ static UNIT_ART_KIND game_dungeon_pick_enemy_kind_for_depth(RNG *rng, u32 depth)
 {
     static const u8
         enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT][TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
-            {34, 26, 10, 30, 0}, {28, 24, 18, 20, 10}, {22, 20, 24, 12, 22},
-            {14, 17, 30, 8, 31}, {9, 12, 34, 5, 40},
+            {55, 25, 0, 20, 0},   {48, 25, 5, 22, 0},   {40, 24, 10, 22, 4},  {33, 24, 16, 20, 7},
+            {27, 22, 22, 17, 12}, {22, 20, 26, 14, 18}, {17, 17, 30, 11, 25}, {13, 14, 33, 9, 31},
+            {9, 11, 36, 7, 37},   {6, 8, 39, 5, 42},
         };
 
     u32 depth_idx = game_dungeon_clamp_run_depth(depth);
@@ -5022,9 +5036,11 @@ static UNIT_ART_KIND game_dungeon_pick_scroll_summon_kind_for_depth(RNG *rng, u3
 {
     static const u8 summon_kind_weights[DUNGEON_RUN_FLOOR_COUNT]
                                        [TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT] = {
-                                           {36, 30, 18, 10, 6, 0},   {28, 24, 18, 14, 10, 6},
-                                           {18, 17, 19, 17, 16, 13}, {11, 11, 15, 21, 19, 23},
-                                           {6, 6, 12, 20, 22, 34},
+                                           {45, 30, 20, 5, 0, 0},    {38, 28, 20, 10, 4, 0},
+                                           {32, 25, 19, 13, 9, 2},   {27, 22, 19, 15, 13, 4},
+                                           {22, 19, 19, 17, 16, 7},  {18, 16, 18, 19, 18, 11},
+                                           {14, 13, 17, 20, 20, 16}, {11, 10, 15, 21, 21, 22},
+                                           {8, 8, 13, 22, 22, 27},   {6, 6, 11, 22, 23, 32},
                                        };
 
     u32 depth_idx = game_dungeon_clamp_run_depth(depth);
@@ -5454,6 +5470,7 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
     WORLD_ART_THEME stairs_theme = game->dungeon_wall_theme;
     i32 stairs_up_x = -1;
     i32 stairs_up_y = -1;
+    i32 enemy_spawn_count = game_dungeon_enemy_spawn_count_for_depth(depth);
 
     if (game_dungeon_pick_exit_floor_cell(game, &game->dungeon_populate_rng,
                                           DUNGEON_EXIT_MIN_PATH_STEPS, &x, &y)) {
@@ -5476,8 +5493,7 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
         return false;
     }
 
-    for (i32 enemy_idx = 0;
-         enemy_idx < DUNGEON_ENEMY_SPAWN_COUNT && game->unit_count < DUNGEON_MAX_UNITS;
+    for (i32 enemy_idx = 0; enemy_idx < enemy_spawn_count && game->unit_count < DUNGEON_MAX_UNITS;
          enemy_idx++) {
         if (!game_dungeon_pick_enemy_spawn_floor_cell(game, &game->dungeon_populate_rng,
                                                       stairs_up_x, stairs_up_y, &x, &y))
@@ -5569,7 +5585,8 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_i
         return false;
     if (game->item_count != DUNGEON_SCROLLS_PER_FLOOR)
         return false;
-    if (game->unit_count != DUNGEON_ENEMY_SPAWN_COUNT)
+    i32 expected_enemy_count = game_dungeon_enemy_spawn_count_for_depth(depth);
+    if (game->unit_count != expected_enemy_count)
         return false;
 
     game_dungeon_build_spawn_to_exit_path(game);
