@@ -137,9 +137,7 @@
 #define DUNGEON_MINIMAP_MAX_WIDTH 640.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
 #define DUNGEON_MINIMAP_MARGIN 18.0f
-#define DUNGEON_MINIMAP_PANEL_PADDING 10.0f
-#define DUNGEON_MINIMAP_LABEL_SIZE 16.0f
-#define DUNGEON_MINIMAP_LABEL_GAP 6.0f
+#define DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT 4
 
 #define DUNGEON_PLAYER_PANEL_MARGIN 16.0f
 #define DUNGEON_PLAYER_PANEL_PADDING 12.0f
@@ -478,7 +476,7 @@ typedef struct {
     Font font;
     float font_spacing;
     bool show_dungeon_view;
-    bool show_minimap;
+    u8 minimap_opacity_level;
     END_MENU_STATE end_menu_state;
     bool debug_hud_visible;
     u32 debug_feature_mask;
@@ -8306,52 +8304,129 @@ static void game_adjust_dungeon_zoom(Game *game, float delta)
         clamp(game->dungeon_cam.zoom + delta, DUNGEON_CAMERA_ZOOM_MIN, DUNGEON_CAMERA_ZOOM_MAX);
 }
 
+static float game_dungeon_minimap_alpha(const Game *game)
+{
+    switch (game->minimap_opacity_level) {
+    case 1:
+        return 0.66f;
+    case 2:
+        return 0.33f;
+    case 3:
+        return 0.0f;
+    default:
+        return 1.0f;
+    }
+}
+
+static Color game_dungeon_minimap_color_alpha(Color color, float minimap_alpha)
+{
+    i32 alpha = (i32)roundf((float)color.a * minimap_alpha);
+    if (alpha < 0)
+        alpha = 0;
+    if (alpha > 255)
+        alpha = 255;
+    color.a = (u8)alpha;
+    return color;
+}
+
+static void game_rect_expand_to_include(Rectangle *rect, bool *in_out_has_rect, Rectangle value)
+{
+    assert(rect != 0);
+    assert(in_out_has_rect != 0);
+
+    if (value.width <= 0.0f || value.height <= 0.0f)
+        return;
+
+    if (!*in_out_has_rect) {
+        *rect = value;
+        *in_out_has_rect = true;
+        return;
+    }
+
+    float left = min(rect->x, value.x);
+    float top = min(rect->y, value.y);
+    float right = max(rect->x + rect->width, value.x + value.width);
+    float bottom = max(rect->y + rect->height, value.y + value.height);
+    *rect = (Rectangle){
+        .x = left,
+        .y = top,
+        .width = right - left,
+        .height = bottom - top,
+    };
+}
+
+static Rectangle game_rect_intersection(Rectangle a, Rectangle b)
+{
+    float left = max(a.x, b.x);
+    float top = max(a.y, b.y);
+    float right = min(a.x + a.width, b.x + b.width);
+    float bottom = min(a.y + a.height, b.y + b.height);
+    if (right <= left || bottom <= top)
+        return (Rectangle){0.0f, 0.0f, 0.0f, 0.0f};
+
+    return (Rectangle){
+        .x = left,
+        .y = top,
+        .width = right - left,
+        .height = bottom - top,
+    };
+}
+
 static Rectangle game_draw_dungeon_minimap(Game *game)
 {
+    float minimap_alpha = game_dungeon_minimap_alpha(game);
+    if (minimap_alpha <= 0.0f)
+        return (Rectangle){0.0f, 0.0f, 0.0f, 0.0f};
+
     float screen_w = (float)GetScreenWidth();
     float screen_h = (float)GetScreenHeight();
-    float map_max_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f) -
-                                                         (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f));
-    float map_max_h = min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f) -
-                                                          (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f));
-    map_max_w = max(map_max_w, 1.0f);
-    map_max_h = max(map_max_h, 1.0f);
+    float map_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f));
+    float map_h = min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f));
+    map_w = max(map_w, 1.0f);
+    map_h = max(map_h, 1.0f);
 
     i32 minimap_cell_px =
-        (i32)min(map_max_w / (float)DUNGEON_COL_COUNT, map_max_h / (float)DUNGEON_ROW_COUNT);
+        (i32)min(map_w / (float)DUNGEON_COL_COUNT, map_h / (float)DUNGEON_ROW_COUNT);
     minimap_cell_px = max(minimap_cell_px, 1);
 
     float cell_size = (float)minimap_cell_px;
-    float map_w = (float)DUNGEON_COL_COUNT * cell_size;
-    float map_h = (float)DUNGEON_ROW_COUNT * cell_size;
-    float panel_w = map_w + (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f);
-    float panel_h = map_h + (DUNGEON_MINIMAP_PANEL_PADDING * 2.0f);
-
-    Rectangle panel = {
-        .x = screen_w - DUNGEON_MINIMAP_MARGIN - panel_w,
+    Rectangle viewport = {
+        .x = screen_w - DUNGEON_MINIMAP_MARGIN - map_w,
         .y = DUNGEON_MINIMAP_MARGIN,
-        .width = panel_w,
-        .height = panel_h,
+        .width = map_w,
+        .height = map_h,
     };
-    panel.x = max(panel.x, DUNGEON_MINIMAP_MARGIN);
+    viewport.x = max(viewport.x, DUNGEON_MINIMAP_MARGIN);
 
-    game_draw_dungeon_ui_panel(panel, (Color){20, 15, 12, 234}, (Color){29, 22, 17, 232},
-                               (Color){133, 103, 67, 255});
-
+    Vector2 viewport_center = {
+        .x = viewport.x + viewport.width * 0.5f,
+        .y = viewport.y + viewport.height * 0.5f,
+    };
     Vector2 map_origin = {
-        .x = panel.x + DUNGEON_MINIMAP_PANEL_PADDING,
-        .y = panel.y + DUNGEON_MINIMAP_PANEL_PADDING,
+        .x = viewport_center.x - ((float)game->player_x + 0.5f) * cell_size,
+        .y = viewport_center.y - ((float)game->player_y + 0.5f) * cell_size,
     };
-    DrawRectangleRec((Rectangle){map_origin.x, map_origin.y, map_w, map_h}, (Color){10, 8, 7, 255});
 
-    Color floor_visible = (Color){161, 148, 126, 255};
-    Color floor_explored = (Color){97, 88, 74, 255};
-    Color wall_visible = (Color){121, 108, 88, 255};
-    Color wall_explored = (Color){70, 60, 47, 255};
-    Color exit_visible = (Color){241, 195, 92, 255};
-    Color exit_explored = (Color){150, 111, 58, 255};
-    Color item_visible = (Color){128, 220, 165, 255};
-    Color item_explored = (Color){71, 130, 97, 255};
+    Color floor_visible =
+        game_dungeon_minimap_color_alpha((Color){161, 148, 126, 255}, minimap_alpha);
+    Color floor_explored =
+        game_dungeon_minimap_color_alpha((Color){97, 88, 74, 255}, minimap_alpha);
+    Color wall_visible =
+        game_dungeon_minimap_color_alpha((Color){121, 108, 88, 255}, minimap_alpha);
+    Color wall_explored = game_dungeon_minimap_color_alpha((Color){70, 60, 47, 255}, minimap_alpha);
+    Color exit_visible =
+        game_dungeon_minimap_color_alpha((Color){241, 195, 92, 255}, minimap_alpha);
+    Color exit_explored =
+        game_dungeon_minimap_color_alpha((Color){150, 111, 58, 255}, minimap_alpha);
+    Color item_visible =
+        game_dungeon_minimap_color_alpha((Color){128, 220, 165, 255}, minimap_alpha);
+    Color item_explored =
+        game_dungeon_minimap_color_alpha((Color){71, 130, 97, 255}, minimap_alpha);
+
+    Rectangle minimap_bounds = {0.0f, 0.0f, 0.0f, 0.0f};
+    bool has_minimap_bounds = false;
+
+    BeginScissorMode((i32)viewport.x, (i32)viewport.y, (i32)viewport.width, (i32)viewport.height);
 
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
@@ -8368,9 +8443,14 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
             if (game->has_exit && x == game->exit_x && y == game->exit_y)
                 tint = visible ? exit_visible : exit_explored;
 
-            DrawRectangleRec((Rectangle){map_origin.x + (float)x * cell_size,
-                                         map_origin.y + (float)y * cell_size, cell_size, cell_size},
-                             tint);
+            Rectangle tile_rect = {
+                .x = map_origin.x + (float)x * cell_size,
+                .y = map_origin.y + (float)y * cell_size,
+                .width = cell_size,
+                .height = cell_size,
+            };
+            DrawRectangleRec(tile_rect, tint);
+            game_rect_expand_to_include(&minimap_bounds, &has_minimap_bounds, tile_rect);
         }
     }
 
@@ -8392,12 +8472,12 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
         };
 
         DrawRectangleRec(marker, item_tint);
+        game_rect_expand_to_include(&minimap_bounds, &has_minimap_bounds, marker);
         if (item_marker_size > 2.0f)
-            DrawRectangleLinesEx(marker, 1.0f, (Color){31, 56, 44, 255});
+            DrawRectangleLinesEx(
+                marker, 1.0f,
+                game_dungeon_minimap_color_alpha((Color){31, 56, 44, 255}, minimap_alpha));
     }
-
-    DrawRectangleLinesEx((Rectangle){map_origin.x, map_origin.y, map_w, map_h}, 1.0f,
-                         (Color){90, 70, 46, 255});
 
     float enemy_radius = max(1.0f, cell_size * 0.5f);
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
@@ -8414,8 +8494,14 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
         Color unit_fill =
             unit.is_friendly ? (Color){124, 209, 158, 255} : (Color){230, 104, 92, 255};
         Color unit_border = unit.is_friendly ? (Color){44, 91, 66, 255} : (Color){87, 32, 31, 255};
+        unit_fill = game_dungeon_minimap_color_alpha(unit_fill, minimap_alpha);
+        unit_border = game_dungeon_minimap_color_alpha(unit_border, minimap_alpha);
 
         DrawPoly(enemy_center, 4, enemy_radius, 45.0f, unit_fill);
+        game_rect_expand_to_include(&minimap_bounds, &has_minimap_bounds,
+                                    (Rectangle){enemy_center.x - enemy_radius,
+                                                enemy_center.y - enemy_radius, enemy_radius * 2.0f,
+                                                enemy_radius * 2.0f});
         if (enemy_radius > 1.5f) {
             DrawPolyLinesEx(enemy_center, 4, enemy_radius, 45.0f, 1.0f, unit_border);
         }
@@ -8430,11 +8516,21 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
         float pulse_t = 0.5f + 0.5f * sinf((float)GetTime() * 6.0f);
         float radius = max(2.0f, cell_size * 0.65f);
         radius *= 0.85f + (0.45f * pulse_t);
-        DrawPoly(player_center, 4, radius, 45.0f, (Color){255, 224, 121, 255});
-        DrawPolyLinesEx(player_center, 4, radius, 45.0f, 1.0f, (Color){101, 63, 24, 255});
+        DrawPoly(player_center, 4, radius, 45.0f,
+                 game_dungeon_minimap_color_alpha((Color){255, 224, 121, 255}, minimap_alpha));
+        DrawPolyLinesEx(player_center, 4, radius, 45.0f, 1.0f,
+                        game_dungeon_minimap_color_alpha((Color){101, 63, 24, 255}, minimap_alpha));
+        game_rect_expand_to_include(&minimap_bounds, &has_minimap_bounds,
+                                    (Rectangle){player_center.x - radius, player_center.y - radius,
+                                                radius * 2.0f, radius * 2.0f});
     }
 
-    return panel;
+    EndScissorMode();
+
+    if (!has_minimap_bounds)
+        return (Rectangle){0.0f, 0.0f, 0.0f, 0.0f};
+
+    return game_rect_intersection(minimap_bounds, viewport);
 }
 
 static void game_draw_debug_hud_button(Game *game, Rectangle button, const char *label, bool active)
@@ -8573,8 +8669,7 @@ static void game_draw_dungeon_hud(Game *game)
     }
 
     Rectangle minimap_panel = {0.0f, 0.0f, 0.0f, 0.0f};
-    if (game->show_minimap)
-        minimap_panel = game_draw_dungeon_minimap(game);
+    minimap_panel = game_draw_dungeon_minimap(game);
     game_draw_familiar_command_bar(game);
     if (game->debug_in_testing_area)
         game_draw_testing_unit_action_bars(game);
@@ -8778,7 +8873,7 @@ void game_init(Mem mem, Font font, float font_spacing)
     SetTextureFilter(game->world_texture, TEXTURE_FILTER_POINT);
 
     game->show_dungeon_view = true;
-    game->show_minimap = true;
+    game->minimap_opacity_level = 0;
     game->end_menu_state = END_MENU_NONE;
     game->debug_hud_visible = false;
     game->debug_in_testing_area = false;
@@ -8879,7 +8974,8 @@ void game_update(Mem mem)
         return;
 
     if (game->input.pressed[INPUT_TOGGLE_MINIMAP])
-        game->show_minimap = !game->show_minimap;
+        game->minimap_opacity_level =
+            (u8)((game->minimap_opacity_level + 1) % DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT);
 
     bool rebuild_floor = false;
     bool debug_hud_consumed_left_click = false;
