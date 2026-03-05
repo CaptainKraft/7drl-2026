@@ -367,6 +367,7 @@ typedef struct {
     bool attack_anim_active;
     bool has_acted_this_turn;
     bool skip_friendly_turn_once;
+    bool skip_enemy_turn_once;
     bool is_returning_to_player;
     u8 dash_cooldown_turns;
 } Dungeon_Unit;
@@ -1483,6 +1484,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .attack_anim_active = false,
         .has_acted_this_turn = false,
         .skip_friendly_turn_once = false,
+        .skip_enemy_turn_once = false,
         .is_returning_to_player = false,
         .dash_cooldown_turns = 0,
     };
@@ -2379,6 +2381,7 @@ static void game_dungeon_spawn_slime_children(Game *game, const Dungeon_Unit *de
         child->stats.damage = defeated_unit->stats.damage;
         child->is_awake = defeated_unit->is_awake;
         child->turns_out_of_player_los = 0;
+        child->skip_enemy_turn_once = !child->is_friendly;
         spawned_count++;
     }
 }
@@ -2618,6 +2621,7 @@ static void game_dungeon_process_troll_blood_revives(Game *game)
         game_dungeon_clear_webbed_status(revived);
         revived->has_troll_blood = true;
         revived->shaman_heal_cooldown_turns = 0;
+        revived->skip_enemy_turn_once = !revived->is_friendly;
 
         entry->active = false;
         revived_unit = true;
@@ -4539,8 +4543,18 @@ static void game_dungeon_take_enemy_turns(Game *game)
     if (game->unit_count <= 0)
         return;
 
-    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++)
-        game->units[unit_idx].has_acted_this_turn = false;
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        unit->has_acted_this_turn = false;
+
+        if (unit->is_friendly)
+            continue;
+        if (!unit->skip_enemy_turn_once)
+            continue;
+
+        unit->has_acted_this_turn = true;
+        unit->skip_enemy_turn_once = false;
+    }
 
     while (true) {
         i32 next_enemy_idx = -1;
@@ -4551,6 +4565,11 @@ static void game_dungeon_take_enemy_turns(Game *game)
                 continue;
             if (unit->has_acted_this_turn)
                 continue;
+            if (unit->skip_enemy_turn_once) {
+                unit->has_acted_this_turn = true;
+                unit->skip_enemy_turn_once = false;
+                continue;
+            }
 
             next_enemy_idx = unit_idx;
             break;
