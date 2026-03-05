@@ -100,7 +100,7 @@ This document will act as a specification for entities and AI behaviors.
 
 ### Spider
 - 1hp, 0dmg
-- defend ranged, follow range: 3-5, defense range: 5
+- defend ranged, follow range: 3-5, defense range: 7
 - attacks non-webbed targets and applies webbed on attack
 
 ### Bat
