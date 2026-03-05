@@ -169,7 +169,7 @@
 #define DEBUG_HUD_BUTTON_HEIGHT 30.0f
 #define DEBUG_HUD_BUTTON_GAP 6.0f
 #define DEBUG_HUD_SECTION_GAP 10.0f
-#define DEBUG_HUD_UTILITY_BUTTON_COUNT 6
+#define DEBUG_HUD_UTILITY_BUTTON_COUNT 1
 
 #define TESTING_UNIT_BAR_SLOT_SIZE 56.0f
 #define TESTING_UNIT_BAR_SLOT_SIZE_MIN 12.0f
@@ -265,7 +265,7 @@ typedef struct {
 static const Debug_Feature_Def game_debug_feature_defs[NUM_DEBUG_FEATURES] = {
     {
         .feature = DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH,
-        .name = "Spawn->Exit path",
+        .name = "Exit Path",
         .default_enabled = false,
     },
     {
@@ -276,10 +276,8 @@ static const Debug_Feature_Def game_debug_feature_defs[NUM_DEBUG_FEATURES] = {
 };
 
 typedef enum {
-    DEBUG_ACTION_TOGGLE_VIEW,
-    DEBUG_ACTION_NEXT_FLOOR,
-    DEBUG_ACTION_WIN_MENU,
     DEBUG_ACTION_TOGGLE_TESTING_AREA,
+    DEBUG_ACTION_TOGGLE_VIEW,
     NUM_DEBUG_ACTIONS,
 } DEBUG_ACTION;
 
@@ -290,20 +288,12 @@ typedef struct {
 
 static const Debug_Action_Def game_debug_action_defs[NUM_DEBUG_ACTIONS] = {
     {
-        .action = DEBUG_ACTION_TOGGLE_VIEW,
-        .name = "Toggle dungeon/preview",
-    },
-    {
-        .action = DEBUG_ACTION_NEXT_FLOOR,
-        .name = "Generate next floor",
-    },
-    {
-        .action = DEBUG_ACTION_WIN_MENU,
-        .name = "Show win menu",
-    },
-    {
         .action = DEBUG_ACTION_TOGGLE_TESTING_AREA,
-        .name = "Toggle testing area",
+        .name = "Test Area",
+    },
+    {
+        .action = DEBUG_ACTION_TOGGLE_VIEW,
+        .name = "Sprite Preview",
     },
 };
 
@@ -565,6 +555,7 @@ typedef struct {
 
 static void game_player_clear_action_bar(Game *game);
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y);
+static u64 game_next_dungeon_seed(Game *game);
 
 static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
@@ -857,20 +848,6 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
 {
 #if GAME_DEBUG_FEATURES
     switch (action) {
-    case DEBUG_ACTION_TOGGLE_VIEW:
-        game->show_dungeon_view = !game->show_dungeon_view;
-        break;
-    case DEBUG_ACTION_NEXT_FLOOR:
-        if (game->debug_in_testing_area)
-            break;
-        if (game->dungeon_depth + 1 < DUNGEON_RUN_FLOOR_COUNT) {
-            game->dungeon_depth++;
-            *out_rebuild_floor = true;
-        }
-        break;
-    case DEBUG_ACTION_WIN_MENU:
-        game_open_end_menu(game, END_MENU_WIN);
-        break;
     case DEBUG_ACTION_TOGGLE_TESTING_AREA:
         game->debug_in_testing_area = !game->debug_in_testing_area;
         game->debug_testing_unit_placement_active = false;
@@ -880,6 +857,17 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
         if (!game->debug_in_testing_area)
             game->dungeon_depth = 0;
         *out_rebuild_floor = true;
+        break;
+    case DEBUG_ACTION_TOGGLE_VIEW:
+        if (game->debug_in_testing_area) {
+            game->show_dungeon_view = !game->show_dungeon_view;
+        } else {
+            game->dungeon_seed = game_next_dungeon_seed(game);
+            game->dungeon_floor_index = 0;
+            game->dungeon_floor_seed_count = 0;
+            game->show_dungeon_view = true;
+            *out_rebuild_floor = true;
+        }
         break;
     default:
         break;
@@ -8538,12 +8526,6 @@ static void game_update_camera(Game *game)
         game->dungeon_cam.target.y = desired_target.y;
 }
 
-static void game_adjust_dungeon_zoom(Game *game, float delta)
-{
-    game->dungeon_cam.zoom =
-        clamp(game->dungeon_cam.zoom + delta, DUNGEON_CAMERA_ZOOM_MIN, DUNGEON_CAMERA_ZOOM_MAX);
-}
-
 static float game_dungeon_minimap_alpha(const Game *game)
 {
     switch (game->minimap_opacity_level) {
@@ -8853,9 +8835,8 @@ static void game_draw_debug_hud(Game *game)
     for (i32 idx = 0; idx < NUM_DEBUG_ACTIONS; idx++) {
         const Debug_Action_Def *def = &game_debug_action_defs[idx];
         const char *label = def->name;
-        if (def->action == DEBUG_ACTION_TOGGLE_TESTING_AREA) {
-            label = game->debug_in_testing_area ? "Return to dungeon run" : "Enter testing area";
-        }
+        if (def->action == DEBUG_ACTION_TOGGLE_VIEW && !game->debug_in_testing_area)
+            label = "New Seed";
         Rectangle button = game_debug_hud_next_button_rect(panel, &cursor_y);
         game_draw_debug_hud_button(game, button, label, false);
     }
@@ -8865,17 +8846,6 @@ static void game_draw_debug_hud(Game *game)
     i32 wall_theme_idx = clamp((i32)game->dungeon_wall_theme, 0, WORLD_ART_THEME_COUNT - 1);
     snprintf(line, sizeof(line), "Cycle wall theme (%s)",
              world_art_wall_theme_display_names[wall_theme_idx]);
-    game_draw_debug_hud_button(game, game_debug_hud_next_button_rect(panel, &cursor_y), line,
-                               false);
-    game_draw_debug_hud_button(game, game_debug_hud_next_button_rect(panel, &cursor_y),
-                               "Template previous", false);
-    game_draw_debug_hud_button(game, game_debug_hud_next_button_rect(panel, &cursor_y),
-                               "Template next", false);
-    game_draw_debug_hud_button(game, game_debug_hud_next_button_rect(panel, &cursor_y), "Zoom out",
-                               false);
-    game_draw_debug_hud_button(game, game_debug_hud_next_button_rect(panel, &cursor_y), "Zoom in",
-                               false);
-    snprintf(line, sizeof(line), "Zoom reset (%.2fx)", game->dungeon_cam.zoom);
     game_draw_debug_hud_button(game, game_debug_hud_next_button_rect(panel, &cursor_y), line,
                                false);
 
@@ -9245,55 +9215,6 @@ void game_update(Mem mem)
                 i32 next_theme = ((i32)game->dungeon_wall_theme + 1) % WORLD_ART_THEME_COUNT;
                 game->dungeon_wall_theme = (WORLD_ART_THEME)next_theme;
                 game_dungeon_sync_stairs_theme(game);
-                handled_click = true;
-            }
-
-            button = game_debug_hud_next_button_rect(panel, &cursor_y);
-            if (!handled_click && game_point_in_rect(mouse, button)) {
-                i32 next_template =
-                    (game->dungeon_template_index - 1 + DUNGEON_HBW_TEMPLATE_COUNT) %
-                    DUNGEON_HBW_TEMPLATE_COUNT;
-                if (game_dungeon_load_template(game, next_template)) {
-                    game->dungeon_floor_index = 0;
-                    game->dungeon_depth = 0;
-                    game->dungeon_floor_seed_count = 0;
-                    rebuild_floor = true;
-                }
-                handled_click = true;
-            }
-
-            button = game_debug_hud_next_button_rect(panel, &cursor_y);
-            if (!handled_click && game_point_in_rect(mouse, button)) {
-                i32 next_template =
-                    (game->dungeon_template_index + 1 + DUNGEON_HBW_TEMPLATE_COUNT) %
-                    DUNGEON_HBW_TEMPLATE_COUNT;
-                if (game_dungeon_load_template(game, next_template)) {
-                    game->dungeon_floor_index = 0;
-                    game->dungeon_depth = 0;
-                    game->dungeon_floor_seed_count = 0;
-                    rebuild_floor = true;
-                }
-                handled_click = true;
-            }
-
-            button = game_debug_hud_next_button_rect(panel, &cursor_y);
-            if (!handled_click && game_point_in_rect(mouse, button)) {
-                if (game->show_dungeon_view)
-                    game_adjust_dungeon_zoom(game, -DUNGEON_CAMERA_ZOOM_STEP);
-                handled_click = true;
-            }
-
-            button = game_debug_hud_next_button_rect(panel, &cursor_y);
-            if (!handled_click && game_point_in_rect(mouse, button)) {
-                if (game->show_dungeon_view)
-                    game_adjust_dungeon_zoom(game, DUNGEON_CAMERA_ZOOM_STEP);
-                handled_click = true;
-            }
-
-            button = game_debug_hud_next_button_rect(panel, &cursor_y);
-            if (!handled_click && game_point_in_rect(mouse, button)) {
-                if (game->show_dungeon_view)
-                    game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
                 handled_click = true;
             }
 
