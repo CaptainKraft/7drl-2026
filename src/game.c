@@ -347,8 +347,10 @@ typedef struct {
     bool is_diseased;
     float diseased_particle_spawn_timer;
     bool is_poisoned;
+    bool poisoned_applied_this_turn;
     float poisoned_particle_spawn_timer;
     bool is_webbed;
+    bool webbed_applied_this_turn;
     bool webbed_skip_next_turn;
     u8 webbed_turns_remaining;
     bool has_troll_blood;
@@ -1209,6 +1211,7 @@ static void game_dungeon_clear_webbed_status(Dungeon_Unit *unit)
     assert(unit != 0);
 
     unit->is_webbed = false;
+    unit->webbed_applied_this_turn = false;
     unit->webbed_skip_next_turn = false;
     unit->webbed_turns_remaining = 0;
 }
@@ -1238,6 +1241,7 @@ static void game_dungeon_apply_poisoned_status(Dungeon_Unit *unit)
         return;
 
     unit->is_poisoned = true;
+    unit->poisoned_applied_this_turn = true;
     unit->poisoned_particle_spawn_timer = 0.0f;
 }
 
@@ -1249,6 +1253,7 @@ static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
         return;
 
     unit->is_webbed = true;
+    unit->webbed_applied_this_turn = true;
     unit->webbed_skip_next_turn = true;
     unit->webbed_turns_remaining = DUNGEON_WEBBED_DURATION_TURNS;
 }
@@ -1463,8 +1468,10 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .is_diseased = false,
         .diseased_particle_spawn_timer = 0.0f,
         .is_poisoned = false,
+        .poisoned_applied_this_turn = false,
         .poisoned_particle_spawn_timer = 0.0f,
         .is_webbed = false,
+        .webbed_applied_this_turn = false,
         .webbed_skip_next_turn = false,
         .webbed_turns_remaining = 0,
         .has_troll_blood = kind == UNIT_ART_TROLL,
@@ -1486,7 +1493,7 @@ static __uint128_t game_make_seed128(u64 seed)
 
 static void game_seed_run_seed_rng(Game *game)
 {
-    RNG run_seed_rng = {.seed = game_make_seed128(DUNGEON_SEED)};
+    RNG run_seed_rng = {.seed = game_make_seed128(game->dungeon_seed)};
     game->dungeon_run_seed_rng = ck_rng_fork(&run_seed_rng, DUNGEON_RNG_STREAM_RUN_SEED);
 }
 
@@ -2646,6 +2653,7 @@ static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon
         restored->is_diseased = false;
         restored->diseased_particle_spawn_timer = 0.0f;
         restored->is_poisoned = false;
+        restored->poisoned_applied_this_turn = false;
         restored->poisoned_particle_spawn_timer = 0.0f;
         restored->last_damaged_player_event = 0;
         game_dungeon_clear_webbed_status(restored);
@@ -2685,6 +2693,7 @@ static void game_dungeon_process_troll_blood_revives(Game *game)
         revived->is_diseased = false;
         revived->diseased_particle_spawn_timer = 0.0f;
         revived->is_poisoned = false;
+        revived->poisoned_applied_this_turn = false;
         revived->poisoned_particle_spawn_timer = 0.0f;
         game_dungeon_clear_webbed_status(revived);
         revived->has_troll_blood = true;
@@ -4595,6 +4604,12 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
             continue;
         }
 
+        if (unit->poisoned_applied_this_turn) {
+            unit->poisoned_applied_this_turn = false;
+            unit_idx++;
+            continue;
+        }
+
         if (game_dungeon_apply_damage_to_unit(game, unit_idx, DUNGEON_POISON_DAMAGE_PER_TURN,
                                               DAMAGE_KIND_NORMAL)) {
             continue;
@@ -4673,7 +4688,10 @@ static void game_dungeon_take_enemy_turns(Game *game)
             continue;
 
         if (unit->is_webbed) {
-            if (unit->webbed_turns_remaining == 0) {
+            if (unit->webbed_applied_this_turn) {
+                unit->webbed_applied_this_turn = false;
+                continue;
+            } else if (unit->webbed_turns_remaining == 0) {
                 game_dungeon_clear_webbed_status(unit);
             } else {
                 bool skip_turn = unit->webbed_skip_next_turn;
@@ -9092,7 +9110,11 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->debug_testing_unit_placement_kind = (u8)game_testing_area_enemy_unit_kinds[0];
     game_debug_reset_feature_defaults(game);
     game->dungeon_wall_theme = WORLD_ART_THEME_1;
+#if defined(PLATFORM_WEB)
+    game->dungeon_seed = (u64)(GetTime() * 1000000.0) ^ 0x7d2602a5f3d91c4bull;
+#else
     game->dungeon_seed = DUNGEON_SEED;
+#endif
     game->dungeon_template_index = 0;
     game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
     game_seed_run_seed_rng(game);
