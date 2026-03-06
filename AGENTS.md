@@ -36,5 +36,7 @@ arena_release(arena); // Free arena
   approach.
 - **File IO**: Use Raylib file helpers (LoadFileText/SaveFileText/FileExists/etc.) instead of stdio.
 - **Graphics**: Raylib with custom framebuffer rendering
+- **UI Shapes**: Do not use rounded corners anywhere; all UI panels, cards, and buttons should be rectangular.
+- **Pixel Art Scale**: Keep visuals at a consistent pixel-art scale. Use integer scale multiples of source art and avoid subpixel placement/scaling for sprites.
 - **Frame rate**: Fixed timestep at 60 FPS
 - **Data format**: Do not use JSON anywhere in this project

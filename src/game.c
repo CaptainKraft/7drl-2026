@@ -148,13 +148,21 @@
 #define DUNGEON_PLAYER_PANEL_HEART_SIZE ((float)ITEM_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
 #define DUNGEON_PLAYER_PANEL_HEART_GAP 4.0f
 
-#define DUNGEON_ACTION_BAR_SLOT_COUNT 5
+#define PLAYER_CLASS_FAMILIAR_COUNT 3
+#define DUNGEON_ACTION_BAR_SLOT_COUNT PLAYER_CLASS_FAMILIAR_COUNT
 #define DUNGEON_ACTION_BAR_NO_SLOT (-1)
 #define DUNGEON_ACTION_BAR_ITEM_SIZE ((float)UNIT_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
 #define DUNGEON_ACTION_BAR_SLOT_SIZE (DUNGEON_ACTION_BAR_ITEM_SIZE + 4.0f)
 #define DUNGEON_ACTION_BAR_SLOT_GAP 4.0f
 #define DUNGEON_ACTION_BAR_PANEL_PADDING 6.0f
 #define DUNGEON_ACTION_BAR_BOTTOM_MARGIN 14.0f
+
+#define DUNGEON_CLASS_MENU_PANEL_MARGIN 20.0f
+#define DUNGEON_CLASS_MENU_CARD_GAP 16.0f
+#define DUNGEON_CLASS_MENU_CARD_PADDING 10.0f
+#define DUNGEON_CLASS_MENU_CARD_ICON_SIZE DUNGEON_ACTION_BAR_ITEM_SIZE
+#define DUNGEON_CLASS_MENU_FAMILIAR_ICON_SIZE DUNGEON_ACTION_BAR_ITEM_SIZE
+#define DUNGEON_CLASS_MENU_FAMILIAR_ICON_GAP 8.0f
 
 #define DUNGEON_FAMILIAR_COMMAND_COUNT 2
 #define DUNGEON_FAMILIAR_COMMAND_BUTTON_HEIGHT 28.0f
@@ -309,6 +317,12 @@ typedef enum {
     END_MENU_DEATH,
     END_MENU_WIN,
 } END_MENU_STATE;
+
+typedef enum {
+    PLAYER_CLASS_NONE,
+    PLAYER_CLASS_WARLOCK,
+    PLAYER_CLASS_DRUID,
+} PLAYER_CLASS;
 
 typedef struct {
     i16 x;
@@ -539,6 +553,7 @@ typedef struct {
     bool player_move_anim_active;
     bool player_attack_anim_active;
     u8 player_orientation;
+    PLAYER_CLASS player_class;
     Unit_Stats player_stats;
     bool player_is_webbed;
     bool player_webbed_applied_this_turn;
@@ -605,9 +620,43 @@ static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
 #define DUNGEON_HBW_TEMPLATE_COUNT                                                                 \
     ((i32)(sizeof(game_dungeon_hbw_templates) / sizeof(game_dungeon_hbw_templates[0])))
 
-static const UNIT_ART_KIND game_testing_area_familiar_unit_kinds[] = {
+static const UNIT_ART_KIND game_warlock_familiar_unit_kinds[PLAYER_CLASS_FAMILIAR_COUNT] = {
     UNIT_ART_IMP,
     UNIT_ART_BEHOLDER,
+    UNIT_ART_REAPER,
+};
+
+static const UNIT_ART_KIND game_druid_familiar_unit_kinds[PLAYER_CLASS_FAMILIAR_COUNT] = {
+    UNIT_ART_PHOENIX,
+    UNIT_ART_TREANT,
+    UNIT_ART_GRIFFON,
+};
+
+typedef struct {
+    PLAYER_CLASS player_class;
+    UNIT_ART_KIND class_unit_kind;
+    const UNIT_ART_KIND *familiar_unit_kinds;
+} Player_Class_Def;
+
+static const Player_Class_Def game_player_class_defs[] = {
+    {
+        .player_class = PLAYER_CLASS_WARLOCK,
+        .class_unit_kind = UNIT_ART_WARLOCK,
+        .familiar_unit_kinds = game_warlock_familiar_unit_kinds,
+    },
+    {
+        .player_class = PLAYER_CLASS_DRUID,
+        .class_unit_kind = UNIT_ART_DRUID,
+        .familiar_unit_kinds = game_druid_familiar_unit_kinds,
+    },
+};
+
+#define PLAYER_CLASS_COUNT                                                                         \
+    ((i32)(sizeof(game_player_class_defs) / sizeof(game_player_class_defs[0])))
+
+static const UNIT_ART_KIND game_testing_area_familiar_unit_kinds[] = {
+    UNIT_ART_IMP,     UNIT_ART_BEHOLDER, UNIT_ART_REAPER,
+    UNIT_ART_PHOENIX, UNIT_ART_TREANT,   UNIT_ART_GRIFFON,
 };
 
 static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
@@ -627,6 +676,12 @@ static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
 #define TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT TESTING_AREA_FAMILIAR_KIND_COUNT
 #define TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT TESTING_AREA_ENEMY_KIND_COUNT
 
+_Static_assert((sizeof(game_warlock_familiar_unit_kinds) /
+                sizeof(game_warlock_familiar_unit_kinds[0])) == PLAYER_CLASS_FAMILIAR_COUNT,
+               "Warlock familiars must fill the action bar");
+_Static_assert((sizeof(game_druid_familiar_unit_kinds) /
+                sizeof(game_druid_familiar_unit_kinds[0])) == PLAYER_CLASS_FAMILIAR_COUNT,
+               "Druid familiars must fill the action bar");
 _Static_assert(TESTING_AREA_FAMILIAR_KIND_COUNT > 0,
                "Testing area familiar list must not be empty");
 _Static_assert(TESTING_AREA_ENEMY_KIND_COUNT > 0, "Testing area enemy list must not be empty");
@@ -661,6 +716,56 @@ static bool game_testing_area_unit_kind_in_list(UNIT_ART_KIND kind,
     }
 
     return false;
+}
+
+static bool game_player_class_is_valid(PLAYER_CLASS player_class)
+{
+    return player_class == PLAYER_CLASS_WARLOCK || player_class == PLAYER_CLASS_DRUID;
+}
+
+static const Player_Class_Def *game_player_class_get_def(PLAYER_CLASS player_class)
+{
+    for (i32 idx = 0; idx < PLAYER_CLASS_COUNT; idx++) {
+        if (game_player_class_defs[idx].player_class == player_class)
+            return &game_player_class_defs[idx];
+    }
+
+    return 0;
+}
+
+static bool game_player_class_get_familiar_unit_kinds(PLAYER_CLASS player_class,
+                                                      const UNIT_ART_KIND **out_unit_kinds)
+{
+    assert(out_unit_kinds != 0);
+
+    const Player_Class_Def *class_def = game_player_class_get_def(player_class);
+    if (class_def == 0) {
+        *out_unit_kinds = 0;
+        return false;
+    }
+
+    *out_unit_kinds = class_def->familiar_unit_kinds;
+    return true;
+}
+
+static UNIT_ART_KIND game_player_class_get_unit_kind(PLAYER_CLASS player_class)
+{
+    const Player_Class_Def *class_def = game_player_class_get_def(player_class);
+    if (class_def == 0)
+        return UNIT_ART_WARLOCK;
+    return class_def->class_unit_kind;
+}
+
+static const char *game_player_class_get_lower_name(PLAYER_CLASS player_class)
+{
+    switch (player_class) {
+    case PLAYER_CLASS_WARLOCK:
+        return "warlock";
+    case PLAYER_CLASS_DRUID:
+        return "druid";
+    default:
+        return "adventurer";
+    }
 }
 
 static bool game_testing_area_unit_kind_is_implemented(bool is_friendly, UNIT_ART_KIND kind)
@@ -789,6 +894,11 @@ static void game_debug_reset_feature_defaults(Game *game)
 static bool game_end_menu_is_active(const Game *game)
 {
     return game->end_menu_state != END_MENU_NONE;
+}
+
+static bool game_class_menu_is_active(const Game *game)
+{
+    return !game_player_class_is_valid(game->player_class);
 }
 
 static void game_open_end_menu(Game *game, END_MENU_STATE menu_state)
@@ -1402,9 +1512,9 @@ static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
     case UNIT_ART_REAPER:
         return game_make_unit_stats(5, 3);
     case UNIT_ART_PHOENIX:
-        return game_make_unit_stats(7, 2);
+        return game_make_unit_stats(5, 3);
     case UNIT_ART_GRIFFON:
-        return game_make_unit_stats(6, 2);
+        return game_make_unit_stats(5, 3);
     case UNIT_ART_MAN_EATER:
         return game_make_unit_stats(7, 3);
     case UNIT_ART_BEETLE:
@@ -1412,7 +1522,7 @@ static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
     case UNIT_ART_MUMMY:
         return game_make_unit_stats(6, 2);
     case UNIT_ART_TREANT:
-        return game_make_unit_stats(9, 2);
+        return game_make_unit_stats(5, 3);
     case UNIT_ART_GOBLIN_GRUNT:
         return game_make_unit_stats(3, 2);
     case UNIT_ART_GOBLIN_SHAMAN:
@@ -1458,6 +1568,11 @@ static UNIT_AI_KIND game_get_unit_ai_kind(UNIT_ART_KIND kind)
     case UNIT_ART_GOBLIN_GRUNT:
     case UNIT_ART_GOBLIN_WARRIOR:
     case UNIT_ART_TROLL:
+    case UNIT_ART_IMP:
+    case UNIT_ART_REAPER:
+    case UNIT_ART_PHOENIX:
+    case UNIT_ART_TREANT:
+    case UNIT_ART_GRIFFON:
     case UNIT_ART_DEATH_KNIGHT:
     case UNIT_ART_SLIME:
     case UNIT_ART_MINOTAUR:
@@ -6443,7 +6558,7 @@ static void game_draw_unit_art_preview(Game *game, Vector2 origin)
         .width = content_size.x + (UNIT_PREVIEW_CELL_PADDING_X * 2.0f),
         .height = content_size.y + (UNIT_PREVIEW_CELL_PADDING_Y * 2.0f),
     };
-    DrawRectangleRounded(content_panel, 0.04f, 8, (Color){20, 33, 38, 255});
+    DrawRectangleRec(content_panel, (Color){20, 33, 38, 255});
     DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
 
     int anim_frame = game_unit_anim_frame();
@@ -6456,7 +6571,7 @@ static void game_draw_unit_art_preview(Game *game, Vector2 origin)
         float cell_y = origin.y + (float)row * (cell_h + UNIT_PREVIEW_CELL_GAP_Y);
 
         Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
-        DrawRectangleRounded(panel, 0.08f, 4, (Color){32, 47, 52, 255});
+        DrawRectangleRec(panel, (Color){32, 47, 52, 255});
         DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
 
         char display_name[UNIT_ART_DISPLAY_NAME_CAP];
@@ -6523,7 +6638,7 @@ static void game_draw_item_art_preview(Game *game, Vector2 origin)
         .width = content_size.x + (ITEM_PREVIEW_CELL_PADDING_X * 2.0f),
         .height = content_size.y + (ITEM_PREVIEW_CELL_PADDING_Y * 2.0f),
     };
-    DrawRectangleRounded(content_panel, 0.04f, 8, (Color){20, 33, 38, 255});
+    DrawRectangleRec(content_panel, (Color){20, 33, 38, 255});
     DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
 
     for (i32 kind = ITEM_ART_NONE + 1; kind < NUM_ITEM_ART; kind++) {
@@ -6535,7 +6650,7 @@ static void game_draw_item_art_preview(Game *game, Vector2 origin)
         float cell_y = origin.y + (float)row * (cell_h + ITEM_PREVIEW_CELL_GAP_Y);
 
         Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
-        DrawRectangleRounded(panel, 0.08f, 4, (Color){32, 47, 52, 255});
+        DrawRectangleRec(panel, (Color){32, 47, 52, 255});
         DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
 
         char display_name[ITEM_ART_DISPLAY_NAME_CAP];
@@ -6622,7 +6737,7 @@ static void game_draw_world_art_preview(Game *game, Vector2 origin)
         .width = content_size.x + (WORLD_PREVIEW_CELL_PADDING_X * 2.0f),
         .height = content_size.y + (WORLD_PREVIEW_CELL_PADDING_Y * 2.0f),
     };
-    DrawRectangleRounded(content_panel, 0.04f, 8, (Color){20, 33, 38, 255});
+    DrawRectangleRec(content_panel, (Color){20, 33, 38, 255});
     DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
 
     for (i32 kind = WORLD_ART_NONE + 1; kind < NUM_WORLD_ART; kind++) {
@@ -6634,7 +6749,7 @@ static void game_draw_world_art_preview(Game *game, Vector2 origin)
         float cell_y = origin.y + (float)row * (cell_h + WORLD_PREVIEW_CELL_GAP_Y);
 
         Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
-        DrawRectangleRounded(panel, 0.08f, 4, (Color){32, 47, 52, 255});
+        DrawRectangleRec(panel, (Color){32, 47, 52, 255});
         DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
 
         char display_name[WORLD_ART_DISPLAY_NAME_CAP];
@@ -7279,12 +7394,12 @@ static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color 
     Rectangle shadow = panel;
     shadow.x += 2.0f;
     shadow.y += 2.0f;
-    DrawRectangleRounded(shadow, 0.08f, 8, (Color){0, 0, 0, 110});
+    DrawRectangleRec(shadow, (Color){0, 0, 0, 110});
 
-    DrawRectangleRounded(panel, 0.08f, 8, outer_fill);
-    DrawRectangleRounded(
-        (Rectangle){panel.x + 3.0f, panel.y + 3.0f, panel.width - 6.0f, panel.height - 6.0f}, 0.08f,
-        8, inner_fill);
+    DrawRectangleRec(panel, outer_fill);
+    DrawRectangleRec(
+        (Rectangle){panel.x + 3.0f, panel.y + 3.0f, panel.width - 6.0f, panel.height - 6.0f},
+        inner_fill);
     DrawRectangleLinesEx(panel, 2.0f, border);
     DrawRectangleLinesEx(
         (Rectangle){panel.x + 3.0f, panel.y + 3.0f, panel.width - 6.0f, panel.height - 6.0f}, 1.0f,
@@ -7314,8 +7429,14 @@ static void game_player_clear_action_bar(Game *game)
         game->player_action_bar[slot_idx] = UNIT_ART_NONE;
     }
 
-    if (game_action_bar_familiar_unit_is_valid(UNIT_ART_IMP))
-        game->player_action_bar[0] = UNIT_ART_IMP;
+    const UNIT_ART_KIND *familiar_unit_kinds = 0;
+    if (game_player_class_get_familiar_unit_kinds(game->player_class, &familiar_unit_kinds)) {
+        for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
+            UNIT_ART_KIND familiar_kind = familiar_unit_kinds[slot_idx];
+            if (game_action_bar_familiar_unit_is_valid(familiar_kind))
+                game->player_action_bar[slot_idx] = familiar_kind;
+        }
+    }
 
     game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
 }
@@ -7790,7 +7911,7 @@ static void game_draw_familiar_command_bar(Game *game)
             text = (Color){194, 212, 187, 255};
         }
 
-        DrawRectangleRounded(button, 0.18f, 4, fill);
+        DrawRectangleRec(button, fill);
         DrawRectangleLinesEx(button, 1.0f, border);
 
         float text_size = 14.0f;
@@ -7829,7 +7950,7 @@ static void game_draw_player_action_bar(Game *game)
             slot_fill = has_familiar ? (Color){54, 52, 49, 255} : (Color){36, 35, 33, 255};
             slot_border = has_familiar ? (Color){109, 106, 101, 255} : (Color){80, 77, 73, 255};
         }
-        DrawRectangleRounded(slot, 0.16f, 4, slot_fill);
+        DrawRectangleRec(slot, slot_fill);
         DrawRectangleLinesEx(slot, 1.0f, slot_border);
 
         if (has_familiar) {
@@ -7840,7 +7961,7 @@ static void game_draw_player_action_bar(Game *game)
             game_draw_unit_tile(game, game->player_action_bar[slot_idx], PLAYER_START_ORIENTATION,
                                 icon_pos, DUNGEON_ACTION_BAR_ITEM_SIZE, anim_frame);
             if (action_bar_disabled) {
-                DrawRectangleRounded(slot, 0.16f, 4, (Color){18, 18, 18, 116});
+                DrawRectangleRec(slot, (Color){18, 18, 18, 116});
             }
         }
     }
@@ -7886,7 +8007,7 @@ static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kin
                 is_friendly_row ? (Color){200, 239, 186, 255} : (Color){255, 214, 182, 255};
         }
 
-        DrawRectangleRounded(slot, 0.16f, 4, slot_fill);
+        DrawRectangleRec(slot, slot_fill);
         DrawRectangleLinesEx(slot, selected ? 1.8f : 1.0f, slot_border);
 
         Vector2 icon_pos = {
@@ -8038,6 +8159,18 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         return;
     case UNIT_ART_IMP:
         snprintf(buffer, buffer_cap, "Melee familiar that inflicts scaling burn damage");
+        return;
+    case UNIT_ART_REAPER:
+        snprintf(buffer, buffer_cap, "Warlock familiar that excels in close-range combat");
+        return;
+    case UNIT_ART_PHOENIX:
+        snprintf(buffer, buffer_cap, "Druid familiar with aggressive melee pressure");
+        return;
+    case UNIT_ART_TREANT:
+        snprintf(buffer, buffer_cap, "Druid familiar built for sturdy frontline melee");
+        return;
+    case UNIT_ART_GRIFFON:
+        snprintf(buffer, buffer_cap, "Druid familiar that strikes quickly in melee");
         return;
     case UNIT_ART_GOBLIN_GRUNT:
         snprintf(buffer, buffer_cap, "Melee goblin with reliable frontline damage");
@@ -8381,7 +8514,8 @@ static void game_draw_test_dungeon(Game *game)
     game_draw_web_projectiles(game, origin, tile_size);
 
     Vector2 player_feet = game_dungeon_get_player_draw_feet_position(game, origin, tile_size);
-    game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
+    UNIT_ART_KIND player_unit_kind = game_player_class_get_unit_kind(game->player_class);
+    game_draw_unit_tile_with_feet_anchor(game, player_unit_kind, game->player_orientation,
                                          player_feet, tile_size, unit_anim_frame);
     game_draw_status_particles(game);
     game_draw_summon_target_indicator(game, origin, tile_size);
@@ -8842,7 +8976,7 @@ static void game_draw_debug_hud_button(Game *game, Rectangle button, const char 
     Color border = active ? (Color){177, 219, 153, 255} : (Color){156, 131, 105, 255};
     Color text = active ? (Color){229, 247, 208, 255} : (Color){222, 198, 167, 255};
 
-    DrawRectangleRounded(button, 0.16f, 6, fill);
+    DrawRectangleRec(button, fill);
     DrawRectangleLinesEx(button, 1.5f, border);
 
     float text_size = 16.0f;
@@ -9014,8 +9148,13 @@ static void game_draw_end_menu(Game *game)
 
     bool is_win_menu = game->end_menu_state == END_MENU_WIN;
     const char *title = is_win_menu ? "You Win" : "You Died";
-    const char *subtitle =
-        is_win_menu ? "You conquer this run of the dungeon." : "Your warlock falls in the dungeon.";
+    char subtitle[96];
+    if (is_win_menu) {
+        snprintf(subtitle, sizeof(subtitle), "You conquer this run of the dungeon.");
+    } else {
+        snprintf(subtitle, sizeof(subtitle), "Your %s falls in the dungeon.",
+                 game_player_class_get_lower_name(game->player_class));
+    }
     const char *button_text = is_win_menu ? "Play Again" : "Restart";
     const char *hint_text =
         is_win_menu ? "Click Play Again or press Enter" : "Click Restart or press Enter";
@@ -9063,7 +9202,7 @@ static void game_draw_end_menu(Game *game)
     Color button_fill =
         is_win_menu ? (button_hovered ? (Color){100, 144, 66, 255} : (Color){78, 116, 53, 255})
                     : (button_hovered ? (Color){156, 76, 64, 255} : (Color){126, 58, 52, 255});
-    DrawRectangleRounded(button, 0.20f, 8, button_fill);
+    DrawRectangleRec(button, button_fill);
     DrawRectangleLinesEx(button, 2.0f,
                          is_win_menu ? (Color){193, 229, 152, 255} : (Color){246, 174, 162, 255});
 
@@ -9080,6 +9219,9 @@ static void game_draw_end_menu(Game *game)
 
 static bool game_start_new_dungeon_run(Game *game)
 {
+    if (game_class_menu_is_active(game))
+        return false;
+
     game->dungeon_seed = game_next_dungeon_seed(game);
     game->dungeon_floor_index = 0;
     game->dungeon_depth = 0;
@@ -9092,12 +9234,8 @@ static bool game_start_new_dungeon_run(Game *game)
     game_player_clear_action_bar(game);
     game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
     game->show_dungeon_view = true;
-#if GAME_DEBUG_FEATURES
-    game->debug_in_testing_area = true;
-    game->debug_hud_visible = game->debug_in_testing_area;
-#else
     game->debug_in_testing_area = false;
-#endif
+    game->debug_hud_visible = false;
     game->debug_testing_unit_placement_active = false;
     game->debug_testing_unit_placement_is_friendly = false;
     game->debug_testing_unit_placement_kind = (u8)game_testing_area_enemy_unit_kinds[0];
@@ -9114,6 +9252,227 @@ static bool game_start_new_dungeon_run(Game *game)
     game_center_dungeon_camera_on_player(game);
     game->end_menu_state = END_MENU_NONE;
     return true;
+}
+
+static Rectangle game_class_menu_panel_rect(void)
+{
+    float screen_w = (float)GetScreenWidth();
+    float screen_h = (float)GetScreenHeight();
+
+    float panel_w = clamp(screen_w * 0.84f, 380.0f, 760.0f);
+    float panel_h = clamp(screen_h * 0.76f, 300.0f, 520.0f);
+
+    panel_w = min(panel_w, screen_w - DUNGEON_CLASS_MENU_PANEL_MARGIN * 2.0f);
+    panel_h = min(panel_h, screen_h - DUNGEON_CLASS_MENU_PANEL_MARGIN * 2.0f);
+
+    return (Rectangle){
+        .x = roundf((screen_w - panel_w) * 0.5f),
+        .y = roundf((screen_h - panel_h) * 0.5f),
+        .width = panel_w,
+        .height = panel_h,
+    };
+}
+
+static Rectangle game_class_menu_class_card_rect(Rectangle panel, i32 class_idx)
+{
+    assert(class_idx >= 0 && class_idx < PLAYER_CLASS_COUNT);
+
+    float cards_top = panel.y + 96.0f;
+    float cards_h = max(140.0f, panel.height - 156.0f);
+
+    float available_w = max(200.0f, panel.width - 32.0f);
+    float card_w = (available_w - (float)(PLAYER_CLASS_COUNT - 1) * DUNGEON_CLASS_MENU_CARD_GAP) /
+                   (float)PLAYER_CLASS_COUNT;
+    float total_cards_w = (float)PLAYER_CLASS_COUNT * card_w +
+                          (float)(PLAYER_CLASS_COUNT - 1) * DUNGEON_CLASS_MENU_CARD_GAP;
+    float cards_start_x = panel.x + (panel.width - total_cards_w) * 0.5f;
+
+    return (Rectangle){
+        .x = cards_start_x + (card_w + DUNGEON_CLASS_MENU_CARD_GAP) * (float)class_idx,
+        .y = cards_top,
+        .width = card_w,
+        .height = cards_h,
+    };
+}
+
+static float game_class_menu_snap_unit_icon_size(float preferred_size, float max_size)
+{
+    float tile_size = (float)UNIT_ART_TILE_SIZE;
+    float size = min(preferred_size, max_size);
+
+    if (size <= 0.0f)
+        return 0.0f;
+    if (size < tile_size)
+        return size;
+
+    i32 whole_tiles = (i32)floorf(size / tile_size);
+    return tile_size * (float)max(1, whole_tiles);
+}
+
+static bool game_choose_player_class(Game *game, PLAYER_CLASS player_class)
+{
+    if (!game_player_class_is_valid(player_class))
+        return false;
+
+    game->player_class = player_class;
+    if (!game_start_new_dungeon_run(game)) {
+        game->player_class = PLAYER_CLASS_NONE;
+        return false;
+    }
+
+    return true;
+}
+
+static bool game_update_class_menu(Game *game)
+{
+    if (!game_class_menu_is_active(game))
+        return false;
+
+    PLAYER_CLASS selected_class = PLAYER_CLASS_NONE;
+    if (game->input.pressed[INPUT_ACTION_SLOT_1]) {
+        selected_class = PLAYER_CLASS_WARLOCK;
+    } else if (game->input.pressed[INPUT_ACTION_SLOT_2]) {
+        selected_class = PLAYER_CLASS_DRUID;
+    } else if (game->input.pressed[INPUT_MOUSE_LEFT]) {
+        Rectangle panel = game_class_menu_panel_rect();
+        Vector2 mouse = GetMousePosition();
+
+        for (i32 class_idx = 0; class_idx < PLAYER_CLASS_COUNT; class_idx++) {
+            Rectangle card = game_class_menu_class_card_rect(panel, class_idx);
+            if (!game_point_in_rect(mouse, card))
+                continue;
+
+            selected_class = game_player_class_defs[class_idx].player_class;
+            break;
+        }
+    }
+
+    if (selected_class != PLAYER_CLASS_NONE)
+        game_choose_player_class(game, selected_class);
+
+    return true;
+}
+
+static void game_draw_class_menu(Game *game)
+{
+    if (!game_class_menu_is_active(game))
+        return;
+
+    Rectangle panel = game_class_menu_panel_rect();
+    Vector2 mouse = GetMousePosition();
+    int anim_frame = game_unit_anim_frame();
+
+    DrawRectangleGradientV(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){14, 12, 11, 255},
+                           (Color){7, 6, 5, 255});
+
+    game_draw_dungeon_ui_panel(panel, (Color){21, 17, 14, 246}, (Color){31, 24, 19, 242},
+                               (Color){144, 112, 74, 255});
+
+    const char *title = "Choose Your Class";
+    const char *subtitle = "Each class starts with a unique set of three familiars.";
+    const char *hint = "Click a class card or press [1]/[2]";
+
+    float title_size = clamp(panel.height * 0.10f, 28.0f, 42.0f);
+    float subtitle_size = clamp(panel.height * 0.048f, 15.0f, 20.0f);
+    float hint_size = max(14.0f, subtitle_size - 1.0f);
+
+    Vector2 title_measure = MeasureTextEx(game->font, title, title_size, game->font_spacing);
+    Vector2 title_pos = {
+        .x = panel.x + (panel.width - title_measure.x) * 0.5f,
+        .y = panel.y + 20.0f,
+    };
+    DrawTextEx(game->font, title, title_pos, title_size, game->font_spacing,
+               (Color){238, 220, 187, 255});
+
+    Vector2 subtitle_measure =
+        MeasureTextEx(game->font, subtitle, subtitle_size, game->font_spacing);
+    Vector2 subtitle_pos = {
+        .x = panel.x + (panel.width - subtitle_measure.x) * 0.5f,
+        .y = title_pos.y + title_size + 8.0f,
+    };
+    DrawTextEx(game->font, subtitle, subtitle_pos, subtitle_size, game->font_spacing,
+               (Color){194, 173, 141, 255});
+
+    for (i32 class_idx = 0; class_idx < PLAYER_CLASS_COUNT; class_idx++) {
+        const Player_Class_Def *class_def = &game_player_class_defs[class_idx];
+        Rectangle card = game_class_menu_class_card_rect(panel, class_idx);
+        bool hovered = game_point_in_rect(mouse, card);
+
+        Color fill = (Color){63, 39, 33, 255};
+        Color border = (Color){183, 123, 106, 255};
+        Color text = (Color){248, 214, 201, 255};
+        if (class_def->player_class == PLAYER_CLASS_DRUID) {
+            fill = (Color){39, 56, 37, 255};
+            border = (Color){125, 179, 114, 255};
+            text = (Color){220, 243, 210, 255};
+        }
+
+        if (hovered) {
+            fill.r = (u8)min(255, (i32)fill.r + 16);
+            fill.g = (u8)min(255, (i32)fill.g + 16);
+            fill.b = (u8)min(255, (i32)fill.b + 16);
+            border.r = (u8)min(255, (i32)border.r + 28);
+            border.g = (u8)min(255, (i32)border.g + 28);
+            border.b = (u8)min(255, (i32)border.b + 28);
+        }
+
+        DrawRectangleRec(card, fill);
+        DrawRectangleLinesEx(card, hovered ? 2.0f : 1.2f, border);
+
+        float icon_max_size = min(card.width - 24.0f, card.height * 0.34f);
+        float icon_size =
+            game_class_menu_snap_unit_icon_size(DUNGEON_CLASS_MENU_CARD_ICON_SIZE, icon_max_size);
+        Vector2 class_icon_pos = {
+            .x = floorf(card.x + (card.width - icon_size) * 0.5f),
+            .y = floorf(card.y + DUNGEON_CLASS_MENU_CARD_PADDING),
+        };
+        game_draw_unit_tile(game, class_def->class_unit_kind, PLAYER_START_ORIENTATION,
+                            class_icon_pos, icon_size, anim_frame);
+
+        char class_name[UNIT_ART_DISPLAY_NAME_CAP];
+        unit_art_get_display_name(class_def->class_unit_kind, class_name, sizeof(class_name));
+        float class_name_size = clamp(card.height * 0.095f, 19.0f, 28.0f);
+        Vector2 class_name_measure =
+            MeasureTextEx(game->font, class_name, class_name_size, game->font_spacing);
+        Vector2 class_name_pos = {
+            .x = card.x + (card.width - class_name_measure.x) * 0.5f,
+            .y = class_icon_pos.y + icon_size + 8.0f,
+        };
+        DrawTextEx(game->font, class_name, class_name_pos, class_name_size, game->font_spacing,
+                   text);
+
+        float familiar_icon_max_size =
+            (card.width - DUNGEON_CLASS_MENU_CARD_PADDING * 2.0f -
+             (PLAYER_CLASS_FAMILIAR_COUNT - 1) * DUNGEON_CLASS_MENU_FAMILIAR_ICON_GAP) /
+            (float)PLAYER_CLASS_FAMILIAR_COUNT;
+        familiar_icon_max_size = min(familiar_icon_max_size, card.height * 0.30f);
+        float familiar_icon_size = game_class_menu_snap_unit_icon_size(
+            DUNGEON_CLASS_MENU_FAMILIAR_ICON_SIZE, familiar_icon_max_size);
+        float familiars_w =
+            familiar_icon_size * PLAYER_CLASS_FAMILIAR_COUNT +
+            DUNGEON_CLASS_MENU_FAMILIAR_ICON_GAP * (PLAYER_CLASS_FAMILIAR_COUNT - 1);
+        float familiars_x = floorf(card.x + (card.width - familiars_w) * 0.5f);
+        float familiars_y =
+            floorf(card.y + card.height - familiar_icon_size - DUNGEON_CLASS_MENU_CARD_PADDING);
+
+        for (i32 familiar_idx = 0; familiar_idx < PLAYER_CLASS_FAMILIAR_COUNT; familiar_idx++) {
+            Vector2 icon_pos = {
+                .x = familiars_x + (familiar_icon_size + DUNGEON_CLASS_MENU_FAMILIAR_ICON_GAP) *
+                                       (float)familiar_idx,
+                .y = familiars_y,
+            };
+            game_draw_unit_tile(game, class_def->familiar_unit_kinds[familiar_idx],
+                                PLAYER_START_ORIENTATION, icon_pos, familiar_icon_size, anim_frame);
+        }
+    }
+
+    Vector2 hint_measure = MeasureTextEx(game->font, hint, hint_size, game->font_spacing);
+    Vector2 hint_pos = {
+        .x = panel.x + (panel.width - hint_measure.x) * 0.5f,
+        .y = panel.y + panel.height - hint_size - 12.0f,
+    };
+    DrawTextEx(game->font, hint, hint_pos, hint_size, game->font_spacing,
+               (Color){186, 165, 137, 255});
 }
 
 static bool game_update_end_menu(Game *game)
@@ -9180,7 +9539,9 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->dungeon_cam.zoom = DUNGEON_CAMERA_ZOOM_RESET;
     game_seed_run_seed_rng(game);
     game_dungeon_load_template(game, game->dungeon_template_index);
-    game_start_new_dungeon_run(game);
+    game->player_class = PLAYER_CLASS_NONE;
+    game->player_stats = game_get_player_base_stats();
+    game_player_clear_action_bar(game);
 }
 
 void game_shutdown(Mem mem)
@@ -9256,6 +9617,9 @@ void game_update(Mem mem)
     arena_clear(mem.tmp);
 
     game_input(game);
+
+    if (game_update_class_menu(game))
+        return;
 
     if (GAME_DEBUG_FEATURES && game->input.pressed[INPUT_DEBUG_TOGGLE_HUD])
         game->debug_hud_visible = !game->debug_hud_visible;
@@ -9400,9 +9764,14 @@ void game_update(Mem mem)
 void game_render(Mem mem)
 {
     Game *game = arena_start(mem.perm, Game);
-    Camera2D active_cam = game_get_active_camera(game);
 
     ClearBackground((Color){11, 8, 7, 255});
+    if (game_class_menu_is_active(game)) {
+        game_draw_class_menu(game);
+        return;
+    }
+
+    Camera2D active_cam = game_get_active_camera(game);
     BeginMode2D(active_cam);
     if (game->show_dungeon_view)
         game_draw_test_dungeon(game);

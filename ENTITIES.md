@@ -1,5 +1,9 @@
 This document will act as a specification for entities and AI behaviors.
 
+Each class, Warlock and Druid, will have access to three familiars.
+
+Only one familiar can be alive at any given time, so the action bar should be disabled while a familiar is alive.
+
 ## Effects
 
 Unless otherwise noted, these will wear off in 5 turns.
@@ -129,12 +133,34 @@ Unless otherwise noted, these will wear off in 5 turns.
 ### Imp
 - 5hp, 3dmg
 - target: nearest enemy
+- basic melee
 - applies burn on attack
 
 ### Beholder
 - 10hp, 2dmg
 - target: nearest aligned enemy
 - turrent 10range
+
+### Reaper
+- 5hp, 3dmg
+- target: nearest enemy
+
+## Druid Familiars
+
+### Pheonix
+- 5hp, 3dmg
+- target: nearest enemy
+- basic melee
+
+### Treant
+- 5hp, 3dmg
+- target: nearest enemy
+- basic melee
+
+### Griffon
+- 5hp, 3dmg
+- target: nearest enemy
+- basic melee
 
 ---
 
