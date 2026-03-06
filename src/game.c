@@ -104,9 +104,7 @@
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_TARGET_MAX_DISTANCE 7
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_ENEMY_AVOID_DISTANCE 3
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_DEFENSE_DISTANCE 7
-#define DUNGEON_SPIDER_WEB_RANGE_MIN 3
-#define DUNGEON_SPIDER_WEB_RANGE_MAX 7
-#define DUNGEON_SPIDER_HOSTILE_AVOID_DISTANCE 1
+#define DUNGEON_SPIDER_WEB_RANGE 4
 #define DUNGEON_FAMILIAR_FOLLOW_ENEMY_AVOID_DISTANCE 2
 #define DUNGEON_FAMILIAR_BAT_FOLLOW_MIN_DISTANCE 3
 #define DUNGEON_FAMILIAR_BAT_FOLLOW_MAX_DISTANCE 5
@@ -542,6 +540,10 @@ typedef struct {
     bool player_attack_anim_active;
     u8 player_orientation;
     Unit_Stats player_stats;
+    bool player_is_webbed;
+    bool player_webbed_applied_this_turn;
+    bool player_webbed_skip_next_turn;
+    u8 player_webbed_turns_remaining;
     UNIT_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
     i32 player_active_action_bar_slot;
     u32 player_damage_event_count;
@@ -1213,6 +1215,16 @@ static void game_dungeon_clear_webbed_status(Dungeon_Unit *unit)
     unit->webbed_turns_remaining = 0;
 }
 
+static void game_dungeon_clear_player_webbed_status(Game *game)
+{
+    assert(game != 0);
+
+    game->player_is_webbed = false;
+    game->player_webbed_applied_this_turn = false;
+    game->player_webbed_skip_next_turn = false;
+    game->player_webbed_turns_remaining = 0;
+}
+
 static void game_dungeon_clear_burning_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -1267,6 +1279,16 @@ static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
     unit->webbed_applied_this_turn = true;
     unit->webbed_skip_next_turn = true;
     unit->webbed_turns_remaining = DUNGEON_WEBBED_DURATION_TURNS;
+}
+
+static void game_dungeon_apply_player_webbed_status(Game *game)
+{
+    assert(game != 0);
+
+    game->player_is_webbed = true;
+    game->player_webbed_applied_this_turn = true;
+    game->player_webbed_skip_next_turn = true;
+    game->player_webbed_turns_remaining = DUNGEON_WEBBED_DURATION_TURNS;
 }
 
 static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
@@ -4274,54 +4296,60 @@ static void game_dungeon_take_spider_turn(Game *game, i32 unit_idx)
     if (!game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &target))
         return;
 
-    if (target.target_is_player) {
-        game_dungeon_take_basic_melee_turn(game, unit_idx, &target);
-        return;
-    }
-
-    if (target.target_unit_idx < 0 || target.target_unit_idx >= game->unit_count)
-        return;
-
     Dungeon_Unit *unit = &game->units[unit_idx];
-    Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
-    if (target_unit->is_friendly == unit->is_friendly)
-        return;
 
     i32 start_x = unit->x;
     i32 start_y = unit->y;
     if (!game_dungeon_cell_in_bounds(start_x, start_y))
         return;
 
-    i32 target_x = target_unit->x;
-    i32 target_y = target_unit->y;
+    i32 target_x = target.target_x;
+    i32 target_y = target.target_y;
+    float attack_delay = game_dungeon_get_player_move_anim_remaining(game);
+    Dungeon_Unit *target_unit = 0;
+    bool target_is_webbed = game->player_is_webbed;
+
+    if (!target.target_is_player) {
+        if (target.target_unit_idx < 0 || target.target_unit_idx >= game->unit_count)
+            return;
+
+        target_unit = &game->units[target.target_unit_idx];
+        if (target_unit->is_friendly == unit->is_friendly)
+            return;
+
+        target_x = target_unit->x;
+        target_y = target_unit->y;
+        attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
+        target_is_webbed = target_unit->is_webbed;
+    }
+
     unit->orientation = game_dungeon_get_orientation_from_positions(start_x, start_y, target_x,
                                                                     target_y, unit->orientation);
 
-    if (target_unit->is_webbed) {
+    if (target_is_webbed) {
         game_dungeon_take_basic_melee_turn(game, unit_idx, &target);
         return;
     }
 
     i16 target_distance = target.distance;
-    bool in_web_range = target_distance >= DUNGEON_SPIDER_WEB_RANGE_MIN &&
-                        target_distance <= DUNGEON_SPIDER_WEB_RANGE_MAX;
+    bool in_web_range = target_distance <= DUNGEON_SPIDER_WEB_RANGE;
     if (in_web_range &&
         game_dungeon_unit_can_see_cell(game, start_x, start_y, target_x, target_y)) {
-        float attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
         game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
                                                  attack_delay);
         game_dungeon_spawn_web_projectile(game, start_x, start_y, target_x, target_y, attack_delay);
-        if (unit->is_friendly && !target_unit->is_friendly) {
+        if (target_unit != 0 && unit->is_friendly && !target_unit->is_friendly) {
             target_unit->is_awake = true;
             target_unit->turns_out_of_player_los = 0;
         }
-        game_dungeon_apply_webbed_status(target_unit);
+        if (target_unit != 0)
+            game_dungeon_apply_webbed_status(target_unit);
+        else
+            game_dungeon_apply_player_webbed_status(game);
         return;
     }
 
-    game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
-        game, unit_idx, target_x, target_y, DUNGEON_SPIDER_WEB_RANGE_MIN,
-        DUNGEON_SPIDER_WEB_RANGE_MAX, DUNGEON_SPIDER_HOSTILE_AVOID_DISTANCE);
+    game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
 }
 
 static void game_dungeon_take_enemy_dash_turn(Game *game, i32 unit_idx)
@@ -4496,6 +4524,32 @@ static bool game_dungeon_unit_should_skip_webbed_turn(Dungeon_Unit *unit)
     unit->webbed_turns_remaining--;
     if (unit->webbed_turns_remaining == 0)
         game_dungeon_clear_webbed_status(unit);
+
+    return skip_turn;
+}
+
+static bool game_dungeon_player_should_skip_webbed_turn(Game *game)
+{
+    assert(game != 0);
+
+    if (!game->player_is_webbed)
+        return false;
+
+    if (game->player_webbed_applied_this_turn) {
+        game->player_webbed_applied_this_turn = false;
+        return true;
+    }
+
+    if (game->player_webbed_turns_remaining == 0) {
+        game_dungeon_clear_player_webbed_status(game);
+        return false;
+    }
+
+    bool skip_turn = game->player_webbed_skip_next_turn;
+    game->player_webbed_skip_next_turn = !game->player_webbed_skip_next_turn;
+    game->player_webbed_turns_remaining--;
+    if (game->player_webbed_turns_remaining == 0)
+        game_dungeon_clear_player_webbed_status(game);
 
     return skip_turn;
 }
@@ -5753,6 +5807,10 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_i
     game->player_move_anim_active = false;
     game->player_attack_anim_active = false;
     game->player_orientation = PLAYER_START_ORIENTATION;
+    game->player_is_webbed = false;
+    game->player_webbed_applied_this_turn = false;
+    game->player_webbed_skip_next_turn = false;
+    game->player_webbed_turns_remaining = 0;
     game->player_damage_event_count = 0;
     game->player_spawn_x = -1;
     game->player_spawn_y = -1;
@@ -5946,6 +6004,10 @@ static bool game_build_debug_testing_area(Game *game)
     game->player_attack_anim_active = false;
     game->player_orientation = PLAYER_START_ORIENTATION;
     game->player_stats = game_get_player_base_stats();
+    game->player_is_webbed = false;
+    game->player_webbed_applied_this_turn = false;
+    game->player_webbed_skip_next_turn = false;
+    game->player_webbed_turns_remaining = 0;
     game_player_clear_action_bar(game);
     game->player_damage_event_count = 0;
     game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
@@ -8371,16 +8433,37 @@ static bool game_update_player(Game *game)
             game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
             return false;
         }
+
+        if (game->unit_count >= DUNGEON_MAX_UNITS)
+            return false;
+
+        i32 summon_target_x = 0;
+        i32 summon_target_y = 0;
+        game_player_get_active_summon_target_cell(game, &summon_target_x, &summon_target_y);
+        if (!game_dungeon_cell_is_valid_summon_target(game, summon_target_x, summon_target_y))
+            return false;
+        if (!game->input.pressed[INPUT_MOUSE_LEFT])
+            return false;
+
+        if (game_dungeon_player_should_skip_webbed_turn(game))
+            return true;
+
         return game_player_try_summon_active_action_bar_familiar(game);
     }
 
     if (game_dungeon_has_living_familiar(game)) {
         if (game->input.pressed[INPUT_FAMILIAR_WAIT]) {
+            if (game_dungeon_player_should_skip_webbed_turn(game))
+                return true;
+
             game->familiar_turn_command = FAMILIAR_TURN_COMMAND_WAIT;
             return true;
         }
 
         if (game->input.pressed[INPUT_FAMILIAR_RETURN]) {
+            if (game_dungeon_player_should_skip_webbed_turn(game))
+                return true;
+
             game->familiar_turn_command = FAMILIAR_TURN_COMMAND_RETURN;
             return true;
         }
@@ -8407,6 +8490,9 @@ static bool game_update_player(Game *game)
     i32 next_y = game->player_y + move_y;
     if (!game_dungeon_cell_is_floor(game, next_x, next_y))
         return false;
+
+    if (game_dungeon_player_should_skip_webbed_turn(game))
+        return true;
 
     i32 start_x = game->player_x;
     i32 start_y = game->player_y;
@@ -8999,6 +9085,10 @@ static bool game_start_new_dungeon_run(Game *game)
     game->dungeon_depth = 0;
     game->dungeon_floor_seed_count = 0;
     game->player_stats = game_get_player_base_stats();
+    game->player_is_webbed = false;
+    game->player_webbed_applied_this_turn = false;
+    game->player_webbed_skip_next_turn = false;
+    game->player_webbed_turns_remaining = 0;
     game_player_clear_action_bar(game);
     game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
     game->show_dungeon_view = true;

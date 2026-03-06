@@ -65,30 +65,36 @@ Unless otherwise noted, these will wear off in 5 turns.
 
 ### Rat
 - 2hp, 1dmg
+- target: nearest enemy
 - basic melee
 - applies disease on attack
 
 ### Spider
 - 1hp, 1dmg
-- basic ranged for web attacks
+- target: nearest enemy
+- basic ranged for web attacks, range: 4
 - basic melee once target is webbed
 
 ### Goblin Grunt
 - 3hp, 2dmg
+- target: nearest enemy
 - basic melee
 
 ### Cobra
 - 2hp, 1dmg
+- target: nearest enemy
 - basic melee
 - applies poison on attack
 
 ### Bat
 - 2hp, 2dmg
+- target: nearest aligned enemy
 - can move up to 2 tiles per turn
 - dash, cooldown: 5 turns
 
 ### Beetle
 - 1hp, 3dmg
+- target: nearest enemy
 - kamikaze 3area
     - explosion deals fire dmg
 
@@ -100,16 +106,19 @@ Unless otherwise noted, these will wear off in 5 turns.
 
 ### Goblin Warrior
 - 5hp, 3dmg
+- target: nearest enemy
 - basic melee
 
 ### Slime
 - 4hp, 1dmg
+- target: nearest enemy
 - basic melee
 - on death, spawns 2 slimes with half max health
     - 4hp splits into 2hp splits into 1hp, then the 1hp slimes will not spawn new ones
 
 ### Troll
 - 6hp, 4dmg
+- target: nearest enemy
 - basic melee
 - has Troll Blood
 
@@ -119,10 +128,12 @@ Unless otherwise noted, these will wear off in 5 turns.
 
 ### Imp
 - 5hp, 3dmg
+- target: nearest enemy
 - applies burn on attack
 
 ### Beholder
 - 10hp, 2dmg
+- target: nearest aligned enemy
 - turrent 10range
 
 ---
