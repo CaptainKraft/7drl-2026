@@ -164,6 +164,8 @@
 #define DUNGEON_CLASS_MENU_FAMILIAR_ICON_SIZE DUNGEON_ACTION_BAR_ITEM_SIZE
 #define DUNGEON_CLASS_MENU_FAMILIAR_ICON_GAP 8.0f
 
+#define GAME_MAIN_MENU_TITLE "A Familiar Rogue"
+
 #define DUNGEON_FAMILIAR_COMMAND_COUNT 2
 #define DUNGEON_FAMILIAR_COMMAND_BUTTON_HEIGHT 28.0f
 #define DUNGEON_FAMILIAR_COMMAND_BUTTON_GAP 6.0f
@@ -287,6 +289,7 @@ static const Debug_Feature_Def game_debug_feature_defs[NUM_DEBUG_FEATURES] = {
 typedef enum {
     DEBUG_ACTION_TOGGLE_TESTING_AREA,
     DEBUG_ACTION_TOGGLE_VIEW,
+    DEBUG_ACTION_TRIGGER_WIN,
     NUM_DEBUG_ACTIONS,
 } DEBUG_ACTION;
 
@@ -304,6 +307,10 @@ static const Debug_Action_Def game_debug_action_defs[NUM_DEBUG_ACTIONS] = {
         .action = DEBUG_ACTION_TOGGLE_VIEW,
         .name = "Sprite Preview",
     },
+    {
+        .action = DEBUG_ACTION_TRIGGER_WIN,
+        .name = "Trigger Win",
+    },
 };
 
 typedef enum {
@@ -317,6 +324,12 @@ typedef enum {
     END_MENU_DEATH,
     END_MENU_WIN,
 } END_MENU_STATE;
+
+typedef enum {
+    END_MENU_ACTION_NONE,
+    END_MENU_ACTION_PLAY_AGAIN,
+    END_MENU_ACTION_MAIN_MENU,
+} END_MENU_ACTION;
 
 typedef enum {
     PLAYER_CLASS_NONE,
@@ -491,6 +504,7 @@ typedef struct {
     bool show_dungeon_view;
     u8 minimap_opacity_level;
     END_MENU_STATE end_menu_state;
+    bool class_menu_show_game_title;
     bool debug_hud_visible;
     u32 debug_feature_mask;
     bool debug_in_testing_area;
@@ -901,6 +915,23 @@ static bool game_class_menu_is_active(const Game *game)
     return !game_player_class_is_valid(game->player_class);
 }
 
+static void game_open_class_menu(Game *game, bool show_game_title)
+{
+    game->player_class = PLAYER_CLASS_NONE;
+    game->class_menu_show_game_title = show_game_title;
+    game->end_menu_state = END_MENU_NONE;
+}
+
+static void game_open_main_menu(Game *game)
+{
+    game_open_class_menu(game, true);
+}
+
+static void game_open_class_select_menu(Game *game)
+{
+    game_open_class_menu(game, false);
+}
+
 static void game_open_end_menu(Game *game, END_MENU_STATE menu_state)
 {
     if (menu_state == END_MENU_NONE)
@@ -985,6 +1016,9 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
             game->show_dungeon_view = true;
             *out_rebuild_floor = true;
         }
+        break;
+    case DEBUG_ACTION_TRIGGER_WIN:
+        game_open_end_menu(game, END_MENU_WIN);
         break;
     default:
         break;
@@ -7363,6 +7397,25 @@ static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color 
         inner_fill);
 }
 
+static Color game_ui_hover_color(Color color)
+{
+    color.r = (u8)min(255, (i32)color.r + 26);
+    color.g = (u8)min(255, (i32)color.g + 26);
+    color.b = (u8)min(255, (i32)color.b + 26);
+    return color;
+}
+
+static void game_draw_gray_menu_panel(Rectangle panel, bool hovered)
+{
+    Color outer_fill = (Color){62, 62, 62, 255};
+    Color inner_fill = (Color){74, 74, 74, 255};
+    if (hovered) {
+        outer_fill = game_ui_hover_color(outer_fill);
+        inner_fill = game_ui_hover_color(inner_fill);
+    }
+    game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill);
+}
+
 static void game_draw_health_hearts(Game *game, Vector2 top_left, i32 health, i32 max_health,
                                     float icon_size, float gap)
 {
@@ -7884,6 +7937,7 @@ static void game_draw_player_action_bar(Game *game)
 
     int anim_frame = game_unit_anim_frame();
     bool action_bar_disabled = game_player_action_bar_is_disabled(game);
+    i32 hovered_slot = game_action_bar_hovered_slot(game);
 
     for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
         Rectangle slot = game_action_bar_slot_rect(slot_idx);
@@ -7898,6 +7952,8 @@ static void game_draw_player_action_bar(Game *game)
         if (action_bar_disabled) {
             slot_fill = has_familiar ? (Color){54, 52, 49, 255} : (Color){36, 35, 33, 255};
         }
+        if (!action_bar_disabled && has_familiar && slot_idx == hovered_slot)
+            slot_fill = game_ui_hover_color(slot_fill);
         DrawRectangleRec(slot, slot_fill);
 
         if (has_familiar) {
@@ -7941,13 +7997,11 @@ static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kin
                         selected_kind == unit_kind;
 
         Color slot_fill = is_friendly_row ? (Color){44, 56, 45, 255} : (Color){63, 42, 41, 255};
-
-        if (hovered) {
-            slot_fill = is_friendly_row ? (Color){56, 72, 58, 255} : (Color){81, 55, 53, 255};
-        }
         if (selected) {
             slot_fill = is_friendly_row ? (Color){73, 92, 72, 255} : (Color){108, 68, 64, 255};
         }
+        if (hovered)
+            slot_fill = game_ui_hover_color(slot_fill);
 
         DrawRectangleRec(slot, slot_fill);
 
@@ -8906,7 +8960,7 @@ static void game_draw_debug_hud_button(Game *game, Rectangle button, const char 
 
     Color fill = active ? (Color){69, 96, 59, 244} : (Color){60, 46, 35, 244};
     if (hovered)
-        fill = active ? (Color){82, 116, 69, 250} : (Color){76, 59, 45, 250};
+        fill = game_ui_hover_color(fill);
 
     Color text = active ? (Color){229, 247, 208, 255} : (Color){222, 198, 167, 255};
 
@@ -9038,7 +9092,7 @@ static Rectangle game_end_menu_panel_rect(void)
     float screen_h = (float)GetScreenHeight();
 
     float panel_w = clamp(screen_w * 0.74f, 300.0f, 560.0f);
-    float panel_h = clamp(screen_h * 0.50f, 220.0f, 320.0f);
+    float panel_h = clamp(screen_h * 0.56f, 260.0f, 360.0f);
     panel_w = min(panel_w, screen_w - 24.0f);
     panel_h = min(panel_h, screen_h - 24.0f);
 
@@ -9050,27 +9104,45 @@ static Rectangle game_end_menu_panel_rect(void)
     };
 }
 
-static Rectangle game_end_menu_restart_button_rect(Rectangle panel)
+static Rectangle game_end_menu_option_button_rect(Rectangle panel, i32 option_idx)
 {
-    float button_w = min(panel.width - 48.0f, 240.0f);
-    button_w = max(button_w, 140.0f);
-    float button_h = clamp(panel.height * 0.20f, 44.0f, 56.0f);
+    assert(option_idx >= 0 && option_idx < 2);
+
+    float button_w = min(panel.width - 48.0f, 260.0f);
+    button_w = max(button_w, 160.0f);
+    float button_h = clamp(panel.height * 0.17f, 42.0f, 54.0f);
+    float button_gap = 10.0f;
+    float total_h = button_h * 2.0f + button_gap;
+    float start_y = panel.y + panel.height - total_h - 24.0f;
 
     return (Rectangle){
         .x = panel.x + (panel.width - button_w) * 0.5f,
-        .y = panel.y + panel.height - button_h - 24.0f,
+        .y = start_y + (button_h + button_gap) * (float)option_idx,
         .width = button_w,
         .height = button_h,
     };
 }
 
-static bool game_end_menu_restart_requested(Game *game)
+static END_MENU_ACTION game_end_menu_action_requested(Game *game)
 {
     Rectangle panel = game_end_menu_panel_rect();
-    Rectangle button = game_end_menu_restart_button_rect(panel);
-    bool button_hovered = game_point_in_rect(GetMousePosition(), button);
-    bool clicked_button = button_hovered && game->input.pressed[INPUT_MOUSE_LEFT];
-    return clicked_button || game->input.pressed[INPUT_CONFIRM];
+    Rectangle play_again_button = game_end_menu_option_button_rect(panel, 0);
+    Rectangle main_menu_button = game_end_menu_option_button_rect(panel, 1);
+    Vector2 mouse = GetMousePosition();
+
+    if (game->input.pressed[INPUT_MOUSE_LEFT]) {
+        if (game_point_in_rect(mouse, play_again_button))
+            return END_MENU_ACTION_PLAY_AGAIN;
+        if (game_point_in_rect(mouse, main_menu_button))
+            return END_MENU_ACTION_MAIN_MENU;
+    }
+
+    if (game->input.pressed[INPUT_BACK])
+        return END_MENU_ACTION_MAIN_MENU;
+    if (game->input.pressed[INPUT_CONFIRM])
+        return END_MENU_ACTION_PLAY_AGAIN;
+
+    return END_MENU_ACTION_NONE;
 }
 
 static void game_draw_end_menu(Game *game)
@@ -9079,31 +9151,22 @@ static void game_draw_end_menu(Game *game)
         return;
 
     bool is_win_menu = game->end_menu_state == END_MENU_WIN;
-    const char *title = is_win_menu ? "You Win" : "You Died";
-    char subtitle[96];
-    if (is_win_menu) {
-        snprintf(subtitle, sizeof(subtitle), "You conquer this run of the dungeon.");
-    } else {
-        snprintf(subtitle, sizeof(subtitle), "Your %s falls in the dungeon.",
-                 game_player_class_get_lower_name(game->player_class));
-    }
-    const char *button_text = is_win_menu ? "Play Again" : "Restart";
-    const char *hint_text =
-        is_win_menu ? "Click Play Again or press Enter" : "Click Restart or press Enter";
+    const char *title = is_win_menu ? "You Win" : "You Died...";
 
     Rectangle panel = game_end_menu_panel_rect();
-    Rectangle button = game_end_menu_restart_button_rect(panel);
-    bool button_hovered = game_point_in_rect(GetMousePosition(), button);
+    Rectangle play_again_button = game_end_menu_option_button_rect(panel, 0);
+    Rectangle main_menu_button = game_end_menu_option_button_rect(panel, 1);
+    Vector2 mouse = GetMousePosition();
+    bool play_again_hovered = game_point_in_rect(mouse, play_again_button);
+    bool main_menu_hovered = game_point_in_rect(mouse, main_menu_button);
 
-    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){5, 4, 3, 184});
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){4, 4, 4, 226});
 
-    Color outer_fill = is_win_menu ? (Color){18, 24, 17, 246} : (Color){30, 14, 14, 246};
-    Color inner_fill = is_win_menu ? (Color){27, 36, 24, 241} : (Color){43, 22, 20, 241};
+    Color outer_fill = (Color){34, 34, 34, 246};
+    Color inner_fill = (Color){48, 48, 48, 241};
     game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill);
 
     float title_size = clamp(panel.height * 0.18f, 32.0f, 48.0f);
-    float subtitle_size = clamp(panel.height * 0.08f, 16.0f, 22.0f);
-    float hint_size = max(subtitle_size - 1.0f, 14.0f);
 
     Vector2 title_measure = MeasureTextEx(game->font, title, title_size, game->font_spacing);
     Vector2 title_pos = {
@@ -9111,39 +9174,29 @@ static void game_draw_end_menu(Game *game)
         .y = panel.y + 24.0f,
     };
     DrawTextEx(game->font, title, title_pos, title_size, game->font_spacing,
-               is_win_menu ? (Color){230, 243, 203, 255} : (Color){248, 210, 205, 255});
+               (Color){239, 227, 198, 255});
 
-    Vector2 subtitle_measure =
-        MeasureTextEx(game->font, subtitle, subtitle_size, game->font_spacing);
-    Vector2 subtitle_pos = {
-        .x = panel.x + (panel.width - subtitle_measure.x) * 0.5f,
-        .y = title_pos.y + title_size + 14.0f,
+    game_draw_gray_menu_panel(play_again_button, play_again_hovered);
+    game_draw_gray_menu_panel(main_menu_button, main_menu_hovered);
+
+    float button_text_size = clamp(play_again_button.height * 0.46f, 18.0f, 26.0f);
+    Vector2 play_again_text_measure =
+        MeasureTextEx(game->font, "Play Again", button_text_size, game->font_spacing);
+    Vector2 play_again_text_pos = {
+        .x = play_again_button.x + (play_again_button.width - play_again_text_measure.x) * 0.5f,
+        .y = play_again_button.y + (play_again_button.height - play_again_text_measure.y) * 0.5f,
     };
-    DrawTextEx(game->font, subtitle, subtitle_pos, subtitle_size, game->font_spacing,
-               (Color){214, 195, 168, 255});
+    DrawTextEx(game->font, "Play Again", play_again_text_pos, button_text_size, game->font_spacing,
+               (Color){241, 236, 226, 255});
 
-    Vector2 hint_measure = MeasureTextEx(game->font, hint_text, hint_size, game->font_spacing);
-    Vector2 hint_pos = {
-        .x = panel.x + (panel.width - hint_measure.x) * 0.5f,
-        .y = button.y - hint_size - 10.0f,
+    Vector2 main_menu_text_measure =
+        MeasureTextEx(game->font, "Main Menu", button_text_size, game->font_spacing);
+    Vector2 main_menu_text_pos = {
+        .x = main_menu_button.x + (main_menu_button.width - main_menu_text_measure.x) * 0.5f,
+        .y = main_menu_button.y + (main_menu_button.height - main_menu_text_measure.y) * 0.5f,
     };
-    DrawTextEx(game->font, hint_text, hint_pos, hint_size, game->font_spacing,
-               (Color){180, 163, 139, 255});
-
-    Color button_fill =
-        is_win_menu ? (button_hovered ? (Color){100, 144, 66, 255} : (Color){78, 116, 53, 255})
-                    : (button_hovered ? (Color){156, 76, 64, 255} : (Color){126, 58, 52, 255});
-    DrawRectangleRec(button, button_fill);
-
-    float button_text_size = clamp(button.height * 0.46f, 18.0f, 26.0f);
-    Vector2 button_text_measure =
-        MeasureTextEx(game->font, button_text, button_text_size, game->font_spacing);
-    Vector2 button_text_pos = {
-        .x = button.x + (button.width - button_text_measure.x) * 0.5f,
-        .y = button.y + (button.height - button_text_measure.y) * 0.5f,
-    };
-    DrawTextEx(game->font, button_text, button_text_pos, button_text_size, game->font_spacing,
-               (Color){255, 244, 225, 255});
+    DrawTextEx(game->font, "Main Menu", main_menu_text_pos, button_text_size, game->font_spacing,
+               (Color){241, 236, 226, 255});
 }
 
 static bool game_start_new_dungeon_run(Game *game)
@@ -9202,25 +9255,31 @@ static Rectangle game_class_menu_panel_rect(void)
     };
 }
 
-static Rectangle game_class_menu_class_card_rect(Rectangle panel, i32 class_idx)
+static Rectangle game_class_menu_class_card_rect(const Game *game, Rectangle panel, i32 class_idx)
 {
+    assert(game != 0);
     assert(class_idx >= 0 && class_idx < PLAYER_CLASS_COUNT);
 
-    float cards_top = panel.y + 96.0f;
-    float cards_h = max(140.0f, panel.height - 156.0f);
+    float cards_top = panel.y + 190.0f;
+    float cards_bottom = panel.y + panel.height - 34.0f;
+    float available_h = max(80.0f, cards_bottom - cards_top);
 
-    float available_w = max(200.0f, panel.width - 32.0f);
-    float card_w = (available_w - (float)(PLAYER_CLASS_COUNT - 1) * DUNGEON_CLASS_MENU_CARD_GAP) /
-                   (float)PLAYER_CLASS_COUNT;
-    float total_cards_w = (float)PLAYER_CLASS_COUNT * card_w +
-                          (float)(PLAYER_CLASS_COUNT - 1) * DUNGEON_CLASS_MENU_CARD_GAP;
+    float card_gap = 64.0f;
+    float available_w = max(180.0f, panel.width - 32.0f);
+    float card_size_from_w =
+        (available_w - (float)(PLAYER_CLASS_COUNT - 1) * card_gap) / (float)PLAYER_CLASS_COUNT;
+    float card_size = min(card_size_from_w, available_h);
+
+    float total_cards_w =
+        (float)PLAYER_CLASS_COUNT * card_size + (float)(PLAYER_CLASS_COUNT - 1) * card_gap;
     float cards_start_x = panel.x + (panel.width - total_cards_w) * 0.5f;
+    float cards_start_y = cards_top + (available_h - card_size) * 0.5f;
 
     return (Rectangle){
-        .x = cards_start_x + (card_w + DUNGEON_CLASS_MENU_CARD_GAP) * (float)class_idx,
-        .y = cards_top,
-        .width = card_w,
-        .height = cards_h,
+        .x = cards_start_x + (card_size + card_gap) * (float)class_idx,
+        .y = cards_start_y,
+        .width = card_size,
+        .height = card_size,
     };
 }
 
@@ -9258,16 +9317,12 @@ static bool game_update_class_menu(Game *game)
         return false;
 
     PLAYER_CLASS selected_class = PLAYER_CLASS_NONE;
-    if (game->input.pressed[INPUT_ACTION_SLOT_1]) {
-        selected_class = PLAYER_CLASS_WARLOCK;
-    } else if (game->input.pressed[INPUT_ACTION_SLOT_2]) {
-        selected_class = PLAYER_CLASS_DRUID;
-    } else if (game->input.pressed[INPUT_MOUSE_LEFT]) {
+    if (game->input.pressed[INPUT_MOUSE_LEFT]) {
         Rectangle panel = game_class_menu_panel_rect();
         Vector2 mouse = GetMousePosition();
 
         for (i32 class_idx = 0; class_idx < PLAYER_CLASS_COUNT; class_idx++) {
-            Rectangle card = game_class_menu_class_card_rect(panel, class_idx);
+            Rectangle card = game_class_menu_class_card_rect(game, panel, class_idx);
             if (!game_point_in_rect(mouse, card))
                 continue;
 
@@ -9294,59 +9349,32 @@ static void game_draw_class_menu(Game *game)
     DrawRectangleGradientV(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){14, 12, 11, 255},
                            (Color){7, 6, 5, 255});
 
-    game_draw_dungeon_ui_panel(panel, (Color){21, 17, 14, 246}, (Color){31, 24, 19, 242});
-
-    const char *title = "Choose Your Class";
-    const char *subtitle = "Each class starts with a unique set of three familiars.";
-    const char *hint = "Click a class card or press [1]/[2]";
-
-    float title_size = clamp(panel.height * 0.10f, 28.0f, 42.0f);
-    float subtitle_size = clamp(panel.height * 0.048f, 15.0f, 20.0f);
-    float hint_size = max(14.0f, subtitle_size - 1.0f);
-
+    const char *title =
+        game->class_menu_show_game_title ? GAME_MAIN_MENU_TITLE : "Choose Your Class";
+    float title_size = clamp(panel.height * 0.115f, 34.0f, 56.0f);
     Vector2 title_measure = MeasureTextEx(game->font, title, title_size, game->font_spacing);
     Vector2 title_pos = {
         .x = panel.x + (panel.width - title_measure.x) * 0.5f,
         .y = panel.y + 20.0f,
     };
     DrawTextEx(game->font, title, title_pos, title_size, game->font_spacing,
-               (Color){238, 220, 187, 255});
-
-    Vector2 subtitle_measure =
-        MeasureTextEx(game->font, subtitle, subtitle_size, game->font_spacing);
-    Vector2 subtitle_pos = {
-        .x = panel.x + (panel.width - subtitle_measure.x) * 0.5f,
-        .y = title_pos.y + title_size + 8.0f,
-    };
-    DrawTextEx(game->font, subtitle, subtitle_pos, subtitle_size, game->font_spacing,
-               (Color){194, 173, 141, 255});
+               (Color){239, 227, 198, 255});
 
     for (i32 class_idx = 0; class_idx < PLAYER_CLASS_COUNT; class_idx++) {
         const Player_Class_Def *class_def = &game_player_class_defs[class_idx];
-        Rectangle card = game_class_menu_class_card_rect(panel, class_idx);
+        Rectangle card = game_class_menu_class_card_rect(game, panel, class_idx);
         bool hovered = game_point_in_rect(mouse, card);
 
-        Color fill = (Color){63, 39, 33, 255};
-        Color text = (Color){248, 214, 201, 255};
-        if (class_def->player_class == PLAYER_CLASS_DRUID) {
-            fill = (Color){39, 56, 37, 255};
-            text = (Color){220, 243, 210, 255};
-        }
+        Color text = (Color){241, 236, 226, 255};
 
-        if (hovered) {
-            fill.r = (u8)min(255, (i32)fill.r + 16);
-            fill.g = (u8)min(255, (i32)fill.g + 16);
-            fill.b = (u8)min(255, (i32)fill.b + 16);
-        }
-
-        DrawRectangleRec(card, fill);
+        game_draw_gray_menu_panel(card, hovered);
 
         float icon_max_size = min(card.width - 24.0f, card.height * 0.34f);
         float icon_size =
             game_class_menu_snap_unit_icon_size(DUNGEON_CLASS_MENU_CARD_ICON_SIZE, icon_max_size);
         Vector2 class_icon_pos = {
             .x = floorf(card.x + (card.width - icon_size) * 0.5f),
-            .y = floorf(card.y + DUNGEON_CLASS_MENU_CARD_PADDING),
+            .y = floorf(card.y + DUNGEON_CLASS_MENU_CARD_PADDING + 8.0f),
         };
         game_draw_unit_tile(game, class_def->class_unit_kind, PLAYER_START_ORIENTATION,
                             class_icon_pos, icon_size, anim_frame);
@@ -9358,7 +9386,7 @@ static void game_draw_class_menu(Game *game)
             MeasureTextEx(game->font, class_name, class_name_size, game->font_spacing);
         Vector2 class_name_pos = {
             .x = card.x + (card.width - class_name_measure.x) * 0.5f,
-            .y = class_icon_pos.y + icon_size + 8.0f,
+            .y = class_icon_pos.y + icon_size + 10.0f,
         };
         DrawTextEx(game->font, class_name, class_name_pos, class_name_size, game->font_spacing,
                    text);
@@ -9374,8 +9402,8 @@ static void game_draw_class_menu(Game *game)
             familiar_icon_size * PLAYER_CLASS_FAMILIAR_COUNT +
             DUNGEON_CLASS_MENU_FAMILIAR_ICON_GAP * (PLAYER_CLASS_FAMILIAR_COUNT - 1);
         float familiars_x = floorf(card.x + (card.width - familiars_w) * 0.5f);
-        float familiars_y =
-            floorf(card.y + card.height - familiar_icon_size - DUNGEON_CLASS_MENU_CARD_PADDING);
+        float familiars_y = floorf(card.y + card.height - familiar_icon_size -
+                                   DUNGEON_CLASS_MENU_CARD_PADDING - 10.0f);
 
         for (i32 familiar_idx = 0; familiar_idx < PLAYER_CLASS_FAMILIAR_COUNT; familiar_idx++) {
             Vector2 icon_pos = {
@@ -9387,14 +9415,6 @@ static void game_draw_class_menu(Game *game)
                                 PLAYER_START_ORIENTATION, icon_pos, familiar_icon_size, anim_frame);
         }
     }
-
-    Vector2 hint_measure = MeasureTextEx(game->font, hint, hint_size, game->font_spacing);
-    Vector2 hint_pos = {
-        .x = panel.x + (panel.width - hint_measure.x) * 0.5f,
-        .y = panel.y + panel.height - hint_size - 12.0f,
-    };
-    DrawTextEx(game->font, hint, hint_pos, hint_size, game->font_spacing,
-               (Color){186, 165, 137, 255});
 }
 
 static bool game_update_end_menu(Game *game)
@@ -9402,8 +9422,12 @@ static bool game_update_end_menu(Game *game)
     if (!game_end_menu_is_active(game))
         return false;
 
-    if (game_end_menu_restart_requested(game))
-        game_start_new_dungeon_run(game);
+    END_MENU_ACTION action = game_end_menu_action_requested(game);
+    if (action == END_MENU_ACTION_PLAY_AGAIN) {
+        game_open_class_select_menu(game);
+    } else if (action == END_MENU_ACTION_MAIN_MENU) {
+        game_open_main_menu(game);
+    }
 
     return true;
 }
@@ -9445,6 +9469,7 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->show_dungeon_view = true;
     game->minimap_opacity_level = DUNGEON_MINIMAP_DEFAULT_OPACITY_LEVEL;
     game->end_menu_state = END_MENU_NONE;
+    game->class_menu_show_game_title = true;
     game->debug_hud_visible = false;
     game->debug_in_testing_area = false;
     game->debug_testing_unit_placement_active = false;
