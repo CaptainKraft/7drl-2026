@@ -6462,18 +6462,6 @@ static void game_draw_unit_tile_with_feet_anchor(Game *game, UNIT_ART_KIND kind,
     DrawTexturePro(game->units_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
 }
 
-static void game_draw_anchor_cross(Vector2 anchor_position, float cross_half)
-{
-    Vector2 horizontal_start = {anchor_position.x - cross_half, anchor_position.y};
-    Vector2 horizontal_end = {anchor_position.x + cross_half, anchor_position.y};
-    Vector2 vertical_start = {anchor_position.x, anchor_position.y - cross_half};
-    Vector2 vertical_end = {anchor_position.x, anchor_position.y + cross_half};
-    DrawLineEx(horizontal_start, horizontal_end, 3.0f, (Color){8, 20, 24, 230});
-    DrawLineEx(vertical_start, vertical_end, 3.0f, (Color){8, 20, 24, 230});
-    DrawLineEx(horizontal_start, horizontal_end, 1.0f, (Color){255, 107, 94, 255});
-    DrawLineEx(vertical_start, vertical_end, 1.0f, (Color){255, 107, 94, 255});
-}
-
 static Vector2 game_get_unit_art_preview_size(Game *game)
 {
     float sprite_size = UNIT_ART_TILE_SIZE * UNIT_PREVIEW_SPRITE_SCALE;
@@ -6559,7 +6547,6 @@ static void game_draw_unit_art_preview(Game *game, Vector2 origin)
         .height = content_size.y + (UNIT_PREVIEW_CELL_PADDING_Y * 2.0f),
     };
     DrawRectangleRec(content_panel, (Color){20, 33, 38, 255});
-    DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
 
     int anim_frame = game_unit_anim_frame();
     for (i32 kind = UNIT_ART_NONE + 1; kind < NUM_UNIT_ART; kind++) {
@@ -6572,7 +6559,6 @@ static void game_draw_unit_art_preview(Game *game, Vector2 origin)
 
         Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
         DrawRectangleRec(panel, (Color){32, 47, 52, 255});
-        DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
 
         char display_name[UNIT_ART_DISPLAY_NAME_CAP];
         unit_art_get_display_name((UNIT_ART_KIND)kind, display_name, UNIT_ART_DISPLAY_NAME_CAP);
@@ -6596,15 +6582,6 @@ static void game_draw_unit_art_preview(Game *game, Vector2 origin)
             };
             game_draw_unit_tile(game, (UNIT_ART_KIND)kind, (u8)orientation, top_left, sprite_size,
                                 anim_frame);
-
-            Unit_Art_Anchor anchor = unit_art_get_anchor((UNIT_ART_KIND)kind, (u8)orientation);
-            float sprite_scale = sprite_size / (float)UNIT_ART_TILE_SIZE;
-            Vector2 anchor_pos = {
-                .x = top_left.x + anchor.x * sprite_scale,
-                .y = top_left.y + anchor.y * sprite_scale,
-            };
-            float cross_half = max(1.0f, sprite_size * 0.08f);
-            game_draw_anchor_cross(anchor_pos, cross_half);
         }
     }
 }
@@ -6639,7 +6616,6 @@ static void game_draw_item_art_preview(Game *game, Vector2 origin)
         .height = content_size.y + (ITEM_PREVIEW_CELL_PADDING_Y * 2.0f),
     };
     DrawRectangleRec(content_panel, (Color){20, 33, 38, 255});
-    DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
 
     for (i32 kind = ITEM_ART_NONE + 1; kind < NUM_ITEM_ART; kind++) {
         i32 draw_idx = kind - 1;
@@ -6651,7 +6627,6 @@ static void game_draw_item_art_preview(Game *game, Vector2 origin)
 
         Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
         DrawRectangleRec(panel, (Color){32, 47, 52, 255});
-        DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
 
         char display_name[ITEM_ART_DISPLAY_NAME_CAP];
         item_art_get_display_name((ITEM_ART_KIND)kind, display_name, ITEM_ART_DISPLAY_NAME_CAP);
@@ -6670,16 +6645,6 @@ static void game_draw_item_art_preview(Game *game, Vector2 origin)
         Vector2 top_left = {sprite_x, sprite_y};
 
         game_draw_item_tile(game, (ITEM_ART_KIND)kind, top_left, sprite_size, anim_frame);
-
-        ITEM_ART_KIND draw_kind = game_get_item_draw_kind((ITEM_ART_KIND)kind, anim_frame);
-        Item_Art_Anchor anchor = item_art_get_anchor(draw_kind);
-        float sprite_scale = sprite_size / (float)ITEM_ART_TILE_SIZE;
-        Vector2 anchor_pos = {
-            .x = top_left.x + anchor.x * sprite_scale,
-            .y = top_left.y + anchor.y * sprite_scale,
-        };
-        float cross_half = max(1.0f, sprite_size * 0.08f);
-        game_draw_anchor_cross(anchor_pos, cross_half);
     }
 }
 
@@ -6738,7 +6703,6 @@ static void game_draw_world_art_preview(Game *game, Vector2 origin)
         .height = content_size.y + (WORLD_PREVIEW_CELL_PADDING_Y * 2.0f),
     };
     DrawRectangleRec(content_panel, (Color){20, 33, 38, 255});
-    DrawRectangleLinesEx(content_panel, 1.0f, (Color){55, 79, 86, 255});
 
     for (i32 kind = WORLD_ART_NONE + 1; kind < NUM_WORLD_ART; kind++) {
         i32 draw_idx = kind - 1;
@@ -6750,7 +6714,6 @@ static void game_draw_world_art_preview(Game *game, Vector2 origin)
 
         Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
         DrawRectangleRec(panel, (Color){32, 47, 52, 255});
-        DrawRectangleLinesEx(panel, 1.0f, (Color){74, 97, 104, 255});
 
         char display_name[WORLD_ART_DISPLAY_NAME_CAP];
         world_art_get_display_name((WORLD_ART_KIND)kind, display_name, WORLD_ART_DISPLAY_NAME_CAP);
@@ -7242,7 +7205,6 @@ static void game_draw_web_projectiles(const Game *game, Vector2 origin, float ti
 
         Rectangle projectile_rect = {x, y, projectile_size, projectile_size};
         DrawRectangleRec(projectile_rect, (Color){244, 247, 255, 232});
-        DrawRectangleLinesEx(projectile_rect, pixel_size, (Color){255, 255, 255, 255});
     }
 }
 
@@ -7388,8 +7350,7 @@ static void game_player_get_active_summon_target_cell(const Game *game, i32 *out
     game_dungeon_get_offscreen_summon_target_cell(game, out_x, out_y);
 }
 
-static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color inner_fill,
-                                       Color border)
+static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color inner_fill)
 {
     Rectangle shadow = panel;
     shadow.x += 2.0f;
@@ -7400,10 +7361,6 @@ static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color 
     DrawRectangleRec(
         (Rectangle){panel.x + 3.0f, panel.y + 3.0f, panel.width - 6.0f, panel.height - 6.0f},
         inner_fill);
-    DrawRectangleLinesEx(panel, 2.0f, border);
-    DrawRectangleLinesEx(
-        (Rectangle){panel.x + 3.0f, panel.y + 3.0f, panel.width - 6.0f, panel.height - 6.0f}, 1.0f,
-        (Color){82, 60, 40, 255});
 }
 
 static void game_draw_health_hearts(Game *game, Vector2 top_left, i32 health, i32 max_health,
@@ -7879,8 +7836,7 @@ static void game_draw_familiar_command_bar(Game *game)
 
     Rectangle panel = game_familiar_command_panel_rect(game);
     bool has_familiar = game_dungeon_has_living_familiar(game);
-    game_draw_dungeon_ui_panel(panel, (Color){15, 18, 14, 232}, (Color){22, 28, 21, 226},
-                               (Color){105, 132, 99, 255});
+    game_draw_dungeon_ui_panel(panel, (Color){15, 18, 14, 232}, (Color){22, 28, 21, 226});
 
     float buttons_w = panel.width - DUNGEON_FAMILIAR_COMMAND_PANEL_PADDING * 2.0f;
     float button_w =
@@ -7898,21 +7854,17 @@ static void game_draw_familiar_command_bar(Game *game)
 
         bool active = game->familiar_turn_command == commands[command_idx];
         Color fill = (Color){55, 72, 51, 255};
-        Color border = (Color){167, 204, 156, 255};
         Color text = (Color){228, 242, 218, 255};
 
         if (!has_familiar) {
             fill = (Color){40, 44, 43, 250};
-            border = (Color){86, 95, 93, 255};
             text = (Color){124, 132, 129, 255};
         } else if (!active) {
             fill = (Color){44, 55, 42, 252};
-            border = (Color){122, 150, 113, 255};
             text = (Color){194, 212, 187, 255};
         }
 
         DrawRectangleRec(button, fill);
-        DrawRectangleLinesEx(button, 1.0f, border);
 
         float text_size = 14.0f;
         Vector2 text_measure =
@@ -7928,8 +7880,7 @@ static void game_draw_familiar_command_bar(Game *game)
 static void game_draw_player_action_bar(Game *game)
 {
     Rectangle panel = game_action_bar_panel_rect();
-    game_draw_dungeon_ui_panel(panel, (Color){18, 14, 11, 236}, (Color){29, 21, 16, 232},
-                               (Color){132, 105, 72, 255});
+    game_draw_dungeon_ui_panel(panel, (Color){18, 14, 11, 236}, (Color){29, 21, 16, 232});
 
     int anim_frame = game_unit_anim_frame();
     bool action_bar_disabled = game_player_action_bar_is_disabled(game);
@@ -7941,17 +7892,13 @@ static void game_draw_player_action_bar(Game *game)
         bool is_active_slot = game_player_has_active_summon_target(game) &&
                               game->player_active_action_bar_slot == slot_idx;
         Color slot_fill = has_familiar ? (Color){72, 59, 40, 255} : (Color){44, 36, 27, 255};
-        Color slot_border = has_familiar ? (Color){191, 163, 119, 255} : (Color){117, 93, 67, 255};
         if (is_active_slot) {
             slot_fill = (Color){86, 70, 47, 255};
-            slot_border = (Color){242, 213, 142, 255};
         }
         if (action_bar_disabled) {
             slot_fill = has_familiar ? (Color){54, 52, 49, 255} : (Color){36, 35, 33, 255};
-            slot_border = has_familiar ? (Color){109, 106, 101, 255} : (Color){80, 77, 73, 255};
         }
         DrawRectangleRec(slot, slot_fill);
-        DrawRectangleLinesEx(slot, 1.0f, slot_border);
 
         if (has_familiar) {
             Vector2 icon_pos = {
@@ -7973,8 +7920,7 @@ static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kin
 {
     Color outer_fill = is_friendly_row ? (Color){14, 20, 16, 236} : (Color){25, 14, 14, 236};
     Color inner_fill = is_friendly_row ? (Color){22, 31, 24, 232} : (Color){35, 20, 20, 232};
-    Color border = is_friendly_row ? (Color){106, 146, 116, 255} : (Color){162, 98, 92, 255};
-    game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill, border);
+    game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill);
 
     float slot_size = game_testing_unit_bar_slot_size();
     float icon_size = max(12.0f, slot_size - 10.0f);
@@ -7995,20 +7941,15 @@ static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kin
                         selected_kind == unit_kind;
 
         Color slot_fill = is_friendly_row ? (Color){44, 56, 45, 255} : (Color){63, 42, 41, 255};
-        Color slot_border =
-            is_friendly_row ? (Color){131, 170, 140, 255} : (Color){191, 129, 120, 255};
 
         if (hovered) {
             slot_fill = is_friendly_row ? (Color){56, 72, 58, 255} : (Color){81, 55, 53, 255};
         }
         if (selected) {
             slot_fill = is_friendly_row ? (Color){73, 92, 72, 255} : (Color){108, 68, 64, 255};
-            slot_border =
-                is_friendly_row ? (Color){200, 239, 186, 255} : (Color){255, 214, 182, 255};
         }
 
         DrawRectangleRec(slot, slot_fill);
-        DrawRectangleLinesEx(slot, selected ? 1.8f : 1.0f, slot_border);
 
         Vector2 icon_pos = {
             .x = slot.x + floorf((slot.width - icon_size) * 0.5f),
@@ -8058,8 +7999,7 @@ static Rectangle game_draw_player_stats_panel(Game *game)
         .height = panel_h,
     };
 
-    game_draw_dungeon_ui_panel(panel, (Color){20, 15, 12, 236}, (Color){32, 23, 17, 232},
-                               (Color){146, 113, 72, 255});
+    game_draw_dungeon_ui_panel(panel, (Color){20, 15, 12, 236}, (Color){32, 23, 17, 232});
 
     Vector2 hearts_pos = {
         .x = panel.x + (panel.width - hearts_w) * 0.5f,
@@ -8318,8 +8258,7 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
     panel.x = clamp(panel.x, 8.0f, screen_w - panel.width - 8.0f);
     panel.y = clamp(panel.y, 8.0f, screen_h - panel.height - 8.0f);
 
-    game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240},
-                               (Color){143, 108, 71, 255});
+    game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240});
 
     Color title_color = game_unit_kind_tint(hovered.kind);
     title_color.r = (u8)min(255, (i32)title_color.r + 16);
@@ -8352,7 +8291,6 @@ static void game_draw_summon_target_indicator(Game *game, Vector2 origin, float 
 
     bool is_valid_target = game_dungeon_cell_is_valid_summon_target(game, target_x, target_y);
     Color fill = is_valid_target ? (Color){104, 214, 132, 74} : (Color){224, 96, 86, 76};
-    Color border = is_valid_target ? (Color){176, 255, 196, 250} : (Color){255, 152, 137, 250};
 
     Vector2 top_left = game_dungeon_get_cell_top_left(origin, target_x, target_y, tile_size);
     Rectangle marker = {
@@ -8363,7 +8301,6 @@ static void game_draw_summon_target_indicator(Game *game, Vector2 origin, float 
     };
 
     DrawRectangleRec(marker, fill);
-    DrawRectangleLinesEx(marker, max(1.0f, tile_size * 0.1f), border);
 }
 
 static void game_draw_debug_testing_unit_placement_indicator(Game *game, Vector2 origin,
@@ -8381,7 +8318,6 @@ static void game_draw_debug_testing_unit_placement_indicator(Game *game, Vector2
     bool valid_target =
         game_dungeon_cell_is_valid_debug_testing_placement_target(game, target_x, target_y);
     Color fill = valid_target ? (Color){104, 214, 132, 74} : (Color){224, 96, 86, 76};
-    Color border = valid_target ? (Color){176, 255, 196, 250} : (Color){255, 152, 137, 250};
 
     Vector2 top_left = game_dungeon_get_cell_top_left(origin, target_x, target_y, tile_size);
     Rectangle marker = {
@@ -8392,7 +8328,6 @@ static void game_draw_debug_testing_unit_placement_indicator(Game *game, Vector2
     };
 
     DrawRectangleRec(marker, fill);
-    DrawRectangleLinesEx(marker, max(1.0f, tile_size * 0.1f), border);
 
     UNIT_ART_KIND unit_kind = game_debug_selected_testing_unit_kind(game);
     u8 orientation = game_dungeon_get_orientation_from_positions(
@@ -8525,23 +8460,23 @@ static void game_draw_test_dungeon(Game *game)
         game_dungeon_cell_is_explored(game, game->player_spawn_x, game->player_spawn_y)) {
         Color spawn_color =
             game_dungeon_cell_is_visible(game, game->player_spawn_x, game->player_spawn_y)
-                ? (Color){124, 255, 172, 230}
-                : (Color){84, 161, 118, 220};
+                ? (Color){124, 255, 172, 102}
+                : (Color){84, 161, 118, 96};
         Vector2 spawn_top_left = game_dungeon_get_cell_top_left(origin, game->player_spawn_x,
                                                                 game->player_spawn_y, tile_size);
-        DrawRectangleLinesEx((Rectangle){spawn_top_left.x, spawn_top_left.y, tile_size, tile_size},
-                             3.0f, spawn_color);
+        DrawRectangleRec((Rectangle){spawn_top_left.x, spawn_top_left.y, tile_size, tile_size},
+                         spawn_color);
     }
 
     if (show_spawn_to_exit_path && game->has_exit &&
         game_dungeon_cell_is_explored(game, game->exit_x, game->exit_y)) {
         Color exit_color = game_dungeon_cell_is_visible(game, game->exit_x, game->exit_y)
-                               ? (Color){255, 208, 108, 230}
-                               : (Color){171, 133, 72, 220};
+                               ? (Color){255, 208, 108, 102}
+                               : (Color){171, 133, 72, 96};
         Vector2 exit_top_left =
             game_dungeon_get_cell_top_left(origin, game->exit_x, game->exit_y, tile_size);
-        DrawRectangleLinesEx((Rectangle){exit_top_left.x, exit_top_left.y, tile_size, tile_size},
-                             3.0f, exit_color);
+        DrawRectangleRec((Rectangle){exit_top_left.x, exit_top_left.y, tile_size, tile_size},
+                         exit_color);
     }
 }
 
@@ -8973,11 +8908,9 @@ static void game_draw_debug_hud_button(Game *game, Rectangle button, const char 
     if (hovered)
         fill = active ? (Color){82, 116, 69, 250} : (Color){76, 59, 45, 250};
 
-    Color border = active ? (Color){177, 219, 153, 255} : (Color){156, 131, 105, 255};
     Color text = active ? (Color){229, 247, 208, 255} : (Color){222, 198, 167, 255};
 
     DrawRectangleRec(button, fill);
-    DrawRectangleLinesEx(button, 1.5f, border);
 
     float text_size = 16.0f;
     Vector2 text_measure = MeasureTextEx(game->font, label, text_size, game->font_spacing);
@@ -9001,8 +8934,7 @@ static void game_draw_debug_hud(Game *game)
         return;
 
     Rectangle panel = game_debug_hud_panel_rect(game);
-    game_draw_dungeon_ui_panel(panel, (Color){14, 18, 16, 246}, (Color){21, 27, 23, 241},
-                               (Color){120, 154, 112, 255});
+    game_draw_dungeon_ui_panel(panel, (Color){14, 18, 16, 246}, (Color){21, 27, 23, 241});
 
     Vector2 title_pos = {
         .x = panel.x + DEBUG_HUD_PANEL_PADDING,
@@ -9167,8 +9099,7 @@ static void game_draw_end_menu(Game *game)
 
     Color outer_fill = is_win_menu ? (Color){18, 24, 17, 246} : (Color){30, 14, 14, 246};
     Color inner_fill = is_win_menu ? (Color){27, 36, 24, 241} : (Color){43, 22, 20, 241};
-    Color border = is_win_menu ? (Color){123, 165, 84, 255} : (Color){171, 93, 81, 255};
-    game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill, border);
+    game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill);
 
     float title_size = clamp(panel.height * 0.18f, 32.0f, 48.0f);
     float subtitle_size = clamp(panel.height * 0.08f, 16.0f, 22.0f);
@@ -9203,8 +9134,6 @@ static void game_draw_end_menu(Game *game)
         is_win_menu ? (button_hovered ? (Color){100, 144, 66, 255} : (Color){78, 116, 53, 255})
                     : (button_hovered ? (Color){156, 76, 64, 255} : (Color){126, 58, 52, 255});
     DrawRectangleRec(button, button_fill);
-    DrawRectangleLinesEx(button, 2.0f,
-                         is_win_menu ? (Color){193, 229, 152, 255} : (Color){246, 174, 162, 255});
 
     float button_text_size = clamp(button.height * 0.46f, 18.0f, 26.0f);
     Vector2 button_text_measure =
@@ -9365,8 +9294,7 @@ static void game_draw_class_menu(Game *game)
     DrawRectangleGradientV(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){14, 12, 11, 255},
                            (Color){7, 6, 5, 255});
 
-    game_draw_dungeon_ui_panel(panel, (Color){21, 17, 14, 246}, (Color){31, 24, 19, 242},
-                               (Color){144, 112, 74, 255});
+    game_draw_dungeon_ui_panel(panel, (Color){21, 17, 14, 246}, (Color){31, 24, 19, 242});
 
     const char *title = "Choose Your Class";
     const char *subtitle = "Each class starts with a unique set of three familiars.";
@@ -9399,11 +9327,9 @@ static void game_draw_class_menu(Game *game)
         bool hovered = game_point_in_rect(mouse, card);
 
         Color fill = (Color){63, 39, 33, 255};
-        Color border = (Color){183, 123, 106, 255};
         Color text = (Color){248, 214, 201, 255};
         if (class_def->player_class == PLAYER_CLASS_DRUID) {
             fill = (Color){39, 56, 37, 255};
-            border = (Color){125, 179, 114, 255};
             text = (Color){220, 243, 210, 255};
         }
 
@@ -9411,13 +9337,9 @@ static void game_draw_class_menu(Game *game)
             fill.r = (u8)min(255, (i32)fill.r + 16);
             fill.g = (u8)min(255, (i32)fill.g + 16);
             fill.b = (u8)min(255, (i32)fill.b + 16);
-            border.r = (u8)min(255, (i32)border.r + 28);
-            border.g = (u8)min(255, (i32)border.g + 28);
-            border.b = (u8)min(255, (i32)border.b + 28);
         }
 
         DrawRectangleRec(card, fill);
-        DrawRectangleLinesEx(card, hovered ? 2.0f : 1.2f, border);
 
         float icon_max_size = min(card.width - 24.0f, card.height * 0.34f);
         float icon_size =
