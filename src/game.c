@@ -140,7 +140,8 @@
 #define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
 #define DUNGEON_MINIMAP_SCREEN_WIDTH_FRACTION 0.48f
 #define DUNGEON_MINIMAP_MARGIN 18.0f
-#define DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT 4
+#define DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT 5
+#define DUNGEON_MINIMAP_DEFAULT_OPACITY_LEVEL 2
 
 #define DUNGEON_PLAYER_PANEL_MARGIN 16.0f
 #define DUNGEON_PLAYER_PANEL_PADDING 12.0f
@@ -8548,14 +8549,18 @@ static void game_update_camera(Game *game)
 static float game_dungeon_minimap_alpha(const Game *game)
 {
     switch (game->minimap_opacity_level) {
-    case 1:
-        return 0.66f;
-    case 2:
-        return 0.33f;
-    case 3:
+    case 0:
         return 0.0f;
-    default:
+    case 1:
+        return 0.25f;
+    case 2:
+        return 0.50f;
+    case 3:
+        return 0.75f;
+    case 4:
         return 1.0f;
+    default:
+        return 0.50f;
     }
 }
 
@@ -9090,7 +9095,7 @@ void game_init(Mem mem, Font font, float font_spacing)
     SetTextureFilter(game->world_texture, TEXTURE_FILTER_POINT);
 
     game->show_dungeon_view = true;
-    game->minimap_opacity_level = 0;
+    game->minimap_opacity_level = DUNGEON_MINIMAP_DEFAULT_OPACITY_LEVEL;
     game->end_menu_state = END_MENU_NONE;
     game->debug_hud_visible = false;
     game->debug_in_testing_area = false;
