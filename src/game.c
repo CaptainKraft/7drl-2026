@@ -138,6 +138,7 @@
 
 #define DUNGEON_MINIMAP_MAX_WIDTH 640.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
+#define DUNGEON_MINIMAP_SCREEN_WIDTH_FRACTION 0.48f
 #define DUNGEON_MINIMAP_MARGIN 18.0f
 #define DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT 4
 
@@ -8620,8 +8621,9 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
 
     float screen_w = (float)GetScreenWidth();
     float screen_h = (float)GetScreenHeight();
-    float map_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f));
+    float map_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w * DUNGEON_MINIMAP_SCREEN_WIDTH_FRACTION);
     float map_h = min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f));
+    map_w = min(map_w, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f));
     map_w = max(map_w, 1.0f);
     map_h = max(map_h, 1.0f);
 
@@ -8713,10 +8715,6 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
 
         DrawRectangleRec(marker, item_tint);
         game_rect_expand_to_include(&minimap_bounds, &has_minimap_bounds, marker);
-        if (item_marker_size > 2.0f)
-            DrawRectangleLinesEx(
-                marker, 1.0f,
-                game_dungeon_minimap_color_alpha((Color){31, 56, 44, 255}, minimap_alpha));
     }
 
     float enemy_radius = max(1.0f, cell_size * 0.5f);
@@ -8733,18 +8731,13 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
         };
         Color unit_fill =
             unit.is_friendly ? (Color){124, 209, 158, 255} : (Color){230, 104, 92, 255};
-        Color unit_border = unit.is_friendly ? (Color){44, 91, 66, 255} : (Color){87, 32, 31, 255};
         unit_fill = game_dungeon_minimap_color_alpha(unit_fill, minimap_alpha);
-        unit_border = game_dungeon_minimap_color_alpha(unit_border, minimap_alpha);
 
         DrawPoly(enemy_center, 4, enemy_radius, 45.0f, unit_fill);
         game_rect_expand_to_include(&minimap_bounds, &has_minimap_bounds,
                                     (Rectangle){enemy_center.x - enemy_radius,
                                                 enemy_center.y - enemy_radius, enemy_radius * 2.0f,
                                                 enemy_radius * 2.0f});
-        if (enemy_radius > 1.5f) {
-            DrawPolyLinesEx(enemy_center, 4, enemy_radius, 45.0f, 1.0f, unit_border);
-        }
     }
 
     if (game_dungeon_cell_in_bounds(game->player_x, game->player_y) &&
@@ -8753,13 +8746,9 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
             .x = map_origin.x + ((float)game->player_x + 0.5f) * cell_size,
             .y = map_origin.y + ((float)game->player_y + 0.5f) * cell_size,
         };
-        float pulse_t = 0.5f + 0.5f * sinf((float)GetTime() * 6.0f);
         float radius = max(2.0f, cell_size * 0.65f);
-        radius *= 0.85f + (0.45f * pulse_t);
         DrawPoly(player_center, 4, radius, 45.0f,
                  game_dungeon_minimap_color_alpha((Color){255, 224, 121, 255}, minimap_alpha));
-        DrawPolyLinesEx(player_center, 4, radius, 45.0f, 1.0f,
-                        game_dungeon_minimap_color_alpha((Color){101, 63, 24, 255}, minimap_alpha));
         game_rect_expand_to_include(&minimap_bounds, &has_minimap_bounds,
                                     (Rectangle){player_center.x - radius, player_center.y - radius,
                                                 radius * 2.0f, radius * 2.0f});
