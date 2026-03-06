@@ -73,7 +73,6 @@
 
 #define DUNGEON_RNG_STREAM_LAYOUT 0x4c41594f5554ull
 #define DUNGEON_RNG_STREAM_POPULATE 0x504f50554c415445ull
-#define DUNGEON_RNG_STREAM_SCROLL_KIND 0x5343524c4b494e44ull
 #define DUNGEON_RNG_STREAM_CULL 0x43554c4cull
 #define DUNGEON_RNG_STREAM_DISEASED 0x4449534541534544ull
 #define DUNGEON_RNG_STREAM_RUN_SEED 0x52554e53454544ull
@@ -94,7 +93,6 @@
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
 #define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN 4
 #define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MAX 10
-#define DUNGEON_SCROLLS_PER_FLOOR 10
 #define DUNGEON_PATH_UNREACHABLE 0x3fff
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
@@ -106,6 +104,9 @@
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_TARGET_MAX_DISTANCE 7
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_ENEMY_AVOID_DISTANCE 3
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_DEFENSE_DISTANCE 7
+#define DUNGEON_SPIDER_WEB_RANGE_MIN 3
+#define DUNGEON_SPIDER_WEB_RANGE_MAX 7
+#define DUNGEON_SPIDER_HOSTILE_AVOID_DISTANCE 1
 #define DUNGEON_FAMILIAR_FOLLOW_ENEMY_AVOID_DISTANCE 2
 #define DUNGEON_FAMILIAR_BAT_FOLLOW_MIN_DISTANCE 3
 #define DUNGEON_FAMILIAR_BAT_FOLLOW_MAX_DISTANCE 5
@@ -124,6 +125,7 @@
 #define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
 #define DUNGEON_DISEASED_DAMAGE_PENALTY 1
 #define DUNGEON_POISON_DAMAGE_PER_TURN 1
+#define DUNGEON_BURN_DURATION_TURNS 5
 #define DUNGEON_WEBBED_DURATION_TURNS 5
 #define DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS 5
 #define DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE 3
@@ -150,7 +152,7 @@
 
 #define DUNGEON_ACTION_BAR_SLOT_COUNT 5
 #define DUNGEON_ACTION_BAR_NO_SLOT (-1)
-#define DUNGEON_ACTION_BAR_ITEM_SIZE ((float)ITEM_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
+#define DUNGEON_ACTION_BAR_ITEM_SIZE ((float)UNIT_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
 #define DUNGEON_ACTION_BAR_SLOT_SIZE (DUNGEON_ACTION_BAR_ITEM_SIZE + 4.0f)
 #define DUNGEON_ACTION_BAR_SLOT_GAP 4.0f
 #define DUNGEON_ACTION_BAR_PANEL_PADDING 6.0f
@@ -182,7 +184,6 @@
 #define TESTING_UNIT_BAR_BOTTOM_MARGIN 14.0f
 
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
-#define ITEM_KIND_SCROLL ITEM_ART_KIND_AT(6, 0)
 #define ITEM_KIND_EMPTY_HEART ITEM_ART_KIND_AT(7, 0)
 #define ITEM_KIND_HEART ITEM_ART_KIND_AT(8, 0)
 #define ITEM_KIND_RED_POTION ITEM_ART_KIND_AT(1, 1)
@@ -321,7 +322,6 @@ typedef struct {
     i16 x;
     i16 y;
     ITEM_ART_KIND kind;
-    UNIT_ART_KIND summon_unit_kind;
 } Dungeon_Item;
 
 typedef struct {
@@ -351,6 +351,10 @@ typedef struct {
     bool is_poisoned;
     bool poisoned_applied_this_turn;
     float poisoned_particle_spawn_timer;
+    bool is_burning;
+    bool burning_applied_this_turn;
+    u8 burn_turns_active;
+    u8 burn_turns_remaining;
     bool is_webbed;
     bool webbed_applied_this_turn;
     bool webbed_skip_next_turn;
@@ -495,7 +499,6 @@ typedef struct {
     RNG dungeon_run_seed_rng;
     RNG dungeon_layout_rng;
     RNG dungeon_populate_rng;
-    RNG dungeon_scroll_kind_rng;
     RNG dungeon_cull_rng;
     RNG dungeon_diseased_particle_rng;
     Dungeon_HBW_Tileset dungeon_tileset;
@@ -539,9 +542,8 @@ typedef struct {
     bool player_attack_anim_active;
     u8 player_orientation;
     Unit_Stats player_stats;
-    ITEM_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
-    UNIT_ART_KIND player_action_bar_summon_unit_kind[DUNGEON_ACTION_BAR_SLOT_COUNT];
-    i32 player_active_scroll_slot;
+    UNIT_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
+    i32 player_active_action_bar_slot;
     u32 player_damage_event_count;
     FAMILIAR_TURN_COMMAND familiar_turn_command;
 
@@ -602,15 +604,14 @@ static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     ((i32)(sizeof(game_dungeon_hbw_templates) / sizeof(game_dungeon_hbw_templates[0])))
 
 static const UNIT_ART_KIND game_testing_area_familiar_unit_kinds[] = {
-    UNIT_ART_RAT,      UNIT_ART_COBRA,   UNIT_ART_SPIDER,    UNIT_ART_BAT,       UNIT_ART_BEETLE,
-    UNIT_ART_BEHOLDER, UNIT_ART_IMP,     UNIT_ART_SPIRIT,    UNIT_ART_ELEMENTAL, UNIT_ART_REAPER,
-    UNIT_ART_PHOENIX,  UNIT_ART_GRIFFON, UNIT_ART_MAN_EATER, UNIT_ART_MUMMY,     UNIT_ART_TREANT,
+    UNIT_ART_IMP,
+    UNIT_ART_BEHOLDER,
 };
 
 static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
-    UNIT_ART_GOBLIN_GRUNT, UNIT_ART_GOBLIN_SHAMAN, UNIT_ART_GOBLIN_WARRIOR, UNIT_ART_SLIME,
-    UNIT_ART_TROLL,        UNIT_ART_DEATH_KNIGHT,  UNIT_ART_MINOTAUR,       UNIT_ART_MIMIC,
-    UNIT_ART_CENTAUR,      UNIT_ART_SATYR,         UNIT_ART_GIANT,          UNIT_ART_YETI,
+    UNIT_ART_RAT,   UNIT_ART_SPIDER, UNIT_ART_GOBLIN_GRUNT,  UNIT_ART_COBRA,
+    UNIT_ART_BAT,   UNIT_ART_BEETLE, UNIT_ART_GOBLIN_SHAMAN, UNIT_ART_GOBLIN_WARRIOR,
+    UNIT_ART_SLIME, UNIT_ART_TROLL,
 };
 
 #define TESTING_AREA_FAMILIAR_KIND_COUNT                                                           \
@@ -621,8 +622,8 @@ static const UNIT_ART_KIND game_testing_area_enemy_unit_kinds[] = {
     ((i32)(sizeof(game_testing_area_enemy_unit_kinds) /                                            \
            sizeof(game_testing_area_enemy_unit_kinds[0])))
 
-#define TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT 6
-#define TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT 5
+#define TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT TESTING_AREA_FAMILIAR_KIND_COUNT
+#define TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT TESTING_AREA_ENEMY_KIND_COUNT
 
 _Static_assert(TESTING_AREA_FAMILIAR_KIND_COUNT > 0,
                "Testing area familiar list must not be empty");
@@ -1157,23 +1158,17 @@ static void game_dungeon_sync_stairs_theme(Game *game)
     }
 }
 
-static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind,
-                                  UNIT_ART_KIND summon_unit_kind)
+static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind)
 {
     assert(game->item_count < DUNGEON_MAX_ITEMS);
     assert(kind > ITEM_ART_NONE && kind < NUM_ITEM_ART);
     assert(game_dungeon_cell_in_bounds(x, y));
     assert(game_dungeon_cell_is_floor(game, x, y));
-    if (kind == ITEM_KIND_SCROLL)
-        assert(summon_unit_kind > UNIT_ART_NONE && summon_unit_kind < NUM_UNIT_ART);
-    else
-        assert(summon_unit_kind == UNIT_ART_NONE);
 
     game->items[game->item_count++] = (Dungeon_Item){
         .x = (i16)x,
         .y = (i16)y,
         .kind = kind,
-        .summon_unit_kind = summon_unit_kind,
     };
 }
 
@@ -1218,12 +1213,19 @@ static void game_dungeon_clear_webbed_status(Dungeon_Unit *unit)
     unit->webbed_turns_remaining = 0;
 }
 
-static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
+static void game_dungeon_clear_burning_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
 
-    if (unit->is_friendly)
-        return;
+    unit->is_burning = false;
+    unit->burning_applied_this_turn = false;
+    unit->burn_turns_active = 0;
+    unit->burn_turns_remaining = 0;
+}
+
+static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
 
     if (unit->is_diseased)
         return;
@@ -1236,9 +1238,6 @@ static void game_dungeon_apply_poisoned_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
 
-    if (unit->is_friendly)
-        return;
-
     if (unit->is_poisoned)
         return;
 
@@ -1247,12 +1246,22 @@ static void game_dungeon_apply_poisoned_status(Dungeon_Unit *unit)
     unit->poisoned_particle_spawn_timer = 0.0f;
 }
 
-static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
+static void game_dungeon_apply_burning_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
 
-    if (unit->is_friendly)
+    if (unit->is_burning)
         return;
+
+    unit->is_burning = true;
+    unit->burning_applied_this_turn = true;
+    unit->burn_turns_active = 0;
+    unit->burn_turns_remaining = DUNGEON_BURN_DURATION_TURNS;
+}
+
+static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
 
     unit->is_webbed = true;
     unit->webbed_applied_this_turn = true;
@@ -1271,14 +1280,14 @@ static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
     return damage;
 }
 
-static bool game_scroll_summon_unit_is_valid(UNIT_ART_KIND summon_unit_kind)
+static bool game_action_bar_familiar_unit_is_valid(UNIT_ART_KIND unit_kind)
 {
-    return game_testing_area_unit_kind_is_implemented(true, summon_unit_kind);
+    return game_testing_area_unit_kind_is_implemented(true, unit_kind);
 }
 
-static Color game_scroll_get_summon_unit_tint(UNIT_ART_KIND summon_unit_kind)
+static Color game_unit_kind_tint(UNIT_ART_KIND kind)
 {
-    switch (summon_unit_kind) {
+    switch (kind) {
     case UNIT_ART_RAT:
         return (Color){184, 166, 145, 255};
     case UNIT_ART_COBRA:
@@ -1338,10 +1347,9 @@ static Color game_scroll_get_summon_unit_tint(UNIT_ART_KIND summon_unit_kind)
     }
 }
 
-static Color game_dungeon_get_item_tint(ITEM_ART_KIND item_kind, UNIT_ART_KIND summon_unit_kind)
+static Color game_dungeon_get_item_tint(ITEM_ART_KIND item_kind)
 {
-    if (item_kind == ITEM_KIND_SCROLL)
-        return game_scroll_get_summon_unit_tint(summon_unit_kind);
+    (void)item_kind;
     return WHITE;
 }
 
@@ -1358,11 +1366,11 @@ static Unit_Stats game_get_unit_base_stats(UNIT_ART_KIND kind)
     case UNIT_ART_COBRA:
         return game_make_unit_stats(2, 1);
     case UNIT_ART_SPIDER:
-        return game_make_unit_stats(1, 0);
+        return game_make_unit_stats(1, 1);
     case UNIT_ART_BEHOLDER:
         return game_make_unit_stats(10, 2);
     case UNIT_ART_IMP:
-        return game_make_unit_stats(3, 1);
+        return game_make_unit_stats(5, 3);
     case UNIT_ART_SPIRIT:
         return game_make_unit_stats(3, 1);
     case UNIT_ART_ELEMENTAL:
@@ -1472,6 +1480,10 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .is_poisoned = false,
         .poisoned_applied_this_turn = false,
         .poisoned_particle_spawn_timer = 0.0f,
+        .is_burning = false,
+        .burning_applied_this_turn = false,
+        .burn_turns_active = 0,
+        .burn_turns_remaining = 0,
         .is_webbed = false,
         .webbed_applied_this_turn = false,
         .webbed_skip_next_turn = false,
@@ -1514,7 +1526,6 @@ static void game_seed_dungeon_rng_streams(Game *game)
     RNG floor_rng = {.seed = game_make_seed128(floor_seed)};
     game->dungeon_layout_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_LAYOUT);
     game->dungeon_populate_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_POPULATE);
-    game->dungeon_scroll_kind_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_SCROLL_KIND);
     game->dungeon_cull_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_CULL);
     game->dungeon_diseased_particle_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_DISEASED);
 }
@@ -2422,7 +2433,7 @@ static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
     return game_dungeon_cell_has_unit(game, x, y);
 }
 
-static bool game_dungeon_cell_is_valid_scroll_target(const Game *game, i32 x, i32 y)
+static bool game_dungeon_cell_is_valid_summon_target(const Game *game, i32 x, i32 y)
 {
     if (!game_dungeon_cell_in_bounds(x, y))
         return false;
@@ -2657,6 +2668,7 @@ static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon
         restored->is_poisoned = false;
         restored->poisoned_applied_this_turn = false;
         restored->poisoned_particle_spawn_timer = 0.0f;
+        game_dungeon_clear_burning_status(restored);
         restored->last_damaged_player_event = 0;
         game_dungeon_clear_webbed_status(restored);
         restored->has_acted_this_turn = false;
@@ -2697,6 +2709,7 @@ static void game_dungeon_process_troll_blood_revives(Game *game)
         revived->is_poisoned = false;
         revived->poisoned_applied_this_turn = false;
         revived->poisoned_particle_spawn_timer = 0.0f;
+        game_dungeon_clear_burning_status(revived);
         game_dungeon_clear_webbed_status(revived);
         revived->has_troll_blood = true;
         revived->shaman_heal_cooldown_turns = 0;
@@ -4066,10 +4079,12 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
             target_unit->turns_out_of_player_los = 0;
         }
 
-        if (unit->is_friendly && unit->kind == UNIT_ART_RAT)
+        if (unit->kind == UNIT_ART_RAT)
             game_dungeon_apply_diseased_status(target_unit);
-        else if (unit->is_friendly && unit->kind == UNIT_ART_COBRA)
+        else if (unit->kind == UNIT_ART_COBRA)
             game_dungeon_apply_poisoned_status(target_unit);
+        else if (unit->kind == UNIT_ART_IMP)
+            game_dungeon_apply_burning_status(target_unit);
 
         game_dungeon_apply_damage_to_unit(game, target->target_unit_idx, attack_damage,
                                           DAMAGE_KIND_NORMAL);
@@ -4249,6 +4264,119 @@ static void game_dungeon_take_kamikaze_turn(Game *game, i32 unit_idx,
     game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
 }
 
+static void game_dungeon_take_spider_turn(Game *game, i32 unit_idx)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+
+    Dungeon_Enemy_Target target = {0};
+    if (!game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &target))
+        return;
+
+    if (target.target_is_player) {
+        game_dungeon_take_basic_melee_turn(game, unit_idx, &target);
+        return;
+    }
+
+    if (target.target_unit_idx < 0 || target.target_unit_idx >= game->unit_count)
+        return;
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    Dungeon_Unit *target_unit = &game->units[target.target_unit_idx];
+    if (target_unit->is_friendly == unit->is_friendly)
+        return;
+
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return;
+
+    i32 target_x = target_unit->x;
+    i32 target_y = target_unit->y;
+    unit->orientation = game_dungeon_get_orientation_from_positions(start_x, start_y, target_x,
+                                                                    target_y, unit->orientation);
+
+    if (target_unit->is_webbed) {
+        game_dungeon_take_basic_melee_turn(game, unit_idx, &target);
+        return;
+    }
+
+    i16 target_distance = target.distance;
+    bool in_web_range = target_distance >= DUNGEON_SPIDER_WEB_RANGE_MIN &&
+                        target_distance <= DUNGEON_SPIDER_WEB_RANGE_MAX;
+    if (in_web_range &&
+        game_dungeon_unit_can_see_cell(game, start_x, start_y, target_x, target_y)) {
+        float attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
+        game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
+                                                 attack_delay);
+        game_dungeon_spawn_web_projectile(game, start_x, start_y, target_x, target_y, attack_delay);
+        if (unit->is_friendly && !target_unit->is_friendly) {
+            target_unit->is_awake = true;
+            target_unit->turns_out_of_player_los = 0;
+        }
+        game_dungeon_apply_webbed_status(target_unit);
+        return;
+    }
+
+    game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
+        game, unit_idx, target_x, target_y, DUNGEON_SPIDER_WEB_RANGE_MIN,
+        DUNGEON_SPIDER_WEB_RANGE_MAX, DUNGEON_SPIDER_HOSTILE_AVOID_DISTANCE);
+}
+
+static void game_dungeon_take_enemy_dash_turn(Game *game, i32 unit_idx)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return;
+
+    if (unit->dash_cooldown_turns > 0)
+        unit->dash_cooldown_turns--;
+
+    Dungeon_Enemy_Target target = {0};
+    if (!game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &target))
+        return;
+
+    i32 target_x = target.target_x;
+    i32 target_y = target.target_y;
+    if (!target.target_is_player && target.target_unit_idx >= 0 &&
+        target.target_unit_idx < game->unit_count) {
+        target_x = game->units[target.target_unit_idx].x;
+        target_y = game->units[target.target_unit_idx].y;
+    }
+
+    unit->orientation = game_dungeon_get_orientation_from_positions(start_x, start_y, target_x,
+                                                                    target_y, unit->orientation);
+
+    if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, target_x, target_y)) {
+        if (game_dungeon_try_move_unit_away_from_cell_with_max_steps(
+                game, unit_idx, target_x, target_y, DUNGEON_FAMILIAR_BAT_MAX_MOVE_TILES)) {
+            return;
+        }
+    }
+
+    if (game_dungeon_try_take_bat_dash_attack(game, unit_idx, &target))
+        return;
+
+    i32 line_target_x = 0;
+    i32 line_target_y = 0;
+    if (game_dungeon_find_closest_cardinal_line_cell_to_target(game, unit_idx, target_x, target_y,
+                                                               &line_target_x, &line_target_y)) {
+        game_dungeon_try_move_unit_towards_cell_with_max_steps(
+            game, unit_idx, line_target_x, line_target_y, DUNGEON_FAMILIAR_BAT_MAX_MOVE_TILES);
+        return;
+    }
+
+    game_dungeon_try_move_unit_towards_cell_with_max_steps(game, unit_idx, target_x, target_y,
+                                                           DUNGEON_FAMILIAR_BAT_MAX_MOVE_TILES);
+}
+
 static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
 {
     assert(game != 0);
@@ -4344,6 +4472,32 @@ static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
             start_x, start_y, game->player_x, game->player_y, unit->orientation);
         game_dungeon_try_move_unit_away_from_cell(game, unit_idx, game->player_x, game->player_y);
     }
+}
+
+static bool game_dungeon_unit_should_skip_webbed_turn(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    if (!unit->is_webbed)
+        return false;
+
+    if (unit->webbed_applied_this_turn) {
+        unit->webbed_applied_this_turn = false;
+        return true;
+    }
+
+    if (unit->webbed_turns_remaining == 0) {
+        game_dungeon_clear_webbed_status(unit);
+        return false;
+    }
+
+    bool skip_turn = unit->webbed_skip_next_turn;
+    unit->webbed_skip_next_turn = !unit->webbed_skip_next_turn;
+    unit->webbed_turns_remaining--;
+    if (unit->webbed_turns_remaining == 0)
+        game_dungeon_clear_webbed_status(unit);
+
+    return skip_turn;
 }
 
 static void game_dungeon_take_friendly_unit_turn(
@@ -4591,7 +4745,11 @@ static void game_dungeon_take_friendly_turns(Game *game)
         if (next_friendly_idx < 0)
             break;
 
-        game->units[next_friendly_idx].has_acted_this_turn = true;
+        Dungeon_Unit *unit = &game->units[next_friendly_idx];
+        unit->has_acted_this_turn = true;
+        if (game_dungeon_unit_should_skip_webbed_turn(unit))
+            continue;
+
         game_dungeon_take_friendly_unit_turn(game, next_friendly_idx, player_distance,
                                              player_distance_valid);
     }
@@ -4601,7 +4759,7 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
 {
     for (i32 unit_idx = 0; unit_idx < game->unit_count;) {
         Dungeon_Unit *unit = &game->units[unit_idx];
-        if (unit->is_friendly || !unit->is_poisoned) {
+        if (!unit->is_poisoned) {
             unit_idx++;
             continue;
         }
@@ -4621,8 +4779,44 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
     }
 }
 
+static void game_dungeon_apply_burn_turn_damage(Game *game)
+{
+    for (i32 unit_idx = 0; unit_idx < game->unit_count;) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        if (!unit->is_burning) {
+            unit_idx++;
+            continue;
+        }
+
+        if (unit->burning_applied_this_turn) {
+            unit->burning_applied_this_turn = false;
+            unit_idx++;
+            continue;
+        }
+
+        if (unit->burn_turns_remaining == 0) {
+            game_dungeon_clear_burning_status(unit);
+            unit_idx++;
+            continue;
+        }
+
+        if (unit->burn_turns_active < 255)
+            unit->burn_turns_active++;
+        i32 burn_damage = max((i32)unit->burn_turns_active, 1);
+        if (game_dungeon_apply_damage_to_unit(game, unit_idx, burn_damage, DAMAGE_KIND_FIRE))
+            continue;
+
+        unit->burn_turns_remaining--;
+        if (unit->burn_turns_remaining == 0)
+            game_dungeon_clear_burning_status(unit);
+
+        unit_idx++;
+    }
+}
+
 static void game_dungeon_take_enemy_turns(Game *game)
 {
+    game_dungeon_apply_burn_turn_damage(game);
     game_dungeon_apply_poison_turn_damage(game);
 
     if (game->unit_count <= 0)
@@ -4689,22 +4883,8 @@ static void game_dungeon_take_enemy_turns(Game *game)
         if (woke_from_player_los)
             continue;
 
-        if (unit->is_webbed) {
-            if (unit->webbed_applied_this_turn) {
-                unit->webbed_applied_this_turn = false;
-                continue;
-            } else if (unit->webbed_turns_remaining == 0) {
-                game_dungeon_clear_webbed_status(unit);
-            } else {
-                bool skip_turn = unit->webbed_skip_next_turn;
-                unit->webbed_skip_next_turn = !unit->webbed_skip_next_turn;
-                unit->webbed_turns_remaining--;
-                if (unit->webbed_turns_remaining == 0)
-                    game_dungeon_clear_webbed_status(unit);
-                if (skip_turn)
-                    continue;
-            }
-        }
+        if (game_dungeon_unit_should_skip_webbed_turn(unit))
+            continue;
 
         UNIT_AI_KIND ai_kind = game_get_unit_ai_kind(unit->kind);
         switch (ai_kind) {
@@ -4721,7 +4901,21 @@ static void game_dungeon_take_enemy_turns(Game *game)
             break;
         }
         case UNIT_AI_DEFEND_RANGED:
+            if (unit->kind == UNIT_ART_SPIDER) {
+                game_dungeon_take_spider_turn(game, next_enemy_idx);
+                break;
+            }
+            {
+                Dungeon_Enemy_Target target = {0};
+                if (game_dungeon_find_nearest_visible_hostile_target(game, next_enemy_idx,
+                                                                     &target)) {
+                    game_dungeon_take_basic_melee_turn(game, next_enemy_idx, &target);
+                }
+            }
+            break;
         case UNIT_AI_DASH:
+            game_dungeon_take_enemy_dash_turn(game, next_enemy_idx);
+            break;
         case UNIT_AI_BASIC_MELEE:
         default: {
             Dungeon_Enemy_Target target = {0};
@@ -5128,9 +5322,11 @@ static UNIT_ART_KIND game_dungeon_pick_enemy_kind_for_depth(RNG *rng, u32 depth)
 {
     static const u8
         enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT][TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
-            {80, 0, 0, 20, 0},    {73, 0, 5, 22, 0},    {64, 0, 10, 22, 4},   {33, 24, 16, 20, 7},
-            {27, 22, 22, 17, 12}, {22, 20, 26, 14, 18}, {17, 17, 30, 11, 25}, {13, 14, 33, 9, 31},
-            {9, 11, 36, 7, 37},   {6, 8, 39, 5, 42},
+            {35, 20, 25, 15, 5, 0, 0, 0, 0, 0},   {28, 18, 25, 14, 10, 3, 2, 0, 0, 0},
+            {22, 16, 24, 13, 12, 5, 4, 2, 2, 0},  {18, 14, 22, 12, 13, 6, 6, 4, 4, 1},
+            {14, 12, 20, 11, 13, 7, 8, 6, 7, 2},  {11, 10, 18, 10, 13, 8, 9, 8, 10, 3},
+            {8, 9, 16, 9, 12, 8, 10, 10, 13, 5},  {6, 8, 13, 8, 11, 9, 10, 12, 15, 8},
+            {4, 7, 11, 7, 10, 9, 11, 13, 16, 12}, {3, 6, 9, 6, 9, 9, 10, 14, 16, 18},
         };
 
     u32 depth_idx = game_dungeon_clamp_run_depth(depth);
@@ -5152,23 +5348,6 @@ static UNIT_ART_KIND game_dungeon_pick_shaman_companion_kind_for_depth(RNG *rng,
     if (companion_kind_idx == 1)
         return UNIT_ART_GOBLIN_WARRIOR;
     return UNIT_ART_GOBLIN_GRUNT;
-}
-
-static UNIT_ART_KIND game_dungeon_pick_scroll_summon_kind_for_depth(RNG *rng, u32 depth)
-{
-    static const u8 summon_kind_weights[DUNGEON_RUN_FLOOR_COUNT]
-                                       [TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT] = {
-                                           {45, 30, 20, 5, 0, 0},    {38, 28, 20, 10, 4, 0},
-                                           {32, 25, 19, 13, 9, 2},   {27, 22, 19, 15, 13, 4},
-                                           {22, 19, 19, 17, 16, 7},  {18, 16, 18, 19, 18, 11},
-                                           {14, 13, 17, 20, 20, 16}, {11, 10, 15, 21, 21, 22},
-                                           {8, 8, 13, 22, 22, 27},   {6, 6, 11, 22, 23, 32},
-                                       };
-
-    u32 depth_idx = game_dungeon_clamp_run_depth(depth);
-    i32 summon_kind_idx = game_pick_weighted_index(rng, summon_kind_weights[depth_idx],
-                                                   TESTING_AREA_IMPLEMENTED_FAMILIAR_KIND_COUNT);
-    return game_testing_area_familiar_unit_kinds[summon_kind_idx];
 }
 
 static bool game_dungeon_cell_is_in_los_range_from_origin(const Game *game, i32 origin_x,
@@ -5412,152 +5591,6 @@ static bool game_dungeon_pick_exit_floor_cell(Game *game, RNG *rng, i32 min_path
     return false;
 }
 
-static bool
-game_dungeon_build_floor_distance_map(const Game *game, i32 origin_x, i32 origin_y,
-                                      i16 out_distance[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
-                                      i32 *out_max_distance)
-{
-    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
-        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++)
-            out_distance[y][x] = -1;
-    }
-
-    if (!game_dungeon_cell_is_floor(game, origin_x, origin_y)) {
-        if (out_max_distance)
-            *out_max_distance = 0;
-        return false;
-    }
-
-    i32 queue[DUNGEON_CELL_COUNT];
-    i32 head = 0;
-    i32 tail = 0;
-    queue[tail++] = origin_y * DUNGEON_COL_COUNT + origin_x;
-    out_distance[origin_y][origin_x] = 0;
-
-    i32 max_distance = 0;
-
-    static const i32 neighbor_offsets[4][2] = {
-        {1, 0},
-        {0, 1},
-        {-1, 0},
-        {0, -1},
-    };
-
-    while (head < tail) {
-        i32 idx = queue[head++];
-        i32 x = idx % DUNGEON_COL_COUNT;
-        i32 y = idx / DUNGEON_COL_COUNT;
-        i32 next_distance = (i32)out_distance[y][x] + 1;
-
-        for (i32 n = 0; n < 4; n++) {
-            i32 nx = x + neighbor_offsets[n][0];
-            i32 ny = y + neighbor_offsets[n][1];
-            if (!game_dungeon_cell_is_floor(game, nx, ny))
-                continue;
-            if (out_distance[ny][nx] >= 0)
-                continue;
-
-            out_distance[ny][nx] = (i16)next_distance;
-            max_distance = max(max_distance, next_distance);
-            queue[tail++] = ny * DUNGEON_COL_COUNT + nx;
-        }
-    }
-
-    if (out_max_distance)
-        *out_max_distance = max_distance;
-    return true;
-}
-
-static bool game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
-    const Game *game, RNG *rng, const i16 distance_map[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT],
-    i32 min_distance, i32 max_distance, i16 *out_x, i16 *out_y)
-{
-    assert(rng != 0);
-    assert(out_x != 0);
-    assert(out_y != 0);
-
-    if (min_distance > max_distance)
-        return false;
-
-    i32 candidate_count = 0;
-    i16 chosen_x = -1;
-    i16 chosen_y = -1;
-
-    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
-        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
-            if (!game_dungeon_cell_is_floor(game, x, y))
-                continue;
-            if (game_dungeon_cell_is_occupied(game, x, y))
-                continue;
-
-            i32 distance = distance_map[y][x];
-            if (distance < min_distance || distance > max_distance)
-                continue;
-
-            candidate_count++;
-            if (ck_rand_int(rng, 0, candidate_count) == 0) {
-                chosen_x = (i16)x;
-                chosen_y = (i16)y;
-            }
-        }
-    }
-
-    if (candidate_count <= 0)
-        return false;
-
-    *out_x = chosen_x;
-    *out_y = chosen_y;
-    return true;
-}
-
-static bool game_dungeon_spawn_scrolls(Game *game, RNG *position_rng, RNG *summon_kind_rng,
-                                       i32 entrance_x, i32 entrance_y, u32 depth)
-{
-    assert(position_rng != 0);
-    assert(summon_kind_rng != 0);
-
-    i16 distance_map[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
-    i32 max_distance = 0;
-    if (!game_dungeon_build_floor_distance_map(game, entrance_x, entrance_y, distance_map,
-                                               &max_distance)) {
-        return false;
-    }
-
-    if (max_distance <= 0)
-        return false;
-
-    for (i32 scroll_idx = 0; scroll_idx < DUNGEON_SCROLLS_PER_FLOOR; scroll_idx++) {
-        i32 band_min = (max_distance * scroll_idx) / DUNGEON_SCROLLS_PER_FLOOR + 1;
-        i32 band_max = (max_distance * (scroll_idx + 1)) / DUNGEON_SCROLLS_PER_FLOOR;
-        if (scroll_idx == DUNGEON_SCROLLS_PER_FLOOR - 1)
-            band_max = max_distance;
-
-        band_min = clamp(band_min, 1, max_distance);
-        band_max = clamp(band_max, band_min, max_distance);
-
-        i16 x = -1;
-        i16 y = -1;
-        bool found = game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
-            game, position_rng, distance_map, band_min, band_max, &x, &y);
-        if (!found) {
-            found = game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
-                game, position_rng, distance_map, band_min, max_distance, &x, &y);
-        }
-        if (!found) {
-            found = game_dungeon_pick_unoccupied_floor_cell_in_distance_range(
-                game, position_rng, distance_map, 1, max_distance, &x, &y);
-        }
-        if (!found)
-            return false;
-
-        UNIT_ART_KIND summon_unit_kind =
-            game_dungeon_pick_scroll_summon_kind_for_depth(summon_kind_rng, depth);
-        game_dungeon_add_item(game, x, y, ITEM_KIND_SCROLL, summon_unit_kind);
-    }
-
-    return true;
-}
-
 static bool game_dungeon_spawn_is_in_largest_component(const Game *game)
 {
     i32 spawn_x = game->player_spawn_x;
@@ -5647,12 +5680,6 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
                                        world_art_get_up_stairs_tile(stairs_theme));
         stairs_up_x = game->player_spawn_x;
         stairs_up_y = game->player_spawn_y;
-    }
-
-    if (!game_dungeon_spawn_scrolls(game, &game->dungeon_populate_rng,
-                                    &game->dungeon_scroll_kind_rng, game->player_spawn_x,
-                                    game->player_spawn_y, depth)) {
-        return false;
     }
 
     for (i32 enemy_idx = 0; enemy_idx < enemy_spawn_count && game->unit_count < DUNGEON_MAX_UNITS;
@@ -5771,7 +5798,7 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_i
 
     if (!game_dungeon_populate_test_entities(game, depth, include_up_stairs))
         return false;
-    if (game->item_count != DUNGEON_SCROLLS_PER_FLOOR)
+    if (game->item_count != 0)
         return false;
     i32 expected_enemy_count = game_dungeon_enemy_spawn_count_for_depth(depth);
     if (game->unit_count != expected_enemy_count)
@@ -6953,9 +6980,6 @@ static void game_dungeon_update_status_particles(Game *game)
 
     for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
         Dungeon_Unit *unit = &game->units[unit_idx];
-        if (unit->is_friendly)
-            continue;
-
         if (unit->is_diseased) {
             unit->diseased_particle_spawn_timer -= frame_time;
             while (unit->diseased_particle_spawn_timer <= 0.0f) {
@@ -7119,7 +7143,7 @@ static bool game_dungeon_get_mouse_cell(const Game *game, i32 *out_x, i32 *out_y
     return true;
 }
 
-static void game_dungeon_get_offscreen_scroll_target_cell(const Game *game, i32 *out_x, i32 *out_y)
+static void game_dungeon_get_offscreen_summon_target_cell(const Game *game, i32 *out_x, i32 *out_y)
 {
     assert(out_x != 0);
     assert(out_y != 0);
@@ -7159,7 +7183,7 @@ static void game_dungeon_get_offscreen_scroll_target_cell(const Game *game, i32 
     *out_y = best_y;
 }
 
-static bool game_mouse_has_scroll_target_control(void)
+static bool game_mouse_has_summon_target_control(void)
 {
     if (IsCursorOnScreen())
         return true;
@@ -7174,17 +7198,17 @@ static bool game_mouse_has_scroll_target_control(void)
     return game_point_in_rect(mouse, screen_bounds);
 }
 
-static void game_player_get_active_scroll_target_cell(const Game *game, i32 *out_x, i32 *out_y)
+static void game_player_get_active_summon_target_cell(const Game *game, i32 *out_x, i32 *out_y)
 {
     assert(out_x != 0);
     assert(out_y != 0);
 
-    if (game_mouse_has_scroll_target_control()) {
+    if (game_mouse_has_summon_target_control()) {
         game_dungeon_get_mouse_cell_unclamped(game, out_x, out_y);
         return;
     }
 
-    game_dungeon_get_offscreen_scroll_target_cell(game, out_x, out_y);
+    game_dungeon_get_offscreen_summon_target_cell(game, out_x, out_y);
 }
 
 static void game_draw_dungeon_ui_panel(Rectangle panel, Color outer_fill, Color inner_fill,
@@ -7225,119 +7249,78 @@ static void game_draw_health_hearts(Game *game, Vector2 top_left, i32 health, i3
 static void game_player_clear_action_bar(Game *game)
 {
     for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
-        game->player_action_bar[slot_idx] = ITEM_ART_NONE;
-        game->player_action_bar_summon_unit_kind[slot_idx] = UNIT_ART_NONE;
+        game->player_action_bar[slot_idx] = UNIT_ART_NONE;
     }
-    game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+
+    if (game_action_bar_familiar_unit_is_valid(UNIT_ART_IMP))
+        game->player_action_bar[0] = UNIT_ART_IMP;
+
+    game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
 }
 
-static bool game_player_action_bar_slot_has_scroll(const Game *game, i32 slot_idx)
+static bool game_player_action_bar_slot_has_familiar(const Game *game, i32 slot_idx)
 {
     if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
         return false;
-    if (game->player_action_bar[slot_idx] != ITEM_KIND_SCROLL)
-        return false;
-    return game_scroll_summon_unit_is_valid(game->player_action_bar_summon_unit_kind[slot_idx]);
+    return game_action_bar_familiar_unit_is_valid(game->player_action_bar[slot_idx]);
 }
 
-static i32 game_player_find_first_empty_action_bar_slot(const Game *game)
+static bool game_player_action_bar_is_disabled(const Game *game)
 {
-    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
-        if (game->player_action_bar[slot_idx] == ITEM_ART_NONE)
-            return slot_idx;
-    }
-
-    return -1;
+    return game_dungeon_has_living_familiar(game);
 }
 
-static bool game_player_try_add_scroll_to_action_bar(Game *game, UNIT_ART_KIND summon_unit_kind)
+static bool game_player_has_active_summon_target(const Game *game)
 {
-    if (!game_scroll_summon_unit_is_valid(summon_unit_kind))
+    if (game_player_action_bar_is_disabled(game))
         return false;
 
-    i32 slot_idx = game_player_find_first_empty_action_bar_slot(game);
-    if (slot_idx < 0)
-        return false;
-
-    game->player_action_bar[slot_idx] = ITEM_KIND_SCROLL;
-    game->player_action_bar_summon_unit_kind[slot_idx] = summon_unit_kind;
-    return true;
-}
-
-static bool game_player_try_collect_scroll_at(Game *game, i32 x, i32 y)
-{
-    i32 item_idx = game_dungeon_get_item_index_at(game, x, y);
-    if (item_idx < 0)
-        return false;
-    if (game->items[item_idx].kind != ITEM_KIND_SCROLL)
-        return false;
-    if (!game_player_try_add_scroll_to_action_bar(game, game->items[item_idx].summon_unit_kind))
-        return false;
-
-    game_dungeon_remove_item_at(game, item_idx);
-    return true;
-}
-
-static bool game_player_consume_action_bar_slot(Game *game, i32 slot_idx)
-{
-    if (slot_idx < 0 || slot_idx >= DUNGEON_ACTION_BAR_SLOT_COUNT)
-        return false;
-
-    if (!game_player_action_bar_slot_has_scroll(game, slot_idx))
-        return false;
-
-    game->player_action_bar[slot_idx] = ITEM_ART_NONE;
-    game->player_action_bar_summon_unit_kind[slot_idx] = UNIT_ART_NONE;
-    if (game->player_active_scroll_slot == slot_idx)
-        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
-    return true;
-}
-
-static bool game_player_has_active_scroll_target(const Game *game)
-{
-    i32 slot_idx = game->player_active_scroll_slot;
-    return game_player_action_bar_slot_has_scroll(game, slot_idx);
+    i32 slot_idx = game->player_active_action_bar_slot;
+    return game_player_action_bar_slot_has_familiar(game, slot_idx);
 }
 
 static bool game_player_activate_action_bar_slot(Game *game, i32 slot_idx)
 {
-    if (!game_player_action_bar_slot_has_scroll(game, slot_idx))
+    if (game_player_action_bar_is_disabled(game))
+        return false;
+    if (!game_player_action_bar_slot_has_familiar(game, slot_idx))
         return false;
 
-    game->player_active_scroll_slot = slot_idx;
+    game->player_active_action_bar_slot = slot_idx;
     return true;
 }
 
-static bool game_player_try_use_active_scroll_target(Game *game)
+static bool game_player_try_summon_active_action_bar_familiar(Game *game)
 {
-    if (!game_player_has_active_scroll_target(game)) {
-        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+    if (!game_player_has_active_summon_target(game)) {
+        game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
         return false;
     }
 
+    if (game->unit_count >= DUNGEON_MAX_UNITS)
+        return false;
+
     i32 target_x = 0;
     i32 target_y = 0;
-    game_player_get_active_scroll_target_cell(game, &target_x, &target_y);
-    if (!game_dungeon_cell_is_valid_scroll_target(game, target_x, target_y))
+    game_player_get_active_summon_target_cell(game, &target_x, &target_y);
+    if (!game_dungeon_cell_is_valid_summon_target(game, target_x, target_y))
         return false;
     if (!game->input.pressed[INPUT_MOUSE_LEFT])
         return false;
 
-    i32 slot_idx = game->player_active_scroll_slot;
-    UNIT_ART_KIND summon_unit_kind = game->player_action_bar_summon_unit_kind[slot_idx];
-    if (!game_scroll_summon_unit_is_valid(summon_unit_kind)) {
-        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+    i32 slot_idx = game->player_active_action_bar_slot;
+    UNIT_ART_KIND summon_unit_kind = game->player_action_bar[slot_idx];
+    if (!game_action_bar_familiar_unit_is_valid(summon_unit_kind)) {
+        game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
         return false;
     }
-
-    if (!game_player_consume_action_bar_slot(game, slot_idx))
-        return false;
 
     u8 summon_orientation = game_dungeon_get_orientation_from_positions(
         game->player_x, game->player_y, target_x, target_y, game->player_orientation);
     game_dungeon_add_unit(game, target_x, target_y, summon_unit_kind, summon_orientation, true);
     assert(game->unit_count > 0);
     game->units[game->unit_count - 1].skip_friendly_turn_once = true;
+    game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
     return true;
 }
 
@@ -7765,33 +7748,38 @@ static void game_draw_player_action_bar(Game *game)
     game_draw_dungeon_ui_panel(panel, (Color){18, 14, 11, 236}, (Color){29, 21, 16, 232},
                                (Color){132, 105, 72, 255});
 
-    int anim_frame = game_item_anim_frame();
+    int anim_frame = game_unit_anim_frame();
+    bool action_bar_disabled = game_player_action_bar_is_disabled(game);
 
     for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
         Rectangle slot = game_action_bar_slot_rect(slot_idx);
 
-        ITEM_ART_KIND slot_item = game->player_action_bar[slot_idx];
-        bool has_item = slot_item != ITEM_ART_NONE;
-        bool is_active_scroll_slot = game_player_has_active_scroll_target(game) &&
-                                     game->player_active_scroll_slot == slot_idx;
-        Color slot_fill = has_item ? (Color){72, 59, 40, 255} : (Color){44, 36, 27, 255};
-        Color slot_border = has_item ? (Color){191, 163, 119, 255} : (Color){117, 93, 67, 255};
-        if (is_active_scroll_slot) {
+        bool has_familiar = game_player_action_bar_slot_has_familiar(game, slot_idx);
+        bool is_active_slot = game_player_has_active_summon_target(game) &&
+                              game->player_active_action_bar_slot == slot_idx;
+        Color slot_fill = has_familiar ? (Color){72, 59, 40, 255} : (Color){44, 36, 27, 255};
+        Color slot_border = has_familiar ? (Color){191, 163, 119, 255} : (Color){117, 93, 67, 255};
+        if (is_active_slot) {
             slot_fill = (Color){86, 70, 47, 255};
             slot_border = (Color){242, 213, 142, 255};
+        }
+        if (action_bar_disabled) {
+            slot_fill = has_familiar ? (Color){54, 52, 49, 255} : (Color){36, 35, 33, 255};
+            slot_border = has_familiar ? (Color){109, 106, 101, 255} : (Color){80, 77, 73, 255};
         }
         DrawRectangleRounded(slot, 0.16f, 4, slot_fill);
         DrawRectangleLinesEx(slot, 1.0f, slot_border);
 
-        if (has_item) {
+        if (has_familiar) {
             Vector2 icon_pos = {
                 .x = slot.x + floorf((slot.width - DUNGEON_ACTION_BAR_ITEM_SIZE) * 0.5f),
                 .y = slot.y + floorf((slot.height - DUNGEON_ACTION_BAR_ITEM_SIZE) * 0.5f),
             };
-            Color icon_tint = game_dungeon_get_item_tint(
-                slot_item, game->player_action_bar_summon_unit_kind[slot_idx]);
-            game_draw_item_tile_tinted(game, slot_item, icon_pos, DUNGEON_ACTION_BAR_ITEM_SIZE,
-                                       anim_frame, icon_tint);
+            game_draw_unit_tile(game, game->player_action_bar[slot_idx], PLAYER_START_ORIENTATION,
+                                icon_pos, DUNGEON_ACTION_BAR_ITEM_SIZE, anim_frame);
+            if (action_bar_disabled) {
+                DrawRectangleRounded(slot, 0.16f, 4, (Color){18, 18, 18, 116});
+            }
         }
     }
 }
@@ -7975,7 +7963,7 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         snprintf(buffer, buffer_cap, "Melee unit that inflicts poison");
         return;
     case UNIT_ART_SPIDER:
-        snprintf(buffer, buffer_cap, "Ranged unit that webs enemies");
+        snprintf(buffer, buffer_cap, "Web-spinner that switches to melee after webbing targets");
         return;
     case UNIT_ART_BAT:
         snprintf(buffer, buffer_cap, "Fast melee unit that dashes into enemies");
@@ -7985,6 +7973,9 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         return;
     case UNIT_ART_BEHOLDER:
         snprintf(buffer, buffer_cap, "Stationary turret that shoots aligned targets at range");
+        return;
+    case UNIT_ART_IMP:
+        snprintf(buffer, buffer_cap, "Melee familiar that inflicts scaling burn damage");
         return;
     case UNIT_ART_GOBLIN_GRUNT:
         snprintf(buffer, buffer_cap, "Melee goblin with reliable frontline damage");
@@ -8026,11 +8017,11 @@ static bool game_try_get_hovered_unit(Game *game, Rectangle player_panel, Rectan
     if (!game->debug_in_testing_area) {
         i32 hovered_slot = game_action_bar_hovered_slot(game);
         if (hovered_slot >= 0) {
-            if (!game_player_action_bar_slot_has_scroll(game, hovered_slot))
+            if (!game_player_action_bar_slot_has_familiar(game, hovered_slot))
                 return false;
 
-            UNIT_ART_KIND summon_unit_kind = game->player_action_bar_summon_unit_kind[hovered_slot];
-            if (!game_scroll_summon_unit_is_valid(summon_unit_kind))
+            UNIT_ART_KIND summon_unit_kind = game->player_action_bar[hovered_slot];
+            if (!game_action_bar_familiar_unit_is_valid(summon_unit_kind))
                 return false;
 
             game_fill_hovered_unit_from_kind(out_hovered, summon_unit_kind);
@@ -8077,20 +8068,7 @@ static bool game_try_get_hovered_unit(Game *game, Rectangle player_panel, Rectan
         return true;
     }
 
-    i32 item_idx = game_dungeon_get_item_index_at(game, hover_x, hover_y);
-    if (item_idx < 0)
-        return false;
-
-    const Dungeon_Item *item = &game->items[item_idx];
-    if (item->kind != ITEM_KIND_SCROLL)
-        return false;
-    if (!game_dungeon_cell_is_visible(game, item->x, item->y))
-        return false;
-    if (!game_scroll_summon_unit_is_valid(item->summon_unit_kind))
-        return false;
-
-    game_fill_hovered_unit_from_kind(out_hovered, item->summon_unit_kind);
-    return true;
+    return false;
 }
 
 static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
@@ -8148,7 +8126,7 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
     game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240},
                                (Color){143, 108, 71, 255});
 
-    Color title_color = game_scroll_get_summon_unit_tint(hovered.kind);
+    Color title_color = game_unit_kind_tint(hovered.kind);
     title_color.r = (u8)min(255, (i32)title_color.r + 16);
     title_color.g = (u8)min(255, (i32)title_color.g + 16);
     title_color.b = (u8)min(255, (i32)title_color.b + 16);
@@ -8168,16 +8146,16 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
                (Color){178, 163, 136, 255});
 }
 
-static void game_draw_scroll_target_indicator(Game *game, Vector2 origin, float tile_size)
+static void game_draw_summon_target_indicator(Game *game, Vector2 origin, float tile_size)
 {
-    if (!game_player_has_active_scroll_target(game))
+    if (!game_player_has_active_summon_target(game))
         return;
 
     i32 target_x = 0;
     i32 target_y = 0;
-    game_player_get_active_scroll_target_cell(game, &target_x, &target_y);
+    game_player_get_active_summon_target_cell(game, &target_x, &target_y);
 
-    bool is_valid_target = game_dungeon_cell_is_valid_scroll_target(game, target_x, target_y);
+    bool is_valid_target = game_dungeon_cell_is_valid_summon_target(game, target_x, target_y);
     Color fill = is_valid_target ? (Color){104, 214, 132, 74} : (Color){224, 96, 86, 76};
     Color border = is_valid_target ? (Color){176, 255, 196, 250} : (Color){255, 152, 137, 250};
 
@@ -8309,7 +8287,7 @@ static void game_draw_test_dungeon(Game *game)
 
         Vector2 anchor_position = game_dungeon_get_cell_center(origin, item.x, item.y, tile_size);
         float item_size = tile_size * DUNGEON_ITEM_WORLD_SCALE;
-        Color item_tint = game_dungeon_get_item_tint(item.kind, item.summon_unit_kind);
+        Color item_tint = game_dungeon_get_item_tint(item.kind);
         game_draw_item_tile_with_anchor_tinted(game, item.kind, anchor_position, item_size,
                                                item_anim_frame, item_tint);
     }
@@ -8344,7 +8322,7 @@ static void game_draw_test_dungeon(Game *game)
     game_draw_unit_tile_with_feet_anchor(game, UNIT_ART_WARLOCK, game->player_orientation,
                                          player_feet, tile_size, unit_anim_frame);
     game_draw_status_particles(game);
-    game_draw_scroll_target_indicator(game, origin, tile_size);
+    game_draw_summon_target_indicator(game, origin, tile_size);
     game_draw_debug_testing_unit_placement_indicator(game, origin, tile_size);
 
     if (show_spawn_to_exit_path && game->player_spawn_x >= 0 && game->player_spawn_y >= 0 &&
@@ -8383,17 +8361,17 @@ static bool game_update_player(Game *game)
     if (action_slot_idx >= 0)
         game_player_activate_action_bar_slot(game, action_slot_idx);
 
-    if (!game_player_has_active_scroll_target(game))
-        game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+    if (!game_player_has_active_summon_target(game))
+        game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
 
-    if (game_player_has_active_scroll_target(game)) {
+    if (game_player_has_active_summon_target(game)) {
         if (consumed_action_bar_click)
             return false;
         if (game->input.pressed[INPUT_BACK]) {
-            game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+            game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
             return false;
         }
-        return game_player_try_use_active_scroll_target(game);
+        return game_player_try_summon_active_action_bar_familiar(game);
     }
 
     if (game_dungeon_has_living_familiar(game)) {
@@ -8459,7 +8437,6 @@ static bool game_update_player(Game *game)
     game_dungeon_begin_player_move_animation(game, start_x, start_y);
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
-    game_player_try_collect_scroll_at(game, next_x, next_y);
 
     WORLD_ART_ROLE stepped_feature_role = WORLD_ART_ROLE_FLOOR;
     if (game_dungeon_get_world_feature_role_at(game, next_x, next_y, &stepped_feature_role)) {
@@ -9064,7 +9041,7 @@ void game_init(Mem mem, Font font, float font_spacing)
 {
     Game *game = arena_push(mem.perm, sizeof(Game));
     memset(game, 0, sizeof(*game));
-    game->player_active_scroll_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+    game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
 
     if (font.texture.id == 0)
         font = GetFontDefault();

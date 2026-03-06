@@ -2,6 +2,11 @@ This document will act as a specification for entities and AI behaviors.
 
 ## Effects
 
+Unless otherwise noted, these will wear off in 5 turns.
+
+### Burn
+- take dmg each turn equal to the number of turns burn has been active
+
 ### Disease
 - dmg reduced by 1
 
@@ -10,11 +15,10 @@ This document will act as a specification for entities and AI behaviors.
 
 ### Webbed
 - skip every other turn
-- wears off in 5 turns
 
 ### Troll Blood
 - come back to life 5 turns after death
-- this effect goes away if damaged by fire
+- this effect is permanent until hit by fire
 
 ---
 
@@ -45,7 +49,7 @@ This document will act as a specification for entities and AI behaviors.
 ### Dash
 - move away from target when too close
 - move towards the closest tile that is within a straight line of the target
-- if target is in a straight line from current position, dash to target and attack
+- if target starts/ends turn aligned, dash to current/last position to attack
 
 ### Kamikaze
 - move toward target
@@ -59,9 +63,34 @@ This document will act as a specification for entities and AI behaviors.
 
 ## Enemies
 
+### Rat
+- 2hp, 1dmg
+- basic melee
+- applies disease on attack
+
+### Spider
+- 1hp, 1dmg
+- basic ranged for web attacks
+- basic melee once target is webbed
+
 ### Goblin Grunt
 - 3hp, 2dmg
 - basic melee
+
+### Cobra
+- 2hp, 1dmg
+- basic melee
+- applies poison on attack
+
+### Bat
+- 2hp, 2dmg
+- can move up to 2 tiles per turn
+- dash, cooldown: 5 turns
+
+### Beetle
+- 1hp, 3dmg
+- kamikaze 3area
+    - explosion deals fire dmg
 
 ### Goblin Shaman
 - 3hp, 1dmg
@@ -86,33 +115,11 @@ This document will act as a specification for entities and AI behaviors.
 
 ---
 
-## Familiars
+## Warlock Familiars
 
-### Rat
-- 2hp, 1dmg
-- basic melee
-- applies disease on attack
-
-### Cobra
-- 2hp, 1dmg
-- basic melee
-- applies poison on attack
-
-### Spider
-- 1hp, 0dmg
-- defend ranged, follow range: 3-5, defense range: 7
-- attacks non-webbed targets and applies webbed on attack
-
-### Bat
-- 2hp, 2dmg
-- can move up to 2 tiles per turn
-- dash, cooldown: 5 turns
-- follow player, follow range: 3-5
-
-### Beetle
-- 1hp, 3dmg
-- kamikaze 3area
-    - explosion deals fire dmg
+### Imp
+- 5hp, 3dmg
+- applies burn on attack
 
 ### Beholder
 - 10hp, 2dmg
