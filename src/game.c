@@ -106,7 +106,7 @@
 #define DUNGEON_CELL_MASK_WORD_COUNT                                                               \
     ((DUNGEON_CELL_COUNT + DUNGEON_CELL_MASK_WORD_BITS - 1) / DUNGEON_CELL_MASK_WORD_BITS)
 #define DUNGEON_MAX_FLOOR_DEPTH 512
-#define DUNGEON_RUN_FLOOR_COUNT 10
+#define DUNGEON_RUN_FLOOR_COUNT 5
 #define DUNGEON_FINAL_FLOOR_DEPTH (DUNGEON_RUN_FLOOR_COUNT - 1)
 #define DUNGEON_EXIT_MIN_PATH_STEPS 80
 #define DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT 256
@@ -115,8 +115,8 @@
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 #define DUNGEON_LOS_RADIUS_TILES 12
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
-#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN 10
-#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MAX 10
+#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN 15
+#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MAX 15
 #define DUNGEON_PATH_UNREACHABLE 0x3fff
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
@@ -200,9 +200,9 @@
 #define DUNGEON_PLAYER_PANEL_HEART_GAP 4.0f
 
 #define PLAYER_CLASS_FAMILIAR_COUNT 3
-#define DUNGEON_SECOND_FAMILIAR_UNLOCK_FLOOR 3
-#define DUNGEON_THIRD_FAMILIAR_UNLOCK_FLOOR 5
-#define DUNGEON_FLOOR_HP_BONUS_INTERVAL 2
+#define DUNGEON_SECOND_FAMILIAR_UNLOCK_FLOOR 2
+#define DUNGEON_THIRD_FAMILIAR_UNLOCK_FLOOR 3
+#define DUNGEON_FLOOR_HP_BONUS_INTERVAL 1
 #define DUNGEON_ACTION_BAR_SLOT_COUNT PLAYER_CLASS_FAMILIAR_COUNT
 #define DUNGEON_ACTION_BAR_NO_SLOT (-1)
 #define DUNGEON_ACTION_BAR_ITEM_SIZE ((float)UNIT_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
@@ -7748,11 +7748,9 @@ static UNIT_ART_KIND game_dungeon_pick_enemy_kind_for_depth(RNG *rng, u32 depth)
 {
     static const u8
         enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT][TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
-            {42, 24, 29, 0, 5, 0, 0, 0, 0, 0},    {33, 21, 29, 0, 12, 3, 2, 0, 0, 0},
-            {26, 19, 28, 0, 14, 5, 4, 2, 2, 0},   {18, 14, 22, 12, 13, 6, 6, 4, 4, 1},
-            {14, 12, 20, 11, 13, 7, 8, 6, 7, 2},  {11, 10, 18, 10, 13, 8, 9, 8, 10, 3},
-            {8, 9, 16, 9, 12, 8, 10, 10, 13, 5},  {6, 8, 13, 8, 11, 9, 10, 12, 15, 8},
-            {4, 7, 11, 7, 10, 9, 11, 13, 16, 12}, {3, 6, 9, 6, 9, 9, 10, 14, 16, 18},
+            {42, 24, 29, 0, 5, 0, 0, 0, 0, 0},   {26, 19, 28, 0, 14, 5, 4, 2, 2, 0},
+            {14, 12, 20, 11, 13, 7, 8, 6, 7, 2}, {6, 8, 13, 8, 11, 9, 10, 12, 15, 8},
+            {3, 6, 9, 6, 9, 9, 10, 14, 16, 18},
         };
 
     u32 depth_idx = game_dungeon_clamp_run_depth(depth);
@@ -7764,8 +7762,7 @@ static UNIT_ART_KIND game_dungeon_pick_enemy_kind_for_depth(RNG *rng, u32 depth)
 static UNIT_ART_KIND game_dungeon_pick_shaman_companion_kind_for_depth(RNG *rng, u32 depth)
 {
     static const u8 goblin_companion_weights[DUNGEON_RUN_FLOOR_COUNT][2] = {
-        {55, 0},  {48, 5},  {40, 10}, {33, 16}, {27, 22},
-        {22, 26}, {17, 30}, {13, 33}, {9, 36},  {6, 39},
+        {55, 0}, {40, 10}, {27, 22}, {13, 33}, {6, 39},
     };
 
     u32 depth_idx = game_dungeon_clamp_run_depth(depth);
@@ -7778,14 +7775,13 @@ static UNIT_ART_KIND game_dungeon_pick_shaman_companion_kind_for_depth(RNG *rng,
 
 static UNIT_ART_KIND game_dungeon_pick_return_wave_enemy_kind_for_depth(RNG *rng, u32 depth)
 {
-    static const u8 return_enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT -
-                                              1][TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
-        {3, 6, 9, 6, 9, 9, 10, 14, 16, 18},  {2, 5, 8, 6, 8, 9, 11, 15, 16, 20},
-        {2, 4, 7, 6, 7, 9, 11, 16, 17, 21},  {1, 4, 6, 6, 6, 10, 12, 16, 18, 21},
-        {1, 3, 5, 6, 5, 10, 12, 17, 19, 22}, {1, 2, 4, 6, 4, 10, 12, 18, 20, 23},
-        {0, 2, 3, 6, 4, 10, 12, 18, 21, 24}, {0, 1, 3, 5, 3, 10, 12, 18, 22, 26},
-        {0, 1, 2, 5, 3, 10, 12, 18, 22, 27},
-    };
+    static const u8 return_enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT - 1]
+                                             [TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
+                                                 {3, 6, 9, 6, 9, 9, 10, 14, 16, 18},
+                                                 {1, 4, 6, 6, 6, 10, 12, 16, 18, 21},
+                                                 {0, 2, 3, 6, 4, 10, 12, 18, 21, 24},
+                                                 {0, 1, 2, 5, 3, 10, 12, 18, 22, 27},
+                                             };
 
     u32 table_idx = game_dungeon_get_return_wave_table_index_for_depth(depth);
     i32 enemy_kind_idx = game_pick_weighted_index(rng, return_enemy_kind_weights[table_idx],
@@ -7797,7 +7793,10 @@ static UNIT_ART_KIND game_dungeon_pick_return_wave_shaman_companion_kind_for_dep
                                                                                    u32 depth)
 {
     static const u8 return_goblin_companion_weights[DUNGEON_RUN_FLOOR_COUNT - 1][2] = {
-        {6, 39}, {5, 40}, {4, 41}, {3, 42}, {2, 43}, {2, 44}, {1, 45}, {1, 46}, {0, 47},
+        {6, 39},
+        {3, 42},
+        {1, 45},
+        {0, 47},
     };
 
     u32 table_idx = game_dungeon_get_return_wave_table_index_for_depth(depth);
@@ -8443,7 +8442,7 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
 
     bool should_spawn_return_wave =
         transitioning_floors && !first_floor_visit && arrival_role == WORLD_ART_ROLE_STAIRS_DOWN &&
-        game->player_has_amulet_of_yendor && depth < DUNGEON_MAX_FLOOR_DEPTH &&
+        game->player_has_amulet_of_yendor && depth < DUNGEON_RUN_FLOOR_COUNT &&
         game->dungeon_return_wave_spawned_by_depth[depth] == 0;
     if (should_spawn_return_wave) {
         game_dungeon_spawn_return_enemy_wave(game, depth, game->player_x, game->player_y);
@@ -10945,8 +10944,9 @@ static void game_draw_testing_unit_action_bars(Game *game)
 
 static Rectangle game_draw_floor_info_panel(Game *game)
 {
-    char floor_line[32];
-    snprintf(floor_line, sizeof(floor_line), "Floor: %u", game->dungeon_depth + 1);
+    char floor_line[40];
+    snprintf(floor_line, sizeof(floor_line), "Floor: %u / %u", game->dungeon_depth + 1,
+             (u32)DUNGEON_RUN_FLOOR_COUNT);
 
     float floor_size = 17.0f;
     Vector2 floor_measure = MeasureTextEx(game->font, floor_line, floor_size, game->font_spacing);
