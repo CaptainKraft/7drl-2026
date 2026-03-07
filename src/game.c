@@ -89,6 +89,7 @@
 #define DUNGEON_RNG_STREAM_POPULATE 0x504f50554c415445ull
 #define DUNGEON_RNG_STREAM_CULL 0x43554c4cull
 #define DUNGEON_RNG_STREAM_DISEASED 0x4449534541534544ull
+#define DUNGEON_RNG_STREAM_DAMAGE_SLASH 0x534c4153484658ull
 #define DUNGEON_RNG_STREAM_RUN_SEED 0x52554e53454544ull
 
 #define DUNGEON_MAX_WORLD_FEATURES 12
@@ -163,6 +164,11 @@
 #define DUNGEON_WEB_PROJECTILE_DURATION 0.26f
 #define DUNGEON_WEB_PROJECTILE_ARC_HEIGHT_TILES 0.35f
 #define DUNGEON_WEB_PROJECTILE_SIZE_TILES 0.2f
+#define DUNGEON_DAMAGE_SLASH_FX_CAPACITY DUNGEON_MAX_UNITS
+#define DUNGEON_DAMAGE_SLASH_FX_FRAME_COUNT 3
+#define DUNGEON_DAMAGE_SLASH_FX_VARIANT_COUNT 5
+#define DUNGEON_DAMAGE_SLASH_FX_ROW 5
+#define DUNGEON_DAMAGE_SLASH_FX_FPS (DUNGEON_SPRITE_ANIM_FPS * 2.0f)
 
 #define DUNGEON_MINIMAP_MAX_WIDTH 640.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
@@ -389,6 +395,7 @@ typedef struct {
 } Unit_Stats;
 
 typedef struct {
+    u16 id;
     i16 x;
     i16 y;
     float move_anim_from_x;
@@ -453,6 +460,16 @@ typedef struct {
     Color color;
     bool active;
 } Dungeon_Web_Projectile;
+
+typedef struct {
+    i16 x;
+    i16 y;
+    u16 target_unit_id;
+    u8 variant_idx;
+    bool target_is_player;
+    float elapsed;
+    bool active;
+} Dungeon_Damage_Slash_Fx;
 
 typedef struct {
     i16 x;
@@ -566,6 +583,7 @@ typedef struct {
     RNG dungeon_populate_rng;
     RNG dungeon_cull_rng;
     RNG dungeon_diseased_particle_rng;
+    RNG dungeon_damage_slash_rng;
     Dungeon_HBW_Tileset dungeon_tileset;
     char dungeon_template_error[160];
 
@@ -585,12 +603,16 @@ typedef struct {
 
     Dungeon_Unit units[DUNGEON_MAX_UNITS];
     u8 unit_count;
+    u16 next_unit_id;
 
     Dungeon_Diseased_Particle diseased_particles[DUNGEON_DISEASED_PARTICLE_CAPACITY];
     u16 diseased_particle_cursor;
 
     Dungeon_Web_Projectile web_projectiles[DUNGEON_WEB_PROJECTILE_CAPACITY];
     u16 web_projectile_cursor;
+
+    Dungeon_Damage_Slash_Fx damage_slash_fx[DUNGEON_DAMAGE_SLASH_FX_CAPACITY];
+    u16 damage_slash_fx_cursor;
 
     Dungeon_Defeated_Unit_Visual defeated_unit_visuals[DUNGEON_MAX_UNITS];
     u8 defeated_unit_visual_cursor;
@@ -1998,7 +2020,12 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
     assert(game_dungeon_cell_in_bounds(x, y));
     assert(game_dungeon_cell_is_floor(game, x, y));
 
+    game->next_unit_id++;
+    if (game->next_unit_id == 0)
+        game->next_unit_id = 1;
+
     game->units[game->unit_count++] = (Dungeon_Unit){
+        .id = game->next_unit_id,
         .x = (i16)x,
         .y = (i16)y,
         .move_anim_from_x = (float)x,
@@ -2071,6 +2098,7 @@ static void game_seed_dungeon_rng_streams(Game *game)
     game->dungeon_populate_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_POPULATE);
     game->dungeon_cull_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_CULL);
     game->dungeon_diseased_particle_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_DISEASED);
+    game->dungeon_damage_slash_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_DAMAGE_SLASH);
 }
 
 static bool game_dungeon_hbw_pixel_is_floor(u8 r, u8 g, u8 b)
@@ -2810,6 +2838,19 @@ static i32 game_dungeon_get_unit_index_at(const Game *game, i32 x, i32 y)
     return -1;
 }
 
+static i32 game_dungeon_get_unit_index_by_id(const Game *game, u16 unit_id)
+{
+    if (unit_id == 0)
+        return -1;
+
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        if (game->units[idx].id == unit_id)
+            return idx;
+    }
+
+    return -1;
+}
+
 static bool game_dungeon_has_living_familiar(const Game *game)
 {
     for (u8 idx = 0; idx < game->unit_count; idx++) {
@@ -2938,8 +2979,66 @@ static void game_dungeon_spawn_slime_children(Game *game, const Dungeon_Unit *de
     }
 }
 
+static void game_dungeon_spawn_damage_slash_fx(Game *game, bool target_is_player,
+                                               u16 target_unit_id, i32 x, i32 y)
+{
+    assert(game != 0);
+    assert(game_dungeon_cell_in_bounds(x, y));
+    if (target_is_player)
+        assert(target_unit_id == 0);
+    else
+        assert(target_unit_id != 0);
+
+    i32 fx_idx = -1;
+    for (i32 idx = 0; idx < DUNGEON_DAMAGE_SLASH_FX_CAPACITY; idx++) {
+        Dungeon_Damage_Slash_Fx *fx = &game->damage_slash_fx[idx];
+        if (!fx->active)
+            continue;
+        if (fx->target_is_player != target_is_player)
+            continue;
+        if (target_is_player || fx->target_unit_id == target_unit_id) {
+            fx_idx = idx;
+            break;
+        }
+    }
+
+    if (fx_idx < 0) {
+        fx_idx = (i32)(game->damage_slash_fx_cursor % DUNGEON_DAMAGE_SLASH_FX_CAPACITY);
+        game->damage_slash_fx_cursor =
+            (u16)((game->damage_slash_fx_cursor + 1) % DUNGEON_DAMAGE_SLASH_FX_CAPACITY);
+    }
+
+    i32 variant_idx =
+        ck_rand_int(&game->dungeon_damage_slash_rng, 0, DUNGEON_DAMAGE_SLASH_FX_VARIANT_COUNT);
+
+    game->damage_slash_fx[fx_idx] = (Dungeon_Damage_Slash_Fx){
+        .x = (i16)x,
+        .y = (i16)y,
+        .target_unit_id = target_unit_id,
+        .variant_idx = (u8)variant_idx,
+        .target_is_player = target_is_player,
+        .elapsed = 0.0f,
+        .active = true,
+    };
+}
+
+static void game_dungeon_spawn_damage_slash_fx_for_unit(Game *game, const Dungeon_Unit *unit)
+{
+    assert(game != 0);
+    assert(unit != 0);
+
+    game_dungeon_spawn_damage_slash_fx(game, false, unit->id, unit->x, unit->y);
+}
+
+static void game_dungeon_spawn_damage_slash_fx_for_player(Game *game)
+{
+    assert(game != 0);
+
+    game_dungeon_spawn_damage_slash_fx(game, true, 0, game->player_x, game->player_y);
+}
+
 static bool game_dungeon_apply_damage_to_unit(Game *game, i32 unit_idx, i32 damage,
-                                              DAMAGE_KIND damage_kind)
+                                              DAMAGE_KIND damage_kind, bool show_damage_fx)
 {
     assert(game != 0);
     assert(unit_idx >= 0);
@@ -2949,7 +3048,11 @@ static bool game_dungeon_apply_damage_to_unit(Game *game, i32 unit_idx, i32 dama
     if (damage_kind == DAMAGE_KIND_FIRE && unit->kind == UNIT_ART_TROLL)
         unit->has_troll_blood = false;
 
+    u8 health_before = unit->stats.health;
     bool unit_defeated = game_unit_stats_take_damage(&unit->stats, damage);
+    if (show_damage_fx && unit->stats.health < health_before)
+        game_dungeon_spawn_damage_slash_fx_for_unit(game, unit);
+
     if (!unit_defeated)
         return false;
 
@@ -2963,6 +3066,18 @@ static bool game_dungeon_apply_damage_to_unit(Game *game, i32 unit_idx, i32 dama
         game_dungeon_enqueue_troll_blood_revive(game, &defeated_unit);
 
     return true;
+}
+
+static bool game_dungeon_apply_damage_to_player(Game *game, i32 damage, bool show_damage_fx)
+{
+    assert(game != 0);
+
+    u8 health_before = game->player_stats.health;
+    bool player_defeated = game_unit_stats_take_damage(&game->player_stats, damage);
+    if (show_damage_fx && game->player_stats.health < health_before)
+        game_dungeon_spawn_damage_slash_fx_for_player(game);
+
+    return player_defeated;
 }
 
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
@@ -4611,7 +4726,7 @@ static bool game_dungeon_try_take_bat_dash_attack(Game *game, i32 unit_idx,
             game->player_damage_event_count = 1;
         unit->last_damaged_player_event = game->player_damage_event_count;
 
-        game_unit_stats_take_damage(&game->player_stats, attack_damage);
+        game_dungeon_apply_damage_to_player(game, attack_damage, true);
         unit->dash_cooldown_turns = DUNGEON_FAMILIAR_BAT_DASH_COOLDOWN_TURNS;
         return true;
     }
@@ -4625,7 +4740,7 @@ static bool game_dungeon_try_take_bat_dash_attack(Game *game, i32 unit_idx,
     }
 
     game_dungeon_apply_damage_to_unit(game, target->target_unit_idx, attack_damage,
-                                      DAMAGE_KIND_NORMAL);
+                                      DAMAGE_KIND_NORMAL, true);
 
     unit->dash_cooldown_turns = DUNGEON_FAMILIAR_BAT_DASH_COOLDOWN_TURNS;
     return true;
@@ -4764,7 +4879,7 @@ static bool game_dungeon_take_reaper_sweep_attack(Game *game, i32 unit_idx, i32 
         if (game->player_damage_event_count == 0)
             game->player_damage_event_count = 1;
         unit->last_damaged_player_event = game->player_damage_event_count;
-        game_unit_stats_take_damage(&game->player_stats, attack_damage);
+        game_dungeon_apply_damage_to_player(game, attack_damage, true);
     }
 
     for (i32 i = 0; i < hit_unit_count - 1; i++) {
@@ -4795,7 +4910,8 @@ static bool game_dungeon_take_reaper_sweep_attack(Game *game, i32 unit_idx, i32 
             target_unit->turns_out_of_player_los = 0;
         }
 
-        game_dungeon_apply_damage_to_unit(game, target_idx, attack_damage, DAMAGE_KIND_NORMAL);
+        game_dungeon_apply_damage_to_unit(game, target_idx, attack_damage, DAMAGE_KIND_NORMAL,
+                                          true);
     }
 
     return true;
@@ -4862,7 +4978,7 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
             else if (unit->kind == UNIT_ART_IMP || unit->kind == UNIT_ART_PHOENIX)
                 game_dungeon_apply_player_burning_status(game);
 
-            bool player_defeated = game_unit_stats_take_damage(&game->player_stats, attack_damage);
+            bool player_defeated = game_dungeon_apply_damage_to_player(game, attack_damage, true);
             if (unit->kind == UNIT_ART_TREANT && !player_defeated)
                 game_dungeon_try_knockback_player(game, start_x, start_y);
             return;
@@ -4881,8 +4997,8 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
         else if (unit->kind == UNIT_ART_IMP || unit->kind == UNIT_ART_PHOENIX)
             game_dungeon_apply_burning_status(target_unit);
 
-        bool target_defeated = game_dungeon_apply_damage_to_unit(game, target->target_unit_idx,
-                                                                 attack_damage, DAMAGE_KIND_NORMAL);
+        bool target_defeated = game_dungeon_apply_damage_to_unit(
+            game, target->target_unit_idx, attack_damage, DAMAGE_KIND_NORMAL, true);
         if (unit->kind == UNIT_ART_TREANT && !target_defeated && target->target_unit_idx >= 0 &&
             target->target_unit_idx < game->unit_count) {
             game_dungeon_try_knockback_unit(game, target->target_unit_idx, start_x, start_y);
@@ -4957,7 +5073,7 @@ static void game_dungeon_take_basic_ranged_turn(Game *game, i32 unit_idx,
             if (unit->kind == UNIT_ART_IMP)
                 game_dungeon_apply_player_burning_status(game);
 
-            game_unit_stats_take_damage(&game->player_stats, attack_damage);
+            game_dungeon_apply_damage_to_player(game, attack_damage, true);
             return;
         }
 
@@ -4973,7 +5089,7 @@ static void game_dungeon_take_basic_ranged_turn(Game *game, i32 unit_idx,
             game_dungeon_apply_burning_status(target_unit);
 
         game_dungeon_apply_damage_to_unit(game, target->target_unit_idx, attack_damage,
-                                          DAMAGE_KIND_NORMAL);
+                                          DAMAGE_KIND_NORMAL, true);
         return;
     }
 
@@ -5041,7 +5157,7 @@ static void game_dungeon_take_turret_turn(Game *game, i32 unit_idx, i32 range)
             game->player_damage_event_count = 1;
         unit->last_damaged_player_event = game->player_damage_event_count;
 
-        game_unit_stats_take_damage(&game->player_stats, attack_damage);
+        game_dungeon_apply_damage_to_player(game, attack_damage, true);
         return;
     }
 
@@ -5054,7 +5170,7 @@ static void game_dungeon_take_turret_turn(Game *game, i32 unit_idx, i32 range)
     }
 
     game_dungeon_apply_damage_to_unit(game, target.target_unit_idx, attack_damage,
-                                      DAMAGE_KIND_NORMAL);
+                                      DAMAGE_KIND_NORMAL, true);
 }
 
 static void game_dungeon_take_aligned_ranged_turn(Game *game, i32 unit_idx, i32 range,
@@ -5144,7 +5260,7 @@ static void game_dungeon_trigger_kamikaze_explosion(Game *game, i32 unit_idx)
 
     if (!source_is_friendly &&
         game_dungeon_cell_is_in_kamikaze_area(center_x, center_y, game->player_x, game->player_y)) {
-        game_unit_stats_take_damage(&game->player_stats, explosion_damage);
+        game_dungeon_apply_damage_to_player(game, explosion_damage, true);
     }
 
     for (i32 target_idx = game->unit_count - 1; target_idx >= 0; target_idx--) {
@@ -5159,7 +5275,8 @@ static void game_dungeon_trigger_kamikaze_explosion(Game *game, i32 unit_idx)
             target->turns_out_of_player_los = 0;
         }
 
-        game_dungeon_apply_damage_to_unit(game, target_idx, explosion_damage, DAMAGE_KIND_FIRE);
+        game_dungeon_apply_damage_to_unit(game, target_idx, explosion_damage, DAMAGE_KIND_FIRE,
+                                          true);
     }
 }
 
@@ -5530,7 +5647,7 @@ static void game_dungeon_take_dash_through_turn(Game *game, i32 unit_idx,
         if (game->player_damage_event_count == 0)
             game->player_damage_event_count = 1;
         unit->last_damaged_player_event = game->player_damage_event_count;
-        game_unit_stats_take_damage(&game->player_stats, attack_damage);
+        game_dungeon_apply_damage_to_player(game, attack_damage, true);
     }
 
     for (i32 i = 0; i < hit_unit_count - 1; i++) {
@@ -5557,7 +5674,8 @@ static void game_dungeon_take_dash_through_turn(Game *game, i32 unit_idx,
             target_unit->turns_out_of_player_los = 0;
         }
 
-        game_dungeon_apply_damage_to_unit(game, target_idx, attack_damage, DAMAGE_KIND_NORMAL);
+        game_dungeon_apply_damage_to_unit(game, target_idx, attack_damage, DAMAGE_KIND_NORMAL,
+                                          true);
     }
 }
 
@@ -6023,7 +6141,7 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
             unit->poisoned_applied_this_turn = false;
 
         if (game_dungeon_apply_damage_to_unit(game, unit_idx, DUNGEON_POISON_DAMAGE_PER_TURN,
-                                              DAMAGE_KIND_NORMAL)) {
+                                              DAMAGE_KIND_NORMAL, false)) {
             continue;
         }
 
@@ -6048,7 +6166,7 @@ static void game_dungeon_apply_player_poison_turn_damage(Game *game)
     if (game->player_poisoned_applied_this_turn)
         game->player_poisoned_applied_this_turn = false;
 
-    game_unit_stats_take_damage(&game->player_stats, DUNGEON_POISON_DAMAGE_PER_TURN);
+    game_dungeon_apply_damage_to_player(game, DUNGEON_POISON_DAMAGE_PER_TURN, false);
 
     game->player_poisoned_turns_remaining--;
     if (game->player_poisoned_turns_remaining == 0)
@@ -6107,7 +6225,7 @@ static void game_dungeon_apply_burn_turn_damage(Game *game)
         }
 
         i32 burn_damage = max((i32)unit->burn_turns_active, 1);
-        if (game_dungeon_apply_damage_to_unit(game, unit_idx, burn_damage, DAMAGE_KIND_FIRE))
+        if (game_dungeon_apply_damage_to_unit(game, unit_idx, burn_damage, DAMAGE_KIND_FIRE, false))
             continue;
 
         unit->burn_turns_remaining--;
@@ -6132,7 +6250,7 @@ static void game_dungeon_apply_player_burn_turn_damage(Game *game)
         game->player_burning_applied_this_turn = false;
 
     i32 burn_damage = max((i32)game->player_burn_turns_active, 1);
-    game_unit_stats_take_damage(&game->player_stats, burn_damage);
+    game_dungeon_apply_damage_to_player(game, burn_damage, false);
 
     game->player_burn_turns_remaining--;
     if (game->player_burn_turns_remaining == 0)
@@ -7097,10 +7215,13 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_i
     game->world_feature_count = 0;
     game->item_count = 0;
     game->unit_count = 0;
+    game->next_unit_id = 0;
     memset(game->diseased_particles, 0, sizeof(game->diseased_particles));
     game->diseased_particle_cursor = 0;
     memset(game->web_projectiles, 0, sizeof(game->web_projectiles));
     game->web_projectile_cursor = 0;
+    memset(game->damage_slash_fx, 0, sizeof(game->damage_slash_fx));
+    game->damage_slash_fx_cursor = 0;
     memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
     game->defeated_unit_visual_cursor = 0;
     memset(game->troll_blood_revives, 0, sizeof(game->troll_blood_revives));
@@ -7309,10 +7430,13 @@ static bool game_build_debug_testing_area(Game *game)
     game->world_feature_count = 0;
     game->item_count = 0;
     game->unit_count = 0;
+    game->next_unit_id = 0;
     memset(game->diseased_particles, 0, sizeof(game->diseased_particles));
     game->diseased_particle_cursor = 0;
     memset(game->web_projectiles, 0, sizeof(game->web_projectiles));
     game->web_projectile_cursor = 0;
+    memset(game->damage_slash_fx, 0, sizeof(game->damage_slash_fx));
+    game->damage_slash_fx_cursor = 0;
     memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
     game->defeated_unit_visual_cursor = 0;
     memset(game->troll_blood_revives, 0, sizeof(game->troll_blood_revives));
@@ -7346,6 +7470,7 @@ static bool game_build_debug_testing_area(Game *game)
     game->dungeon_depth = 0;
     game->dungeon_floor_index = 0;
     game->dungeon_template_error[0] = '\0';
+    game_seed_dungeon_rng_streams(game);
 
     game_dungeon_fill(game, DUNGEON_CELL_WALL);
     game_dungeon_carve_rect(game, 1, 1, DUNGEON_COL_COUNT - 2, DUNGEON_ROW_COUNT - 2);
@@ -7671,7 +7796,23 @@ static void game_draw_unit_tile_with_feet_anchor(Game *game, UNIT_ART_KIND kind,
     DrawTexturePro(game->units_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
 }
 
-static void game_draw_fx_tile(Game *game, i32 col, i32 row, Vector2 top_left, float sprite_size)
+static Vector2 game_get_unit_sprite_center_from_feet_anchor(UNIT_ART_KIND kind, u8 orientation,
+                                                            Vector2 feet_position,
+                                                            float sprite_size)
+{
+    Unit_Art_Anchor anchor = unit_art_get_anchor(kind, orientation);
+    float source_to_dest_scale = sprite_size / (float)UNIT_ART_TILE_SIZE;
+
+    return (Vector2){
+        .x = feet_position.x +
+             (((float)UNIT_ART_TILE_SIZE * 0.5f) - anchor.x) * source_to_dest_scale,
+        .y = feet_position.y +
+             (((float)UNIT_ART_TILE_SIZE * 0.5f) - anchor.y) * source_to_dest_scale,
+    };
+}
+
+static void game_draw_fx_tile(const Game *game, i32 col, i32 row, Vector2 top_left,
+                              float sprite_size)
 {
     assert(col >= 0 && col < FX_ART_COL_COUNT);
     assert(row >= 0 && row < FX_ART_ROW_COUNT);
@@ -8486,6 +8627,37 @@ static void game_dungeon_update_web_projectiles(Game *game)
     }
 }
 
+static void game_dungeon_update_damage_slash_fx(Game *game)
+{
+    float frame_time = GetFrameTime();
+    if (frame_time <= 0.0f)
+        frame_time = CAMERA_FALLBACK_FRAME_TIME;
+    frame_time = clamp(frame_time, 0.0f, 0.1f);
+
+    for (i32 fx_idx = 0; fx_idx < DUNGEON_DAMAGE_SLASH_FX_CAPACITY; fx_idx++) {
+        Dungeon_Damage_Slash_Fx *fx = &game->damage_slash_fx[fx_idx];
+        if (!fx->active)
+            continue;
+
+        if (fx->target_is_player) {
+            fx->x = game->player_x;
+            fx->y = game->player_y;
+        } else {
+            i32 unit_idx = game_dungeon_get_unit_index_by_id(game, fx->target_unit_id);
+            if (unit_idx >= 0) {
+                const Dungeon_Unit *unit = &game->units[unit_idx];
+                fx->x = unit->x;
+                fx->y = unit->y;
+            }
+        }
+
+        fx->elapsed += frame_time;
+        i32 anim_frame = (i32)(fx->elapsed * DUNGEON_DAMAGE_SLASH_FX_FPS);
+        if (anim_frame >= DUNGEON_DAMAGE_SLASH_FX_FRAME_COUNT)
+            fx->active = false;
+    }
+}
+
 static void game_dungeon_emit_status_particle(Game *game, Vector2 sprite_center, float tile_size,
                                               Color color)
 {
@@ -8668,6 +8840,56 @@ static void game_draw_status_particles(const Game *game)
                          particle_color);
         DrawRectangleRec((Rectangle){x, y - pixel_size, pixel_size, pixel_size * 3.0f},
                          particle_color);
+    }
+}
+
+static void game_draw_damage_slash_fx(const Game *game, Vector2 origin, float tile_size)
+{
+    float pixel_size = max(1.0f, DUNGEON_TILE_SCALE);
+    float sprite_size = tile_size;
+
+    for (i32 fx_idx = 0; fx_idx < DUNGEON_DAMAGE_SLASH_FX_CAPACITY; fx_idx++) {
+        const Dungeon_Damage_Slash_Fx *fx = &game->damage_slash_fx[fx_idx];
+        if (!fx->active)
+            continue;
+
+        i32 anim_frame = (i32)(fx->elapsed * DUNGEON_DAMAGE_SLASH_FX_FPS);
+        if (anim_frame < 0 || anim_frame >= DUNGEON_DAMAGE_SLASH_FX_FRAME_COUNT)
+            continue;
+
+        Vector2 center = {0};
+        if (fx->target_is_player) {
+            UNIT_ART_KIND player_unit_kind = game_player_class_get_unit_kind(game->player_class);
+            Vector2 player_feet =
+                game_dungeon_get_player_draw_feet_position(game, origin, tile_size);
+            center = game_get_unit_sprite_center_from_feet_anchor(
+                player_unit_kind, game->player_orientation, player_feet, tile_size);
+        } else {
+            i32 unit_idx = game_dungeon_get_unit_index_by_id(game, fx->target_unit_id);
+            if (unit_idx >= 0) {
+                const Dungeon_Unit *unit = &game->units[unit_idx];
+                if (!game_dungeon_cell_is_visible(game, unit->x, unit->y))
+                    continue;
+                Vector2 unit_feet =
+                    game_dungeon_get_unit_draw_feet_position(unit, origin, tile_size);
+                center = game_get_unit_sprite_center_from_feet_anchor(unit->kind, unit->orientation,
+                                                                      unit_feet, tile_size);
+            } else {
+                if (!game_dungeon_cell_is_visible(game, fx->x, fx->y))
+                    continue;
+                center = game_dungeon_get_cell_center(origin, fx->x, fx->y, tile_size);
+            }
+        }
+
+        i32 col = (i32)fx->variant_idx * DUNGEON_DAMAGE_SLASH_FX_FRAME_COUNT + anim_frame;
+        Vector2 top_left = {
+            .x = center.x - sprite_size * 0.5f,
+            .y = center.y - sprite_size * 0.5f,
+        };
+        top_left.x = roundf(top_left.x / pixel_size) * pixel_size;
+        top_left.y = roundf(top_left.y / pixel_size) * pixel_size;
+
+        game_draw_fx_tile(game, col, DUNGEON_DAMAGE_SLASH_FX_ROW, top_left, sprite_size);
     }
 }
 
@@ -10052,6 +10274,7 @@ static void game_draw_test_dungeon(Game *game)
                                              tile_size, unit_anim_frame);
     }
 
+    game_draw_damage_slash_fx(game, origin, tile_size);
     game_draw_web_projectiles(game, origin, tile_size);
 
     Vector2 player_feet = game_dungeon_get_player_draw_feet_position(game, origin, tile_size);
@@ -10199,7 +10422,7 @@ static bool game_update_player(Game *game)
 
             i32 attack_damage = game_dungeon_get_player_attack_damage(game);
             game_dungeon_apply_damage_to_unit(game, target_unit_idx, attack_damage,
-                                              DAMAGE_KIND_NORMAL);
+                                              DAMAGE_KIND_NORMAL, true);
             return true;
         }
     }
@@ -11271,6 +11494,7 @@ void game_update(Mem mem)
 
     game_dungeon_update_unit_animations(game);
     game_dungeon_update_web_projectiles(game);
+    game_dungeon_update_damage_slash_fx(game);
     game_dungeon_update_status_particles(game);
 
     if ((i32)game->player_stats.health <= 0) {
