@@ -6645,17 +6645,24 @@ static void game_dungeon_take_goblin_shaman_turn(Game *game, i32 unit_idx)
         const Dungeon_Unit *follow_target = &game->units[nearest_ally_idx];
         unit->orientation = game_dungeon_get_orientation_from_positions(
             start_x, start_y, follow_target->x, follow_target->y, unit->orientation);
-        game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
-            game, unit_idx, follow_target->x, follow_target->y,
-            DUNGEON_GOBLIN_SHAMAN_FOLLOW_MIN_DISTANCE, DUNGEON_GOBLIN_SHAMAN_FOLLOW_MAX_DISTANCE,
-            DUNGEON_GOBLIN_SHAMAN_HOSTILE_AVOID_DISTANCE);
+        if (!game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
+                game, unit_idx, follow_target->x, follow_target->y,
+                DUNGEON_GOBLIN_SHAMAN_FOLLOW_MIN_DISTANCE,
+                DUNGEON_GOBLIN_SHAMAN_FOLLOW_MAX_DISTANCE,
+                DUNGEON_GOBLIN_SHAMAN_HOSTILE_AVOID_DISTANCE)) {
+            game_dungeon_try_move_unit_towards_cell(game, unit_idx, follow_target->x,
+                                                    follow_target->y);
+        }
         return;
     }
 
     if (!has_any_ally) {
         unit->orientation = game_dungeon_get_orientation_from_positions(
             start_x, start_y, game->player_x, game->player_y, unit->orientation);
-        game_dungeon_try_move_unit_away_from_cell(game, unit_idx, game->player_x, game->player_y);
+        if (!game_dungeon_try_move_unit_away_from_cell(game, unit_idx, game->player_x,
+                                                       game->player_y)) {
+            game_dungeon_try_move_unit_towards_cell(game, unit_idx, game->player_x, game->player_y);
+        }
     }
 }
 
