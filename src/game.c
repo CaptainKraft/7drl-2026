@@ -151,6 +151,7 @@
 #define DUNGEON_BURN_DURATION_TURNS 5
 #define DUNGEON_WEBBED_DURATION_TURNS 5
 #define DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS 5
+#define DUNGEON_PHOENIX_ASH_REVIVE_DELAY_TURNS 5
 #define DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE 3
 #define DUNGEON_BEETLE_KAMIKAZE_AREA_RADIUS ((DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE - 1) / 2)
 #define DUNGEON_ALIGNED_RANGED_TOO_CLOSE_DISTANCE 2
@@ -229,6 +230,7 @@
 #define ITEM_KIND_GOLD_KEY ITEM_ART_KIND_AT(3, 0)
 #define ITEM_KIND_EMPTY_HEART ITEM_ART_KIND_AT(7, 0)
 #define ITEM_KIND_HEART ITEM_ART_KIND_AT(8, 0)
+#define ITEM_KIND_SKULL ITEM_ART_KIND_AT(11, 0)
 #define ITEM_KIND_RED_POTION ITEM_ART_KIND_AT(1, 1)
 #define ITEM_KIND_RED_GEM ITEM_ART_KIND_AT(6, 1)
 #define ITEM_KIND_BANDAGE ITEM_ART_KIND_AT(13, 3)
@@ -489,9 +491,10 @@ typedef struct {
     i16 y;
     u8 orientation;
     bool is_friendly;
+    UNIT_ART_KIND kind;
     u32 revive_turn;
     bool active;
-} Dungeon_Troll_Blood_Revive;
+} Dungeon_Revive_Entry;
 
 typedef struct {
     i16 x;
@@ -619,7 +622,7 @@ typedef struct {
     Dungeon_Defeated_Unit_Visual defeated_unit_visuals[DUNGEON_MAX_UNITS];
     u8 defeated_unit_visual_cursor;
 
-    Dungeon_Troll_Blood_Revive troll_blood_revives[DUNGEON_MAX_UNITS];
+    Dungeon_Revive_Entry revive_entries[DUNGEON_MAX_UNITS];
     u32 dungeon_turn_count;
 
     i16 player_x;
@@ -2816,6 +2819,28 @@ static bool game_dungeon_cell_has_item(const Game *game, i32 x, i32 y)
     return game_dungeon_get_item_index_at(game, x, y) >= 0;
 }
 
+static bool game_dungeon_cell_has_revive_entry_excluding(const Game *game, i32 x, i32 y,
+                                                         i32 excluded_entry_idx)
+{
+    for (i32 idx = 0; idx < DUNGEON_MAX_UNITS; idx++) {
+        if (idx == excluded_entry_idx)
+            continue;
+
+        const Dungeon_Revive_Entry *entry = &game->revive_entries[idx];
+        if (!entry->active)
+            continue;
+        if (entry->x == x && entry->y == y)
+            return true;
+    }
+
+    return false;
+}
+
+static bool game_dungeon_cell_has_revive_entry(const Game *game, i32 x, i32 y)
+{
+    return game_dungeon_cell_has_revive_entry_excluding(game, x, y, -1);
+}
+
 static bool game_dungeon_cell_has_unit(const Game *game, i32 x, i32 y)
 {
     for (u8 idx = 0; idx < game->unit_count; idx++) {
@@ -2926,26 +2951,30 @@ static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
     game->unit_count--;
 }
 
-static void game_dungeon_enqueue_troll_blood_revive(Game *game, const Dungeon_Unit *unit)
+static bool game_dungeon_enqueue_revive(Game *game, const Dungeon_Unit *unit, u32 delay_turns)
 {
     assert(game != 0);
     assert(unit != 0);
+    assert(delay_turns > 0);
 
     for (i32 idx = 0; idx < DUNGEON_MAX_UNITS; idx++) {
-        Dungeon_Troll_Blood_Revive *entry = &game->troll_blood_revives[idx];
+        Dungeon_Revive_Entry *entry = &game->revive_entries[idx];
         if (entry->active)
             continue;
 
-        *entry = (Dungeon_Troll_Blood_Revive){
+        *entry = (Dungeon_Revive_Entry){
             .x = unit->x,
             .y = unit->y,
             .orientation = unit->orientation,
             .is_friendly = unit->is_friendly,
-            .revive_turn = game->dungeon_turn_count + DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS + 1,
+            .kind = unit->kind,
+            .revive_turn = game->dungeon_turn_count + delay_turns + 1,
             .active = true,
         };
-        return;
+        return true;
     }
+
+    return false;
 }
 
 static void game_dungeon_spawn_slime_children(Game *game, const Dungeon_Unit *defeated_unit)
@@ -3069,7 +3098,10 @@ static bool game_dungeon_apply_damage_to_unit(Game *game, i32 unit_idx, i32 dama
         game_dungeon_spawn_slime_children(game, &defeated_unit);
 
     if (defeated_unit.kind == UNIT_ART_TROLL && defeated_unit.has_troll_blood)
-        game_dungeon_enqueue_troll_blood_revive(game, &defeated_unit);
+        game_dungeon_enqueue_revive(game, &defeated_unit, DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS);
+
+    if (defeated_unit.kind == UNIT_ART_PHOENIX)
+        game_dungeon_enqueue_revive(game, &defeated_unit, DUNGEON_PHOENIX_ASH_REVIVE_DELAY_TURNS);
 
     return true;
 }
@@ -3093,6 +3125,8 @@ static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y)
     if (game_dungeon_cell_has_world_feature(game, x, y))
         return true;
     if (game_dungeon_cell_has_item(game, x, y))
+        return true;
+    if (game_dungeon_cell_has_revive_entry(game, x, y))
         return true;
     return game_dungeon_cell_has_unit(game, x, y);
 }
@@ -3120,6 +3154,9 @@ static bool game_dungeon_cell_has_unit_excluding(const Game *game, i32 x, i32 y,
             return true;
     }
 
+    if (game_dungeon_cell_has_revive_entry(game, x, y))
+        return true;
+
     return false;
 }
 
@@ -3130,8 +3167,12 @@ game_dungeon_build_distance_field(const Game *game, const i16 *goal_x, const i16
 {
     for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
-            out_distance[y][x] =
-                game_dungeon_cell_is_floor(game, x, y) ? DUNGEON_PATH_UNREACHABLE : -1;
+            if (!game_dungeon_cell_is_floor(game, x, y) ||
+                game_dungeon_cell_has_revive_entry(game, x, y)) {
+                out_distance[y][x] = -1;
+            } else {
+                out_distance[y][x] = DUNGEON_PATH_UNREACHABLE;
+            }
         }
     }
 
@@ -3154,6 +3195,8 @@ game_dungeon_build_distance_field(const Game *game, const i16 *goal_x, const i16
         i32 source_x = goal_x[goal_idx];
         i32 source_y = goal_y[goal_idx];
         if (!game_dungeon_cell_is_floor(game, source_x, source_y))
+            continue;
+        if (game_dungeon_cell_has_revive_entry(game, source_x, source_y))
             continue;
 
         has_valid_goal = true;
@@ -3340,13 +3383,20 @@ static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon
     }
 }
 
-static void game_dungeon_process_troll_blood_revives(Game *game)
+static Color game_dungeon_get_revive_skull_tint(UNIT_ART_KIND kind)
+{
+    if (kind == UNIT_ART_PHOENIX)
+        return (Color){240, 92, 74, 255};
+    return WHITE;
+}
+
+static void game_dungeon_process_revives(Game *game)
 {
     assert(game != 0);
 
     bool revived_unit = false;
     for (i32 idx = 0; idx < DUNGEON_MAX_UNITS; idx++) {
-        Dungeon_Troll_Blood_Revive *entry = &game->troll_blood_revives[idx];
+        Dungeon_Revive_Entry *entry = &game->revive_entries[idx];
         if (!entry->active)
             continue;
         if (entry->revive_turn > game->dungeon_turn_count)
@@ -3354,14 +3404,21 @@ static void game_dungeon_process_troll_blood_revives(Game *game)
         if (game->unit_count >= DUNGEON_MAX_UNITS)
             continue;
 
-        i32 revive_x = 0;
-        i32 revive_y = 0;
-        if (!game_dungeon_find_nearest_unoccupied_floor_cell(game, entry->x, entry->y, 0, &revive_x,
-                                                             &revive_y)) {
+        i32 revive_x = entry->x;
+        i32 revive_y = entry->y;
+        bool can_revive_at_origin =
+            game_dungeon_cell_is_floor(game, revive_x, revive_y) &&
+            !(game->player_x == revive_x && game->player_y == revive_y) &&
+            !game_dungeon_cell_has_world_feature(game, revive_x, revive_y) &&
+            !game_dungeon_cell_has_item(game, revive_x, revive_y) &&
+            !game_dungeon_cell_has_unit(game, revive_x, revive_y) &&
+            !game_dungeon_cell_has_revive_entry_excluding(game, revive_x, revive_y, idx);
+        if (!can_revive_at_origin && !game_dungeon_find_nearest_unoccupied_floor_cell(
+                                         game, entry->x, entry->y, 0, &revive_x, &revive_y)) {
             continue;
         }
 
-        game_dungeon_add_unit(game, revive_x, revive_y, UNIT_ART_TROLL, entry->orientation,
+        game_dungeon_add_unit(game, revive_x, revive_y, entry->kind, entry->orientation,
                               entry->is_friendly);
         Dungeon_Unit *revived = &game->units[game->unit_count - 1];
         revived->is_awake = false;
@@ -3370,8 +3427,10 @@ static void game_dungeon_process_troll_blood_revives(Game *game)
         game_dungeon_clear_poisoned_status(revived);
         game_dungeon_clear_burning_status(revived);
         game_dungeon_clear_webbed_status(revived);
-        revived->has_troll_blood = true;
+        revived->has_troll_blood = revived->kind == UNIT_ART_TROLL;
         revived->shaman_heal_cooldown_turns = 0;
+        revived->dash_cooldown_turns = 0;
+        revived->treant_knockback_cooldown_turns = 0;
         revived->skip_enemy_turn_once = !revived->is_friendly;
 
         entry->active = false;
@@ -3387,7 +3446,7 @@ static void game_dungeon_advance_turn(Game *game)
     assert(game != 0);
 
     game->dungeon_turn_count++;
-    game_dungeon_process_troll_blood_revives(game);
+    game_dungeon_process_revives(game);
 }
 
 static bool game_dungeon_threat_source_has_higher_priority(const Dungeon_Threat_Source *a,
@@ -7252,7 +7311,7 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_i
     game->damage_slash_fx_cursor = 0;
     memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
     game->defeated_unit_visual_cursor = 0;
-    memset(game->troll_blood_revives, 0, sizeof(game->troll_blood_revives));
+    memset(game->revive_entries, 0, sizeof(game->revive_entries));
     game->dungeon_turn_count = 0;
     game->player_x = -1;
     game->player_y = -1;
@@ -7467,7 +7526,7 @@ static bool game_build_debug_testing_area(Game *game)
     game->damage_slash_fx_cursor = 0;
     memset(game->defeated_unit_visuals, 0, sizeof(game->defeated_unit_visuals));
     game->defeated_unit_visual_cursor = 0;
-    memset(game->troll_blood_revives, 0, sizeof(game->troll_blood_revives));
+    memset(game->revive_entries, 0, sizeof(game->revive_entries));
     game->dungeon_turn_count = 0;
 
     game->player_x = -1;
@@ -7776,6 +7835,28 @@ static void game_draw_item_tile_with_anchor(Game *game, ITEM_ART_KIND kind, Vect
 {
     game_draw_item_tile_with_anchor_tinted(game, kind, anchor_position, sprite_size, anim_frame,
                                            WHITE);
+}
+
+static void game_draw_revive_skull_markers(Game *game, Vector2 origin, float tile_size,
+                                           int anim_frame)
+{
+    assert(game != 0);
+
+    for (i32 entry_idx = 0; entry_idx < DUNGEON_MAX_UNITS; entry_idx++) {
+        const Dungeon_Revive_Entry *entry = &game->revive_entries[entry_idx];
+        if (!entry->active)
+            continue;
+        if (!game_dungeon_cell_is_visible(game, entry->x, entry->y))
+            continue;
+
+        Vector2 anchor_position = {
+            .x = origin.x + ((float)entry->x + 0.5f) * tile_size,
+            .y = origin.y + ((float)entry->y + 0.5f) * tile_size,
+        };
+        Color skull_tint = game_dungeon_get_revive_skull_tint(entry->kind);
+        game_draw_item_tile_with_anchor_tinted(game, ITEM_KIND_SKULL, anchor_position, tile_size,
+                                               anim_frame, skull_tint);
+    }
 }
 
 static void game_draw_unit_tile(Game *game, UNIT_ART_KIND kind, u8 orientation, Vector2 top_left,
@@ -9939,7 +10020,8 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         snprintf(buffer, buffer_cap, "Warlock familiar that cleaves all adjacent enemies");
         return;
     case UNIT_ART_PHOENIX:
-        snprintf(buffer, buffer_cap, "Druid familiar that applies stacking burn in melee");
+        snprintf(buffer, buffer_cap,
+                 "Druid familiar that applies stacking burn and revives in 5 turns");
         return;
     case UNIT_ART_TREANT:
         snprintf(buffer, buffer_cap,
@@ -10303,6 +10385,8 @@ static void game_draw_test_dungeon(Game *game)
                                              tile_size, unit_anim_frame);
     }
 
+    game_draw_revive_skull_markers(game, origin, tile_size, item_anim_frame);
+
     game_draw_damage_slash_fx(game, origin, tile_size);
     game_draw_web_projectiles(game, origin, tile_size);
 
@@ -10433,6 +10517,9 @@ static bool game_update_player(Game *game)
     i32 start_y = game->player_y;
 
     i32 target_unit_idx = game_dungeon_get_unit_index_at(game, next_x, next_y);
+    if (target_unit_idx < 0 && game_dungeon_cell_has_revive_entry(game, next_x, next_y))
+        return false;
+
     if (target_unit_idx >= 0) {
         Dungeon_Unit *target_unit = &game->units[target_unit_idx];
         if (target_unit->is_friendly) {

@@ -152,11 +152,12 @@ Unless otherwise noted, these will wear off in 5 turns.
 
 ## Druid Familiars
 
-### Pheonix
+### Phoenix
 - 5hp, 3dmg
 - target: nearest enemy
 - basic melee
 - applies increasing stacks of burn on attack
+- rises from the ashes after 5 turns
 
 ### Treant
 - 10hp, 2dmg
