@@ -13,6 +13,7 @@
 #define UNITS_SHEET_PATH "assets/units.png"
 #define ITEMS_SHEET_PATH "assets/items.png"
 #define WORLD_SHEET_PATH "assets/world.png"
+#define FX_SHEET_PATH "assets/fx.png"
 #define PREVIEW_TOP_MARGIN_Y 24.0f
 #define PREVIEW_SECTION_GAP_Y 40.0f
 
@@ -40,6 +41,19 @@
 #define WORLD_PREVIEW_LABEL_SIZE 16.0f
 #define WORLD_PREVIEW_LABEL_GAP 6.0f
 #define WORLD_PREVIEW_SPRITE_SCALE 3.0f
+
+#define FX_ART_TILE_SIZE 16
+#define FX_ART_COL_COUNT 16
+#define FX_ART_ROW_COUNT 8
+
+#define FX_PREVIEW_CELL_GAP_X 14.0f
+#define FX_PREVIEW_CELL_GAP_Y 18.0f
+#define FX_PREVIEW_CELL_PADDING_X 10.0f
+#define FX_PREVIEW_CELL_PADDING_Y 8.0f
+#define FX_PREVIEW_LABEL_SIZE 16.0f
+#define FX_PREVIEW_LABEL_GAP 6.0f
+#define FX_PREVIEW_SPRITE_SCALE 3.0f
+#define FX_PREVIEW_ROW_COUNT FX_ART_ROW_COUNT
 
 #define CAMERA_FOLLOW_SPEED_NEAR 2.0f
 #define CAMERA_FOLLOW_SPEED_FAR 20.0f
@@ -539,6 +553,7 @@ typedef struct {
     Texture2D units_texture;
     Texture2D items_texture;
     Texture2D world_texture;
+    Texture2D fx_texture;
 
     u64 dungeon_seed;
     u32 dungeon_floor_index;
@@ -886,22 +901,31 @@ static const char *game_dungeon_active_template_name(const Game *game)
     return game_dungeon_hbw_templates[game->dungeon_template_index].name;
 }
 
+static int game_anim_frame_for_count_at_fps(int frame_count, float fps)
+{
+    assert(frame_count > 0);
+    assert(fps > 0.0f);
+
+    int frame = (int)(GetTime() * fps);
+    frame %= frame_count;
+    if (frame < 0)
+        frame += frame_count;
+    return frame;
+}
+
+static int game_anim_frame_for_count(int frame_count)
+{
+    return game_anim_frame_for_count_at_fps(frame_count, DUNGEON_SPRITE_ANIM_FPS);
+}
+
 static int game_unit_anim_frame(void)
 {
-    int frame = (int)(GetTime() * DUNGEON_SPRITE_ANIM_FPS);
-    frame %= UNIT_ART_ANIM_FRAME_COUNT;
-    if (frame < 0)
-        frame += UNIT_ART_ANIM_FRAME_COUNT;
-    return frame;
+    return game_anim_frame_for_count(UNIT_ART_ANIM_FRAME_COUNT);
 }
 
 static int game_item_anim_frame(void)
 {
-    int frame = (int)(GetTime() * DUNGEON_SPRITE_ANIM_FPS);
-    frame %= ITEM_ART_ANIM_FRAME_COUNT;
-    if (frame < 0)
-        frame += ITEM_ART_ANIM_FRAME_COUNT;
-    return frame;
+    return game_anim_frame_for_count(ITEM_ART_ANIM_FRAME_COUNT);
 }
 
 static bool game_dungeon_cell_in_bounds(i32 x, i32 y)
@@ -7647,6 +7671,109 @@ static void game_draw_unit_tile_with_feet_anchor(Game *game, UNIT_ART_KIND kind,
     DrawTexturePro(game->units_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
 }
 
+static void game_draw_fx_tile(Game *game, i32 col, i32 row, Vector2 top_left, float sprite_size)
+{
+    assert(col >= 0 && col < FX_ART_COL_COUNT);
+    assert(row >= 0 && row < FX_ART_ROW_COUNT);
+
+    Rectangle src = {
+        .x = (float)(col * FX_ART_TILE_SIZE),
+        .y = (float)(row * FX_ART_TILE_SIZE),
+        .width = (float)FX_ART_TILE_SIZE,
+        .height = (float)FX_ART_TILE_SIZE,
+    };
+
+    Rectangle dst = {
+        .x = top_left.x,
+        .y = top_left.y,
+        .width = sprite_size,
+        .height = sprite_size,
+    };
+
+    DrawTexturePro(game->fx_texture, src, dst, (Vector2){0}, 0.0f, WHITE);
+}
+
+typedef struct {
+    u8 col_start;
+    u8 frame_count;
+} Fx_Preview_Entry;
+
+static i32 game_fx_preview_row_entry_count(i32 row)
+{
+    assert(row >= 0 && row < FX_PREVIEW_ROW_COUNT);
+
+    switch (row) {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+        return 12;
+    case 4:
+        return 16;
+    case 5:
+        return 5;
+    case 6:
+        return 12;
+    case 7:
+        return 4;
+    }
+
+    assert(0 && "Unhandled fx preview row");
+    return 0;
+}
+
+static Fx_Preview_Entry game_fx_preview_get_entry(i32 row, i32 entry_idx)
+{
+    i32 entry_count = game_fx_preview_row_entry_count(row);
+    assert(entry_idx >= 0 && entry_idx < entry_count);
+
+    if (row <= 3) {
+        if (entry_idx < 8)
+            return (Fx_Preview_Entry){.col_start = (u8)entry_idx, .frame_count = 1};
+        if (entry_idx == 8)
+            return (Fx_Preview_Entry){.col_start = 8, .frame_count = 3};
+        if (entry_idx == 9)
+            return (Fx_Preview_Entry){.col_start = 11, .frame_count = 2};
+        if (entry_idx == 10)
+            return (Fx_Preview_Entry){.col_start = 13, .frame_count = 2};
+        return (Fx_Preview_Entry){.col_start = 15, .frame_count = 1};
+    }
+
+    if (row == 4)
+        return (Fx_Preview_Entry){.col_start = (u8)entry_idx, .frame_count = 1};
+
+    if (row == 5)
+        return (Fx_Preview_Entry){.col_start = (u8)(entry_idx * 3), .frame_count = 3};
+
+    if (row == 6)
+        return (Fx_Preview_Entry){.col_start = (u8)entry_idx, .frame_count = 1};
+
+    return (Fx_Preview_Entry){.col_start = (u8)(entry_idx * 2), .frame_count = 2};
+}
+
+static void game_fx_preview_entry_label(i32 row, Fx_Preview_Entry entry, char *buffer,
+                                        u32 buffer_cap)
+{
+    assert(buffer != 0);
+    assert(buffer_cap > 0);
+
+    if (row == 5 && entry.frame_count == 3) {
+        i32 slash_idx = ((i32)entry.col_start / 3) + 1;
+        snprintf(buffer, buffer_cap, "slash%d", slash_idx);
+        return;
+    }
+
+    i32 display_row = row + 1;
+    i32 start_col = (i32)entry.col_start + 1;
+    if (entry.frame_count <= 1) {
+        snprintf(buffer, buffer_cap, "R%d C%d", display_row, start_col);
+        return;
+    }
+
+    i32 end_col = start_col + (i32)entry.frame_count - 1;
+    snprintf(buffer, buffer_cap, "R%d C%d-%d", display_row, start_col, end_col);
+}
+
 static Vector2 game_get_unit_art_preview_size(Game *game)
 {
     float sprite_size = UNIT_ART_TILE_SIZE * UNIT_PREVIEW_SPRITE_SCALE;
@@ -7920,11 +8047,113 @@ static void game_draw_world_art_preview(Game *game, Vector2 origin)
     }
 }
 
+static Vector2 game_get_fx_art_preview_size(Game *game)
+{
+    float sprite_size = FX_ART_TILE_SIZE * FX_PREVIEW_SPRITE_SCALE;
+
+    float max_name_width = 0.0f;
+    i32 max_row_entries = 0;
+    for (i32 row = 0; row < FX_PREVIEW_ROW_COUNT; row++) {
+        i32 entry_count = game_fx_preview_row_entry_count(row);
+        if (entry_count > max_row_entries)
+            max_row_entries = entry_count;
+
+        for (i32 entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+            Fx_Preview_Entry entry = game_fx_preview_get_entry(row, entry_idx);
+            char label[24];
+            game_fx_preview_entry_label(row, entry, label, (u32)sizeof(label));
+            Vector2 text_size =
+                MeasureTextEx(game->font, label, FX_PREVIEW_LABEL_SIZE, game->font_spacing);
+            max_name_width = max(max_name_width, text_size.x);
+        }
+    }
+
+    float cell_w = max(max_name_width, sprite_size) + (FX_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (FX_PREVIEW_CELL_PADDING_Y * 2.0f) + FX_PREVIEW_LABEL_SIZE +
+                   FX_PREVIEW_LABEL_GAP + sprite_size;
+
+    return (Vector2){
+        .x = (float)max_row_entries * cell_w + (float)(max_row_entries - 1) * FX_PREVIEW_CELL_GAP_X,
+        .y = (float)FX_PREVIEW_ROW_COUNT * cell_h +
+             (float)(FX_PREVIEW_ROW_COUNT - 1) * FX_PREVIEW_CELL_GAP_Y,
+    };
+}
+
+static void game_draw_fx_art_preview(Game *game, Vector2 origin)
+{
+    float sprite_size = FX_ART_TILE_SIZE * FX_PREVIEW_SPRITE_SCALE;
+
+    float max_name_width = 0.0f;
+    for (i32 row = 0; row < FX_PREVIEW_ROW_COUNT; row++) {
+        i32 entry_count = game_fx_preview_row_entry_count(row);
+        for (i32 entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+            Fx_Preview_Entry entry = game_fx_preview_get_entry(row, entry_idx);
+            char label[24];
+            game_fx_preview_entry_label(row, entry, label, (u32)sizeof(label));
+            Vector2 text_size =
+                MeasureTextEx(game->font, label, FX_PREVIEW_LABEL_SIZE, game->font_spacing);
+            max_name_width = max(max_name_width, text_size.x);
+        }
+    }
+
+    float cell_w = max(max_name_width, sprite_size) + (FX_PREVIEW_CELL_PADDING_X * 2.0f);
+    float cell_h = (FX_PREVIEW_CELL_PADDING_Y * 2.0f) + FX_PREVIEW_LABEL_SIZE +
+                   FX_PREVIEW_LABEL_GAP + sprite_size;
+
+    Vector2 content_size = game_get_fx_art_preview_size(game);
+
+    Rectangle content_panel = {
+        .x = origin.x - FX_PREVIEW_CELL_PADDING_X,
+        .y = origin.y - FX_PREVIEW_CELL_PADDING_Y,
+        .width = content_size.x + (FX_PREVIEW_CELL_PADDING_X * 2.0f),
+        .height = content_size.y + (FX_PREVIEW_CELL_PADDING_Y * 2.0f),
+    };
+    DrawRectangleRec(content_panel, (Color){20, 33, 38, 255});
+
+    for (i32 row = 0; row < FX_PREVIEW_ROW_COUNT; row++) {
+        i32 entry_count = game_fx_preview_row_entry_count(row);
+        float row_w =
+            (float)entry_count * cell_w + (float)(entry_count - 1) * FX_PREVIEW_CELL_GAP_X;
+        float row_x = origin.x + (content_size.x - row_w) * 0.5f;
+        float cell_y = origin.y + (float)row * (cell_h + FX_PREVIEW_CELL_GAP_Y);
+
+        for (i32 entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+            Fx_Preview_Entry entry = game_fx_preview_get_entry(row, entry_idx);
+            float cell_x = row_x + (float)entry_idx * (cell_w + FX_PREVIEW_CELL_GAP_X);
+
+            Rectangle panel = {cell_x, cell_y, cell_w, cell_h};
+            DrawRectangleRec(panel, (Color){32, 47, 52, 255});
+
+            char label[24];
+            game_fx_preview_entry_label(row, entry, label, (u32)sizeof(label));
+
+            Vector2 text_size =
+                MeasureTextEx(game->font, label, FX_PREVIEW_LABEL_SIZE, game->font_spacing);
+            Vector2 text_pos = {
+                .x = cell_x + (cell_w - text_size.x) * 0.5f,
+                .y = cell_y + FX_PREVIEW_CELL_PADDING_Y,
+            };
+            DrawTextEx(game->font, label, text_pos, FX_PREVIEW_LABEL_SIZE, game->font_spacing,
+                       RAYWHITE);
+
+            float sprite_y = text_pos.y + text_size.y + FX_PREVIEW_LABEL_GAP;
+            float sprite_x = cell_x + (cell_w - sprite_size) * 0.5f;
+            float anim_fps = DUNGEON_SPRITE_ANIM_FPS;
+            if (entry.frame_count == 3)
+                anim_fps *= 2.0f;
+            i32 anim_frame = game_anim_frame_for_count_at_fps((i32)entry.frame_count, anim_fps);
+            i32 col = (i32)entry.col_start + anim_frame;
+            game_draw_fx_tile(game, col, row, (Vector2){sprite_x, sprite_y}, sprite_size);
+        }
+    }
+}
+
 static void game_draw_art_previews(Game *game)
 {
     Vector2 unit_preview_size = game_get_unit_art_preview_size(game);
     Vector2 item_preview_size = game_get_item_art_preview_size(game);
     Vector2 world_preview_size = game_get_world_art_preview_size(game);
+    Vector2 fx_preview_size = game_get_fx_art_preview_size(game);
     float screen_w = (float)GetScreenWidth();
 
     Vector2 unit_origin = {
@@ -7942,9 +8171,15 @@ static void game_draw_art_previews(Game *game)
         .y = item_origin.y + item_preview_size.y + PREVIEW_SECTION_GAP_Y,
     };
 
+    Vector2 fx_origin = {
+        .x = (screen_w - fx_preview_size.x) * 0.5f,
+        .y = world_origin.y + world_preview_size.y + PREVIEW_SECTION_GAP_Y,
+    };
+
     game_draw_unit_art_preview(game, unit_origin);
     game_draw_item_art_preview(game, item_origin);
     game_draw_world_art_preview(game, world_origin);
+    game_draw_fx_art_preview(game, fx_origin);
 }
 
 static Vector2 game_dungeon_get_origin(void)
@@ -10796,6 +11031,10 @@ void game_init(Mem mem, Font font, float font_spacing)
     assert(game->world_texture.id != 0);
     SetTextureFilter(game->world_texture, TEXTURE_FILTER_POINT);
 
+    game->fx_texture = LoadTexture(FX_SHEET_PATH);
+    assert(game->fx_texture.id != 0);
+    SetTextureFilter(game->fx_texture, TEXTURE_FILTER_POINT);
+
     game->show_dungeon_view = true;
     game->minimap_opacity_level = DUNGEON_MINIMAP_DEFAULT_OPACITY_LEVEL;
     game->end_menu_state = END_MENU_NONE;
@@ -10830,6 +11069,8 @@ void game_shutdown(Mem mem)
         UnloadTexture(game->items_texture);
     if (game->world_texture.id != 0)
         UnloadTexture(game->world_texture);
+    if (game->fx_texture.id != 0)
+        UnloadTexture(game->fx_texture);
 }
 
 static void game_input(Game *game)
