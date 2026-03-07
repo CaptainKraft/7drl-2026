@@ -158,6 +158,7 @@
 #define DUNGEON_BEHOLDER_TURRET_RANGE 10
 #define DUNGEON_GRIFFON_DASH_THROUGH_RANGE 5
 #define DUNGEON_GRIFFON_DASH_THROUGH_COOLDOWN_TURNS 7
+#define DUNGEON_TREANT_KNOCKBACK_COOLDOWN_TURNS 5
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
 #define DUNGEON_WEB_PROJECTILE_CAPACITY DUNGEON_MAX_UNITS
@@ -438,6 +439,7 @@ typedef struct {
     bool skip_enemy_turn_once;
     bool is_returning_to_player;
     u8 dash_cooldown_turns;
+    u8 treant_knockback_cooldown_turns;
 } Dungeon_Unit;
 
 typedef struct {
@@ -651,6 +653,7 @@ typedef struct {
     bool player_webbed_skip_next_turn;
     u8 player_webbed_turns_remaining;
     float player_webbed_particle_spawn_timer;
+    bool player_skip_turn_once;
     UNIT_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
     i32 player_active_action_bar_slot;
     u32 player_damage_event_count;
@@ -1594,6 +1597,7 @@ static void game_dungeon_clear_all_player_statuses(Game *game)
     game_dungeon_clear_player_poisoned_status(game);
     game_dungeon_clear_player_burning_status(game);
     game_dungeon_clear_player_webbed_status(game);
+    game->player_skip_turn_once = false;
 }
 
 static void game_dungeon_clear_burning_status(Dungeon_Unit *unit)
@@ -1809,6 +1813,7 @@ static void game_dungeon_reset_familiar_for_new_floor(Dungeon_Unit *unit)
     game_dungeon_clear_webbed_status(unit);
     unit->shaman_heal_cooldown_turns = 0;
     unit->dash_cooldown_turns = 0;
+    unit->treant_knockback_cooldown_turns = 0;
     unit->is_returning_to_player = false;
 }
 
@@ -2067,6 +2072,7 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .skip_enemy_turn_once = false,
         .is_returning_to_player = false,
         .dash_cooldown_turns = 0,
+        .treant_knockback_cooldown_turns = 0,
     };
 }
 
@@ -3319,6 +3325,7 @@ static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon
         restored->has_troll_blood = saved->has_troll_blood;
         restored->shaman_heal_cooldown_turns = saved->shaman_heal_cooldown_turns;
         restored->dash_cooldown_turns = saved->dash_cooldown_turns;
+        restored->treant_knockback_cooldown_turns = saved->treant_knockback_cooldown_turns;
         restored->is_awake = false;
         restored->turns_out_of_player_los = 0;
         game_dungeon_clear_diseased_status(restored);
@@ -4769,6 +4776,7 @@ static bool game_dungeon_try_knockback_player(Game *game, i32 attacker_x, i32 at
     game_dungeon_begin_player_move_animation(game, start_x, start_y);
     game->player_x = (i16)knock_x;
     game->player_y = (i16)knock_y;
+    game->player_skip_turn_once = true;
     game_dungeon_rebuild_line_of_sight(game);
     return true;
 }
@@ -4802,6 +4810,10 @@ static bool game_dungeon_try_knockback_unit(Game *game, i32 target_unit_idx, i32
     target_unit->y = (i16)knock_y;
     target_unit->orientation = game_dungeon_get_orientation_from_step(
         knock_x - start_x, knock_y - start_y, target_unit->orientation);
+    if (target_unit->is_friendly)
+        target_unit->skip_friendly_turn_once = true;
+    else
+        target_unit->skip_enemy_turn_once = true;
     return true;
 }
 
@@ -4930,6 +4942,9 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
     if (!game_dungeon_cell_in_bounds(start_x, start_y))
         return;
 
+    bool treant_knockback_ready =
+        unit->kind == UNIT_ART_TREANT && unit->treant_knockback_cooldown_turns == 0;
+
     i32 target_x = target->target_x;
     i32 target_y = target->target_y;
     float attack_delay = 0.0f;
@@ -4979,8 +4994,10 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
                 game_dungeon_apply_player_burning_status(game);
 
             bool player_defeated = game_dungeon_apply_damage_to_player(game, attack_damage, true);
-            if (unit->kind == UNIT_ART_TREANT && !player_defeated)
-                game_dungeon_try_knockback_player(game, start_x, start_y);
+            if (treant_knockback_ready && !player_defeated &&
+                game_dungeon_try_knockback_player(game, start_x, start_y)) {
+                unit->treant_knockback_cooldown_turns = DUNGEON_TREANT_KNOCKBACK_COOLDOWN_TURNS;
+            }
             return;
         }
 
@@ -4999,9 +5016,10 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
 
         bool target_defeated = game_dungeon_apply_damage_to_unit(
             game, target->target_unit_idx, attack_damage, DAMAGE_KIND_NORMAL, true);
-        if (unit->kind == UNIT_ART_TREANT && !target_defeated && target->target_unit_idx >= 0 &&
-            target->target_unit_idx < game->unit_count) {
-            game_dungeon_try_knockback_unit(game, target->target_unit_idx, start_x, start_y);
+        if (treant_knockback_ready && !target_defeated && target->target_unit_idx >= 0 &&
+            target->target_unit_idx < game->unit_count &&
+            game_dungeon_try_knockback_unit(game, target->target_unit_idx, start_x, start_y)) {
+            unit->treant_knockback_cooldown_turns = DUNGEON_TREANT_KNOCKBACK_COOLDOWN_TURNS;
         }
         return;
     }
@@ -5816,6 +5834,11 @@ static bool game_dungeon_player_should_skip_webbed_turn(Game *game)
 {
     assert(game != 0);
 
+    if (game->player_skip_turn_once) {
+        game->player_skip_turn_once = false;
+        return true;
+    }
+
     if (!game->player_is_webbed)
         return false;
 
@@ -5869,6 +5892,8 @@ static void game_dungeon_take_friendly_unit_turn(
         unit->dash_cooldown_turns > 0) {
         unit->dash_cooldown_turns--;
     }
+    if (unit->kind == UNIT_ART_TREANT && unit->treant_knockback_cooldown_turns > 0)
+        unit->treant_knockback_cooldown_turns--;
 
     i32 follow_min_distance = DUNGEON_FAMILIAR_BASIC_MELEE_FOLLOW_DISTANCE;
     i32 follow_max_distance = DUNGEON_FAMILIAR_BASIC_MELEE_FOLLOW_DISTANCE;
@@ -6336,6 +6361,9 @@ static void game_dungeon_take_enemy_turns(Game *game)
 
         if (game_dungeon_unit_should_skip_webbed_turn(unit))
             continue;
+
+        if (unit->kind == UNIT_ART_TREANT && unit->treant_knockback_cooldown_turns > 0)
+            unit->treant_knockback_cooldown_turns--;
 
         UNIT_AI_KIND ai_kind = game_get_unit_ai_kind(unit->kind);
         switch (ai_kind) {
@@ -9914,7 +9942,8 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         snprintf(buffer, buffer_cap, "Druid familiar that applies stacking burn in melee");
         return;
     case UNIT_ART_TREANT:
-        snprintf(buffer, buffer_cap, "Druid familiar that knocks targets back on hit");
+        snprintf(buffer, buffer_cap,
+                 "Druid familiar that knocks targets back and stuns on hit (5-turn cooldown)");
         return;
     case UNIT_ART_GRIFFON:
         snprintf(buffer, buffer_cap,

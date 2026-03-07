@@ -162,7 +162,7 @@ Unless otherwise noted, these will wear off in 5 turns.
 - 10hp, 2dmg
 - target: nearest enemy
 - basic melee
-- knocks back target on attack
+- knocks back target on attack: cooldown5
 
 ### Griffon
 - 7hp, 5dmg
