@@ -6954,6 +6954,22 @@ static void game_dungeon_take_friendly_unit_turn(
         break;
     }
 
+    if (unit->kind == UNIT_ART_TREANT && unit->treant_knockback_cooldown_turns > 0) {
+        Dungeon_Enemy_Target adjacent_target = {0};
+        if (game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &adjacent_target) &&
+            adjacent_target.distance <= 1) {
+            game_dungeon_take_basic_melee_turn(game, unit_idx, &adjacent_target);
+            return;
+        }
+
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, game->player_x, game->player_y, unit->orientation);
+        game_dungeon_try_follow_player_with_enemy_avoidance(
+            game, unit_idx, follow_min_distance, follow_max_distance, player_distance,
+            player_distance_valid, DUNGEON_FAMILIAR_FOLLOW_ENEMY_AVOID_DISTANCE, 1);
+        return;
+    }
+
     Dungeon_Enemy_Target target = {0};
     if (game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &target)) {
         game_dungeon_take_basic_melee_turn(game, unit_idx, &target);

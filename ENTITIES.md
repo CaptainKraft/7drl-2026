@@ -170,6 +170,8 @@ take the first point of fire dmg on the turn after it was applied.
 - 10hp, 2dmg
 - target: nearest enemy
 - basic melee
+- while knockback is on cooldown, avoids enemies and stays close to player
+- while knockback is on cooldown, only attacks when an enemy is adjacent
 - knocks back target on attack: cooldown5
 
 ### Griffon
