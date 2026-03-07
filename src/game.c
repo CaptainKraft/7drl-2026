@@ -88,6 +88,7 @@
 #define DUNGEON_RNG_STREAM_LAYOUT 0x4c41594f5554ull
 #define DUNGEON_RNG_STREAM_POPULATE 0x504f50554c415445ull
 #define DUNGEON_RNG_STREAM_CULL 0x43554c4cull
+#define DUNGEON_RNG_STREAM_STATUS 0x535441545553ull
 #define DUNGEON_RNG_STREAM_DISEASED 0x4449534541534544ull
 #define DUNGEON_RNG_STREAM_DAMAGE_SLASH 0x534c4153484658ull
 #define DUNGEON_RNG_STREAM_RUN_SEED 0x52554e53454544ull
@@ -109,7 +110,7 @@
 #define DUNGEON_PRIMARY_VARIATION_WEIGHT 70
 #define DUNGEON_LOS_RADIUS_TILES 12
 #define DUNGEON_SPRITE_ANIM_FPS 3.0f
-#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN 4
+#define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MIN 10
 #define DUNGEON_ENEMY_SPAWN_COUNT_FLOOR_MAX 10
 #define DUNGEON_PATH_UNREACHABLE 0x3fff
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
@@ -146,9 +147,12 @@
 #define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
 #define DUNGEON_DISEASED_DAMAGE_PENALTY 1
 #define DUNGEON_DISEASED_DURATION_TURNS 10
+#define DUNGEON_POISON_APPLY_CHANCE_PERCENT 20
 #define DUNGEON_POISON_DAMAGE_PER_TURN 1
-#define DUNGEON_POISON_DURATION_TURNS 2
-#define DUNGEON_BURN_DURATION_TURNS 2
+#define DUNGEON_POISON_DURATION_TURNS 4
+#define DUNGEON_BURN_APPLY_CHANCE_PERCENT 20
+#define DUNGEON_BURN_DAMAGE_PER_TURN 1
+#define DUNGEON_BURN_DURATION_TURNS 4
 #define DUNGEON_WEBBED_DURATION_TURNS 10
 #define DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS 5
 #define DUNGEON_FAMILIAR_ASH_REVIVE_DELAY_TURNS 10
@@ -185,6 +189,9 @@
 #define DUNGEON_PLAYER_PANEL_HEART_GAP 4.0f
 
 #define PLAYER_CLASS_FAMILIAR_COUNT 3
+#define DUNGEON_SECOND_FAMILIAR_UNLOCK_FLOOR 3
+#define DUNGEON_THIRD_FAMILIAR_UNLOCK_FLOOR 5
+#define DUNGEON_FLOOR_HP_BONUS_INTERVAL 2
 #define DUNGEON_ACTION_BAR_SLOT_COUNT PLAYER_CLASS_FAMILIAR_COUNT
 #define DUNGEON_ACTION_BAR_NO_SLOT (-1)
 #define DUNGEON_ACTION_BAR_ITEM_SIZE ((float)UNIT_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
@@ -594,6 +601,7 @@ typedef struct {
     RNG dungeon_layout_rng;
     RNG dungeon_populate_rng;
     RNG dungeon_cull_rng;
+    RNG dungeon_status_rng;
     RNG dungeon_diseased_particle_rng;
     RNG dungeon_damage_slash_rng;
     Dungeon_HBW_Tileset dungeon_tileset;
@@ -1622,6 +1630,19 @@ static void game_dungeon_clear_burning_status(Dungeon_Unit *unit)
     unit->burning_particle_spawn_timer = 0.0f;
 }
 
+static bool game_dungeon_roll_status_apply_chance(Game *game, i32 chance_percent)
+{
+    assert(game != 0);
+    assert(chance_percent >= 0);
+    assert(chance_percent <= 100);
+
+    if (chance_percent <= 0)
+        return false;
+    if (chance_percent >= 100)
+        return true;
+    return ck_rand_int(&game->dungeon_status_rng, 0, 100) < chance_percent;
+}
+
 static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -1637,6 +1658,7 @@ static void game_dungeon_apply_poisoned_status(Dungeon_Unit *unit)
 
     if (unit->is_poisoned) {
         unit->poisoned_turns_remaining = DUNGEON_POISON_DURATION_TURNS;
+        unit->poisoned_applied_this_turn = true;
         return;
     }
 
@@ -1661,6 +1683,7 @@ static void game_dungeon_apply_player_poisoned_status(Game *game)
 
     if (game->player_is_poisoned) {
         game->player_poisoned_turns_remaining = DUNGEON_POISON_DURATION_TURNS;
+        game->player_poisoned_applied_this_turn = true;
         return;
     }
 
@@ -2035,6 +2058,17 @@ static Familiar_State *game_player_get_familiar_state_for_kind(Game *game, UNIT_
     return &game->familiar_states[slot_idx];
 }
 
+static i32 game_player_get_unlocked_familiar_count(const Game *game)
+{
+    assert(game != 0);
+
+    if (game->dungeon_floor_seed_count >= DUNGEON_THIRD_FAMILIAR_UNLOCK_FLOOR)
+        return 3;
+    if (game->dungeon_floor_seed_count >= DUNGEON_SECOND_FAMILIAR_UNLOCK_FLOOR)
+        return 2;
+    return 1;
+}
+
 static void game_player_sync_action_bar_from_familiar_states(Game *game)
 {
     for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
@@ -2049,6 +2083,8 @@ static void game_player_sync_action_bar_from_familiar_states(Game *game)
 
 static void game_player_reset_familiar_states(Game *game)
 {
+    i32 unlocked_familiar_count = game_player_get_unlocked_familiar_count(game);
+
     for (i32 slot_idx = 0; slot_idx < PLAYER_CLASS_FAMILIAR_COUNT; slot_idx++) {
         game->familiar_states[slot_idx] = (Familiar_State){
             .kind = UNIT_ART_NONE,
@@ -2068,10 +2104,14 @@ static void game_player_reset_familiar_states(Game *game)
             continue;
 
         Unit_Stats base_stats = game_get_unit_base_stats(familiar_kind);
+        bool is_unlocked = slot_idx < unlocked_familiar_count;
+        if (!is_unlocked)
+            base_stats.health = 0;
+
         game->familiar_states[slot_idx] = (Familiar_State){
             .kind = familiar_kind,
             .stats = base_stats,
-            .is_alive = true,
+            .is_alive = is_unlocked,
             .is_summoned = false,
         };
     }
@@ -2182,6 +2222,7 @@ static void game_seed_dungeon_rng_streams(Game *game)
     game->dungeon_layout_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_LAYOUT);
     game->dungeon_populate_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_POPULATE);
     game->dungeon_cull_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_CULL);
+    game->dungeon_status_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_STATUS);
     game->dungeon_diseased_particle_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_DISEASED);
     game->dungeon_damage_slash_rng = ck_rng_fork(&floor_rng, DUNGEON_RNG_STREAM_DAMAGE_SLASH);
 }
@@ -5231,9 +5272,11 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
 
             if (unit->kind == UNIT_ART_RAT)
                 game_dungeon_apply_player_diseased_status(game);
-            else if (unit->kind == UNIT_ART_COBRA)
+            else if (unit->kind == UNIT_ART_COBRA && game_dungeon_roll_status_apply_chance(
+                                                         game, DUNGEON_POISON_APPLY_CHANCE_PERCENT))
                 game_dungeon_apply_player_poisoned_status(game);
-            else if (unit->kind == UNIT_ART_IMP || unit->kind == UNIT_ART_PHOENIX)
+            else if ((unit->kind == UNIT_ART_IMP || unit->kind == UNIT_ART_PHOENIX) &&
+                     game_dungeon_roll_status_apply_chance(game, DUNGEON_BURN_APPLY_CHANCE_PERCENT))
                 game_dungeon_apply_player_burning_status(game);
 
             bool player_defeated = game_dungeon_apply_damage_to_player(game, attack_damage, true);
@@ -5252,9 +5295,11 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
 
         if (unit->kind == UNIT_ART_RAT)
             game_dungeon_apply_diseased_status(target_unit);
-        else if (unit->kind == UNIT_ART_COBRA)
+        else if (unit->kind == UNIT_ART_COBRA &&
+                 game_dungeon_roll_status_apply_chance(game, DUNGEON_POISON_APPLY_CHANCE_PERCENT))
             game_dungeon_apply_poisoned_status(target_unit);
-        else if (unit->kind == UNIT_ART_IMP || unit->kind == UNIT_ART_PHOENIX)
+        else if ((unit->kind == UNIT_ART_IMP || unit->kind == UNIT_ART_PHOENIX) &&
+                 game_dungeon_roll_status_apply_chance(game, DUNGEON_BURN_APPLY_CHANCE_PERCENT))
             game_dungeon_apply_burning_status(target_unit);
 
         bool target_defeated = game_dungeon_apply_damage_to_unit(
@@ -5331,7 +5376,8 @@ static void game_dungeon_take_basic_ranged_turn(Game *game, i32 unit_idx,
                 game->player_damage_event_count = 1;
             unit->last_damaged_player_event = game->player_damage_event_count;
 
-            if (unit->kind == UNIT_ART_IMP)
+            if (unit->kind == UNIT_ART_IMP &&
+                game_dungeon_roll_status_apply_chance(game, DUNGEON_BURN_APPLY_CHANCE_PERCENT))
                 game_dungeon_apply_player_burning_status(game);
 
             game_dungeon_apply_damage_to_player(game, attack_damage, true);
@@ -5346,7 +5392,8 @@ static void game_dungeon_take_basic_ranged_turn(Game *game, i32 unit_idx,
             target_unit->turns_out_of_player_los = 0;
         }
 
-        if (unit->kind == UNIT_ART_IMP)
+        if (unit->kind == UNIT_ART_IMP &&
+            game_dungeon_roll_status_apply_chance(game, DUNGEON_BURN_APPLY_CHANCE_PERCENT))
             game_dungeon_apply_burning_status(target_unit);
 
         game_dungeon_apply_damage_to_unit(game, target->target_unit_idx, attack_damage,
@@ -6407,6 +6454,9 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
 
         if (unit->poisoned_applied_this_turn) {
             unit->poisoned_applied_this_turn = false;
+            unit->poisoned_turns_remaining--;
+            if (unit->poisoned_turns_remaining == 0)
+                game_dungeon_clear_poisoned_status(unit);
             unit_idx++;
             continue;
         }
@@ -6416,6 +6466,7 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
             continue;
         }
 
+        unit->poisoned_applied_this_turn = true;
         unit->poisoned_turns_remaining--;
         if (unit->poisoned_turns_remaining == 0)
             game_dungeon_clear_poisoned_status(unit);
@@ -6436,11 +6487,15 @@ static void game_dungeon_apply_player_poison_turn_damage(Game *game)
 
     if (game->player_poisoned_applied_this_turn) {
         game->player_poisoned_applied_this_turn = false;
+        game->player_poisoned_turns_remaining--;
+        if (game->player_poisoned_turns_remaining == 0)
+            game_dungeon_clear_player_poisoned_status(game);
         return;
     }
 
     game_dungeon_apply_damage_to_player(game, DUNGEON_POISON_DAMAGE_PER_TURN, false);
 
+    game->player_poisoned_applied_this_turn = true;
     game->player_poisoned_turns_remaining--;
     if (game->player_poisoned_turns_remaining == 0)
         game_dungeon_clear_player_poisoned_status(game);
@@ -6496,14 +6551,18 @@ static void game_dungeon_apply_burn_turn_damage(Game *game)
 
         if (unit->burning_applied_this_turn) {
             unit->burning_applied_this_turn = false;
+            unit->burn_turns_remaining--;
+            if (unit->burn_turns_remaining == 0)
+                game_dungeon_clear_burning_status(unit);
             unit_idx++;
             continue;
         }
 
-        i32 burn_damage = max((i32)unit->burn_turns_active, 1);
-        if (game_dungeon_apply_damage_to_unit(game, unit_idx, burn_damage, DAMAGE_KIND_FIRE, false))
+        if (game_dungeon_apply_damage_to_unit(game, unit_idx, DUNGEON_BURN_DAMAGE_PER_TURN,
+                                              DAMAGE_KIND_FIRE, false))
             continue;
 
+        unit->burning_applied_this_turn = true;
         unit->burn_turns_remaining--;
         if (unit->burn_turns_remaining == 0)
             game_dungeon_clear_burning_status(unit);
@@ -6524,12 +6583,15 @@ static void game_dungeon_apply_player_burn_turn_damage(Game *game)
 
     if (game->player_burning_applied_this_turn) {
         game->player_burning_applied_this_turn = false;
+        game->player_burn_turns_remaining--;
+        if (game->player_burn_turns_remaining == 0)
+            game_dungeon_clear_player_burning_status(game);
         return;
     }
 
-    i32 burn_damage = max((i32)game->player_burn_turns_active, 1);
-    game_dungeon_apply_damage_to_player(game, burn_damage, false);
+    game_dungeon_apply_damage_to_player(game, DUNGEON_BURN_DAMAGE_PER_TURN, false);
 
+    game->player_burning_applied_this_turn = true;
     game->player_burn_turns_remaining--;
     if (game->player_burn_turns_remaining == 0)
         game_dungeon_clear_player_burning_status(game);
@@ -7085,8 +7147,8 @@ static UNIT_ART_KIND game_dungeon_pick_enemy_kind_for_depth(RNG *rng, u32 depth)
 {
     static const u8
         enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT][TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
-            {35, 20, 25, 15, 5, 0, 0, 0, 0, 0},   {28, 18, 25, 14, 10, 3, 2, 0, 0, 0},
-            {22, 16, 24, 13, 12, 5, 4, 2, 2, 0},  {18, 14, 22, 12, 13, 6, 6, 4, 4, 1},
+            {42, 24, 29, 0, 5, 0, 0, 0, 0, 0},    {33, 21, 29, 0, 12, 3, 2, 0, 0, 0},
+            {26, 19, 28, 0, 14, 5, 4, 2, 2, 0},   {18, 14, 22, 12, 13, 6, 6, 4, 4, 1},
             {14, 12, 20, 11, 13, 7, 8, 6, 7, 2},  {11, 10, 18, 10, 13, 8, 9, 8, 10, 3},
             {8, 9, 16, 9, 12, 8, 10, 10, 13, 5},  {6, 8, 13, 8, 11, 9, 10, 12, 15, 8},
             {4, 7, 11, 7, 10, 9, 11, 13, 16, 12}, {3, 6, 9, 6, 9, 9, 10, 14, 16, 18},
@@ -7659,9 +7721,14 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     game->dungeon_depth = depth;
 
     if (transitioning_floors && first_floor_visit) {
-        game_player_clear_action_bar(game);
+        u32 floor_number = depth + 1;
+        if (floor_number % DUNGEON_FLOOR_HP_BONUS_INTERVAL == 0 &&
+            game->player_stats.max_health < 255)
+            game->player_stats.max_health++;
+
         game->player_stats.health = game->player_stats.max_health;
         game_dungeon_clear_all_player_statuses(game);
+        game_player_clear_action_bar(game);
     }
 
     if (arrival_role == WORLD_ART_ROLE_STAIRS_DOWN || arrival_role == WORLD_ART_ROLE_STAIRS_UP) {
