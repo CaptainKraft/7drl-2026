@@ -11134,54 +11134,54 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         snprintf(buffer, buffer_cap, "Melee unit that inflicts poison");
         return;
     case UNIT_ART_SPIDER:
-        snprintf(buffer, buffer_cap, "Web-spinner that switches to melee after webbing targets");
+        snprintf(buffer, buffer_cap, "Melee unit that webs targets before attacking in melee");
         return;
     case UNIT_ART_BAT:
         snprintf(buffer, buffer_cap, "Fast melee unit that dashes into enemies");
         return;
     case UNIT_ART_BEETLE:
-        snprintf(buffer, buffer_cap, "Kamikaze unit that explodes in a 3x3 fire blast");
+        snprintf(buffer, buffer_cap, "Melee unit that explodes on death");
         return;
     case UNIT_ART_BEHOLDER:
         snprintf(buffer, buffer_cap,
-                 "Aligned ranged familiar that repositions for clear line attacks");
+                 "Long range unit that damages all enemies in it's attack path");
         return;
     case UNIT_ART_IMP:
         snprintf(buffer, buffer_cap,
-                 "Ranged familiar that stacks burn and rises from ashes in 10 turns");
+                 "Ranged unit that has a chance to inflict burn and will rise from the ashes "
+                 "after death");
         return;
     case UNIT_ART_REAPER:
         snprintf(buffer, buffer_cap,
-                 "Warlock familiar that cleaves adjacent enemies and heals itself and you for 1 HP "
-                 "per hit");
+                 "Melee unit that cleaves all adjacent enemies and drains health for itself and "
+                 "its master");
         return;
     case UNIT_ART_PHOENIX:
         snprintf(buffer, buffer_cap,
-                 "Druid familiar that applies stacking burn and revives in 10 turns");
+                 "Melee unit that has a chance to inflict burn and will rise from the ashes "
+                 "after death");
         return;
     case UNIT_ART_TREANT:
-        snprintf(buffer, buffer_cap,
-                 "Druid familiar that knocks targets back and stuns on hit (5-turn cooldown)");
+        snprintf(buffer, buffer_cap, "Melee unit that attacks with stun and knockback");
         return;
     case UNIT_ART_GRIFFON:
         snprintf(buffer, buffer_cap,
-                 "Druid familiar with dash-through strikes and melee while recharging");
+                 "Ranged unit that dashes through all enemies in line with its attack");
         return;
     case UNIT_ART_GOBLIN_GRUNT:
-        snprintf(buffer, buffer_cap, "Melee goblin with reliable frontline damage");
+        snprintf(buffer, buffer_cap, "Melee unit");
         return;
     case UNIT_ART_GOBLIN_SHAMAN:
-        snprintf(buffer, buffer_cap,
-                 "Support goblin that follows allies, heals them, and flees when alone");
+        snprintf(buffer, buffer_cap, "Ranged unit that will heal allies and flee enemies");
         return;
     case UNIT_ART_GOBLIN_WARRIOR:
-        snprintf(buffer, buffer_cap, "Heavy melee goblin with high damage");
+        snprintf(buffer, buffer_cap, "Melee unit");
         return;
     case UNIT_ART_SLIME:
-        snprintf(buffer, buffer_cap, "Splits into two smaller slimes when defeated");
+        snprintf(buffer, buffer_cap, "Melee unit that splits in half on death");
         return;
     case UNIT_ART_TROLL:
-        snprintf(buffer, buffer_cap, "Revives after death unless burned by fire");
+        snprintf(buffer, buffer_cap, "Melee unit that will revive unless killed with fire");
         return;
     default:
         break;
