@@ -7706,6 +7706,17 @@ static u32 game_dungeon_clamp_run_depth(u32 depth)
     return depth;
 }
 
+static WORLD_ART_THEME game_dungeon_wall_theme_for_depth(u32 depth)
+{
+    static const WORLD_ART_THEME wall_theme_by_floor[DUNGEON_RUN_FLOOR_COUNT] = {
+        WORLD_ART_THEME_3, WORLD_ART_THEME_2, WORLD_ART_THEME_4,
+        WORLD_ART_THEME_1, WORLD_ART_THEME_1,
+    };
+
+    u32 depth_idx = game_dungeon_clamp_run_depth(depth);
+    return wall_theme_by_floor[depth_idx];
+}
+
 static u32 game_dungeon_get_return_wave_table_index_for_depth(u32 depth)
 {
     u32 depth_idx = game_dungeon_clamp_run_depth(depth);
@@ -8217,6 +8228,7 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
 static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_index,
                                               bool include_up_stairs)
 {
+    game->dungeon_wall_theme = game_dungeon_wall_theme_for_depth(depth);
     game->dungeon_floor_index = floor_index;
     game_seed_dungeon_rng_streams(game);
 
