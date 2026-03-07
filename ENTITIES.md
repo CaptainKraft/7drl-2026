@@ -155,6 +155,7 @@ take the first point of fire dmg on the turn after it was applied.
 - 10hp, 4dmg
 - target: nearest enemy
 - attacks all adjacent tiles
+- heals self and player for 1hp per enemy hit during attack
 
 ## Druid Familiars
 

@@ -164,6 +164,7 @@
 #define DUNGEON_GRIFFON_DASH_THROUGH_RANGE 5
 #define DUNGEON_GRIFFON_DASH_THROUGH_COOLDOWN_TURNS 7
 #define DUNGEON_TREANT_KNOCKBACK_COOLDOWN_TURNS 5
+#define DUNGEON_REAPER_SWEEP_HEAL_PER_HIT 1
 #define DUNGEON_DISEASED_PARTICLE_CAPACITY 96
 #define DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL 0.36f
 #define DUNGEON_WEB_PROJECTILE_CAPACITY DUNGEON_MAX_UNITS
@@ -5170,6 +5171,12 @@ static bool game_dungeon_take_reaper_sweep_attack(Game *game, i32 unit_idx, i32 
                                              attack_delay);
 
     i32 attack_damage = game_dungeon_get_unit_attack_damage(unit);
+    if (unit_is_friendly && hit_unit_count > 0) {
+        i32 heal_amount = hit_unit_count * DUNGEON_REAPER_SWEEP_HEAL_PER_HIT;
+        game_unit_stats_heal(&unit->stats, heal_amount);
+        game_unit_stats_heal(&game->player_stats, heal_amount);
+    }
+
     if (hit_player) {
         game->player_damage_event_count++;
         if (game->player_damage_event_count == 0)
@@ -10282,7 +10289,9 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
                  "Ranged familiar that stacks burn and rises from ashes in 10 turns");
         return;
     case UNIT_ART_REAPER:
-        snprintf(buffer, buffer_cap, "Warlock familiar that cleaves all adjacent enemies");
+        snprintf(buffer, buffer_cap,
+                 "Warlock familiar that cleaves adjacent enemies and heals itself and you for 1 HP "
+                 "per hit");
         return;
     case UNIT_ART_PHOENIX:
         snprintf(buffer, buffer_cap,
