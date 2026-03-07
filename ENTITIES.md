@@ -149,7 +149,7 @@ take the first point of fire dmg on the turn after it was applied.
 ### Beholder
 - 5hp, 2dmg
 - target: nearest aligned enemy
-- aligned ranged: 7range
+- aligned + diagonal, piercing ranged: 10range
 
 ### Reaper
 - 10hp, 4dmg

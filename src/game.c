@@ -164,7 +164,7 @@
 #define DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE 3
 #define DUNGEON_BEETLE_KAMIKAZE_AREA_RADIUS ((DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE - 1) / 2)
 #define DUNGEON_ALIGNED_RANGED_TOO_CLOSE_DISTANCE 2
-#define DUNGEON_BEHOLDER_ALIGNED_RANGED_RANGE 7
+#define DUNGEON_BEHOLDER_ALIGNED_RANGED_RANGE 10
 #define DUNGEON_BEHOLDER_TURRET_RANGE 10
 #define DUNGEON_GRIFFON_DASH_THROUGH_RANGE 5
 #define DUNGEON_GRIFFON_DASH_THROUGH_COOLDOWN_TURNS 7
@@ -4361,7 +4361,8 @@ static bool game_dungeon_cells_are_cardinal_neighbors(i32 a_x, i32 a_y, i32 b_x,
     return (dx == 0 && (dy == -1 || dy == 1)) || (dy == 0 && (dx == -1 || dx == 1));
 }
 
-static bool game_dungeon_cells_are_line_aligned(i32 a_x, i32 a_y, i32 b_x, i32 b_y)
+static bool game_dungeon_cells_are_aligned(i32 a_x, i32 a_y, i32 b_x, i32 b_y,
+                                           bool include_diagonals)
 {
     i32 dx = b_x - a_x;
     if (dx < 0)
@@ -4370,11 +4371,17 @@ static bool game_dungeon_cells_are_line_aligned(i32 a_x, i32 a_y, i32 b_x, i32 b
     if (dy < 0)
         dy = -dy;
 
-    return dx == 0 || dy == 0;
+    return dx == 0 || dy == 0 || (include_diagonals && dx == dy);
 }
 
-static bool game_dungeon_get_line_step_towards_cell(i32 start_x, i32 start_y, i32 target_x,
-                                                    i32 target_y, i32 *out_step_x, i32 *out_step_y)
+static bool game_dungeon_cells_are_line_aligned(i32 a_x, i32 a_y, i32 b_x, i32 b_y)
+{
+    return game_dungeon_cells_are_aligned(a_x, a_y, b_x, b_y, false);
+}
+
+static bool game_dungeon_get_aligned_step_towards_cell(i32 start_x, i32 start_y, i32 target_x,
+                                                       i32 target_y, bool include_diagonals,
+                                                       i32 *out_step_x, i32 *out_step_y)
 {
     assert(out_step_x != 0);
     assert(out_step_y != 0);
@@ -4386,12 +4393,19 @@ static bool game_dungeon_get_line_step_towards_cell(i32 start_x, i32 start_y, i3
 
     i32 abs_dx = dx < 0 ? -dx : dx;
     i32 abs_dy = dy < 0 ? -dy : dy;
-    if (!(abs_dx == 0 || abs_dy == 0))
+    if (!(abs_dx == 0 || abs_dy == 0 || (include_diagonals && abs_dx == abs_dy)))
         return false;
 
     *out_step_x = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
     *out_step_y = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
     return true;
+}
+
+static bool game_dungeon_get_line_step_towards_cell(i32 start_x, i32 start_y, i32 target_x,
+                                                    i32 target_y, i32 *out_step_x, i32 *out_step_y)
+{
+    return game_dungeon_get_aligned_step_towards_cell(start_x, start_y, target_x, target_y, false,
+                                                      out_step_x, out_step_y);
 }
 
 static i32 game_dungeon_get_line_distance(i32 a_x, i32 a_y, i32 b_x, i32 b_y)
@@ -4662,6 +4676,8 @@ static bool game_dungeon_find_nearest_visible_hostile_target(const Game *game, i
 
 static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i32 unit_idx,
                                                              i32 max_range, bool require_los,
+                                                             bool include_diagonals,
+                                                             bool prefer_diagonal_targets,
                                                              Dungeon_Enemy_Target *out_target)
 {
     assert(game != 0);
@@ -4678,6 +4694,7 @@ static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i
         return false;
 
     bool has_target = false;
+    bool best_target_is_diagonal = false;
     Dungeon_Enemy_Target best_target = {
         .target_is_player = true,
         .target_x = game->player_x,
@@ -4687,7 +4704,8 @@ static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i
     };
 
     if (!actor_is_friendly && game_dungeon_cell_in_bounds(game->player_x, game->player_y) &&
-        game_dungeon_cells_are_line_aligned(actor_x, actor_y, game->player_x, game->player_y) &&
+        game_dungeon_cells_are_aligned(actor_x, actor_y, game->player_x, game->player_y,
+                                       include_diagonals) &&
         (!require_los ||
          game_dungeon_has_line_of_sight(game, actor_x, actor_y, game->player_x, game->player_y))) {
         i32 distance =
@@ -4696,7 +4714,15 @@ static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i
         if (max_range > 0)
             within_range = within_range && distance <= max_range;
         if (within_range) {
+            i32 player_dx = game->player_x - actor_x;
+            if (player_dx < 0)
+                player_dx = -player_dx;
+            i32 player_dy = game->player_y - actor_y;
+            if (player_dy < 0)
+                player_dy = -player_dy;
+
             best_target.distance = (i16)distance;
+            best_target_is_diagonal = player_dx == player_dy && player_dx > 0;
             has_target = true;
         }
     }
@@ -4710,8 +4736,10 @@ static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i
             continue;
         if (!game_dungeon_cell_in_bounds(candidate->x, candidate->y))
             continue;
-        if (!game_dungeon_cells_are_line_aligned(actor_x, actor_y, candidate->x, candidate->y))
+        if (!game_dungeon_cells_are_aligned(actor_x, actor_y, candidate->x, candidate->y,
+                                            include_diagonals)) {
             continue;
+        }
         if (require_los &&
             !game_dungeon_has_line_of_sight(game, actor_x, actor_y, candidate->x, candidate->y)) {
             continue;
@@ -4723,9 +4751,19 @@ static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i
         if (max_range > 0 && distance > max_range)
             continue;
 
+        i32 candidate_dx = candidate->x - actor_x;
+        if (candidate_dx < 0)
+            candidate_dx = -candidate_dx;
+        i32 candidate_dy = candidate->y - actor_y;
+        if (candidate_dy < 0)
+            candidate_dy = -candidate_dy;
+        bool candidate_is_diagonal = candidate_dx == candidate_dy && candidate_dx > 0;
+
         bool is_better = false;
         if (!has_target) {
             is_better = true;
+        } else if (prefer_diagonal_targets && candidate_is_diagonal != best_target_is_diagonal) {
+            is_better = candidate_is_diagonal;
         } else if (distance < best_target.distance) {
             is_better = true;
         } else if (distance == best_target.distance && best_target.target_is_player) {
@@ -4743,6 +4781,7 @@ static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i
         best_target.target_y = candidate->y;
         best_target.distance = (i16)distance;
         best_target.target_unit_idx = candidate_idx;
+        best_target_is_diagonal = candidate_is_diagonal;
         has_target = true;
     }
 
@@ -4754,10 +4793,11 @@ static bool game_dungeon_find_nearest_aligned_hostile_target(const Game *game, i
 }
 
 static bool game_dungeon_find_nearest_visible_aligned_hostile_target(
-    const Game *game, i32 unit_idx, i32 max_range, Dungeon_Enemy_Target *out_target)
+    const Game *game, i32 unit_idx, i32 max_range, bool include_diagonals,
+    bool prefer_diagonal_targets, Dungeon_Enemy_Target *out_target)
 {
-    return game_dungeon_find_nearest_aligned_hostile_target(game, unit_idx, max_range, true,
-                                                            out_target);
+    return game_dungeon_find_nearest_aligned_hostile_target(
+        game, unit_idx, max_range, true, include_diagonals, prefer_diagonal_targets, out_target);
 }
 
 static bool game_dungeon_find_turret_target(const Game *game, i32 unit_idx, i32 range,
@@ -5409,7 +5449,8 @@ static bool game_dungeon_get_dash_destination_cell(const Game *game, i32 unit_id
 }
 
 static bool game_dungeon_find_closest_line_cell_to_target(const Game *game, i32 unit_idx,
-                                                          i32 target_x, i32 target_y, i32 *out_x,
+                                                          i32 target_x, i32 target_y,
+                                                          bool include_diagonals, i32 *out_x,
                                                           i32 *out_y)
 {
     assert(game != 0);
@@ -5442,7 +5483,7 @@ static bool game_dungeon_find_closest_line_cell_to_target(const Game *game, i32 
         for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
             if (!game_dungeon_cell_is_floor(game, x, y))
                 continue;
-            if (!game_dungeon_cells_are_line_aligned(x, y, target_x, target_y))
+            if (!game_dungeon_cells_are_aligned(x, y, target_x, target_y, include_diagonals))
                 continue;
             if (game->player_x == x && game->player_y == y && !(x == unit_x && y == unit_y))
                 continue;
@@ -6032,6 +6073,315 @@ static void game_dungeon_take_turret_turn(Game *game, i32 unit_idx, i32 range)
                                       DAMAGE_KIND_NORMAL, true);
 }
 
+static bool game_dungeon_take_aligned_piercing_ranged_attack(Game *game, i32 unit_idx,
+                                                             const Dungeon_Enemy_Target *target,
+                                                             i32 range)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+    assert(target != 0);
+    assert(range > 0);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return false;
+
+    i32 target_x = target->target_x;
+    i32 target_y = target->target_y;
+    float attack_delay = 0.0f;
+    if (target->target_is_player) {
+        if (unit->is_friendly)
+            return false;
+
+        target_x = game->player_x;
+        target_y = game->player_y;
+        attack_delay = game_dungeon_get_player_move_anim_remaining(game);
+    } else {
+        if (target->target_unit_idx < 0 || target->target_unit_idx >= game->unit_count)
+            return false;
+
+        const Dungeon_Unit *target_unit = &game->units[target->target_unit_idx];
+        if (target_unit->is_friendly == unit->is_friendly)
+            return false;
+
+        target_x = target_unit->x;
+        target_y = target_unit->y;
+        attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
+    }
+
+    if (!game_dungeon_cells_are_aligned(start_x, start_y, target_x, target_y, true))
+        return false;
+
+    i32 target_distance = game_dungeon_get_line_distance(start_x, start_y, target_x, target_y);
+    if (target_distance <= 0 || target_distance > range)
+        return false;
+    if (!game_dungeon_has_line_of_sight(game, start_x, start_y, target_x, target_y))
+        return false;
+
+    i32 step_x = 0;
+    i32 step_y = 0;
+    if (!game_dungeon_get_aligned_step_towards_cell(start_x, start_y, target_x, target_y, true,
+                                                    &step_x, &step_y)) {
+        return false;
+    }
+
+    bool hit_player = false;
+    i32 hit_unit_indices[DUNGEON_MAX_UNITS];
+    i32 hit_unit_count = 0;
+    for (i32 step = 1; step <= range; step++) {
+        i32 scan_x = start_x + step_x * step;
+        i32 scan_y = start_y + step_y * step;
+        if (!game_dungeon_cell_in_bounds(scan_x, scan_y))
+            break;
+        if (!game_dungeon_has_line_of_sight(game, start_x, start_y, scan_x, scan_y))
+            break;
+
+        if (!unit->is_friendly && game->player_x == scan_x && game->player_y == scan_y)
+            hit_player = true;
+
+        i32 hit_unit_idx = game_dungeon_get_unit_index_at(game, scan_x, scan_y);
+        if (hit_unit_idx < 0 || hit_unit_idx == unit_idx)
+            continue;
+        if (game->units[hit_unit_idx].is_friendly == unit->is_friendly)
+            continue;
+
+        if (hit_unit_count < DUNGEON_MAX_UNITS)
+            hit_unit_indices[hit_unit_count++] = hit_unit_idx;
+    }
+
+    if (!hit_player && hit_unit_count <= 0)
+        return false;
+
+    unit->orientation = game_dungeon_get_orientation_from_positions(start_x, start_y, target_x,
+                                                                    target_y, unit->orientation);
+    game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
+                                             attack_delay);
+
+    i32 attack_damage = game_dungeon_get_unit_attack_damage(unit);
+    if (hit_player) {
+        game->player_damage_event_count++;
+        if (game->player_damage_event_count == 0)
+            game->player_damage_event_count = 1;
+        unit->last_damaged_player_event = game->player_damage_event_count;
+
+        game_dungeon_apply_damage_to_player(game, attack_damage, true);
+    }
+
+    for (i32 i = 0; i < hit_unit_count - 1; i++) {
+        for (i32 j = i + 1; j < hit_unit_count; j++) {
+            if (hit_unit_indices[j] > hit_unit_indices[i]) {
+                i32 swap = hit_unit_indices[i];
+                hit_unit_indices[i] = hit_unit_indices[j];
+                hit_unit_indices[j] = swap;
+            }
+        }
+    }
+
+    for (i32 hit_idx = 0; hit_idx < hit_unit_count; hit_idx++) {
+        i32 target_idx = hit_unit_indices[hit_idx];
+        if (target_idx < 0 || target_idx >= game->unit_count)
+            continue;
+
+        Dungeon_Unit *target_unit = &game->units[target_idx];
+        if (target_unit->is_friendly == unit->is_friendly)
+            continue;
+
+        i32 hit_x = target_unit->x;
+        i32 hit_y = target_unit->y;
+        if (!game_dungeon_cells_are_aligned(start_x, start_y, hit_x, hit_y, true))
+            continue;
+
+        i32 hit_distance = game_dungeon_get_line_distance(start_x, start_y, hit_x, hit_y);
+        if (hit_distance <= 0 || hit_distance > range)
+            continue;
+        if (!game_dungeon_has_line_of_sight(game, start_x, start_y, hit_x, hit_y))
+            continue;
+
+        i32 hit_step_x = 0;
+        i32 hit_step_y = 0;
+        if (!game_dungeon_get_aligned_step_towards_cell(start_x, start_y, hit_x, hit_y, true,
+                                                        &hit_step_x, &hit_step_y)) {
+            continue;
+        }
+        if (hit_step_x != step_x || hit_step_y != step_y)
+            continue;
+
+        if (unit->is_friendly && !target_unit->is_friendly) {
+            target_unit->is_awake = true;
+            target_unit->turns_out_of_player_los = 0;
+        }
+
+        game_dungeon_apply_damage_to_unit(game, target_idx, attack_damage, DAMAGE_KIND_NORMAL,
+                                          true);
+    }
+
+    return true;
+}
+
+static bool game_dungeon_try_move_aligned_ranged_unit_to_firing_position(
+    Game *game, i32 unit_idx, i32 target_x, i32 target_y, i32 range, i32 min_target_distance,
+    i32 min_enemy_distance, bool prefer_diagonal_alignment)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+    assert(range > 0);
+    assert(min_target_distance > 0);
+    assert(min_enemy_distance >= 0);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return false;
+    if (!game_dungeon_cell_in_bounds(target_x, target_y))
+        return false;
+
+    i16 goal_x[1] = {(i16)start_x};
+    i16 goal_y[1] = {(i16)start_y};
+    i16 distance_from_unit[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (!game_dungeon_build_distance_field(game, goal_x, goal_y, 1, distance_from_unit))
+        return false;
+
+    i16 enemy_goal_x[DUNGEON_MAX_UNITS + 1];
+    i16 enemy_goal_y[DUNGEON_MAX_UNITS + 1];
+    i32 enemy_goal_count = 0;
+    for (u8 idx = 0; idx < game->unit_count; idx++) {
+        const Dungeon_Unit *enemy = &game->units[idx];
+        if (enemy->is_friendly == unit->is_friendly)
+            continue;
+        if (!game_dungeon_cell_is_floor(game, enemy->x, enemy->y))
+            continue;
+
+        enemy_goal_x[enemy_goal_count] = enemy->x;
+        enemy_goal_y[enemy_goal_count] = enemy->y;
+        enemy_goal_count++;
+    }
+
+    if (!unit->is_friendly && game_dungeon_cell_is_floor(game, game->player_x, game->player_y) &&
+        enemy_goal_count < (DUNGEON_MAX_UNITS + 1)) {
+        enemy_goal_x[enemy_goal_count] = game->player_x;
+        enemy_goal_y[enemy_goal_count] = game->player_y;
+        enemy_goal_count++;
+    }
+
+    bool has_enemy_distance = false;
+    i16 distance_to_nearest_enemy[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    if (enemy_goal_count > 0) {
+        has_enemy_distance = game_dungeon_build_distance_field(
+            game, enemy_goal_x, enemy_goal_y, enemy_goal_count, distance_to_nearest_enemy);
+    }
+
+    i32 preferred_target_distance = min(range, max(min_target_distance + 2, 3));
+
+    bool has_best = false;
+    i32 best_x = start_x;
+    i32 best_y = start_y;
+    i16 best_unit_distance = DUNGEON_PATH_UNREACHABLE;
+    i16 best_nearest_enemy_distance = 0;
+    i32 best_enemy_error = 0;
+    i32 best_target_error = 0;
+    i32 best_target_center_error = 0;
+    i32 best_target_distance = 0;
+    bool best_is_diagonal = false;
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            if (!game_dungeon_cell_is_floor(game, x, y))
+                continue;
+            if (game->player_x == x && game->player_y == y)
+                continue;
+            if (game_dungeon_cell_has_unit_excluding(game, x, y, unit_idx))
+                continue;
+            if (!game_dungeon_cells_are_aligned(x, y, target_x, target_y, true))
+                continue;
+            if (!game_dungeon_has_line_of_sight(game, x, y, target_x, target_y))
+                continue;
+
+            i16 unit_distance = distance_from_unit[y][x];
+            if (unit_distance < 0 || unit_distance >= DUNGEON_PATH_UNREACHABLE)
+                continue;
+
+            i32 target_distance = game_dungeon_get_line_distance(x, y, target_x, target_y);
+            if (target_distance <= 0 || target_distance > range)
+                continue;
+
+            i16 nearest_enemy_distance = DUNGEON_PATH_UNREACHABLE;
+            if (has_enemy_distance) {
+                nearest_enemy_distance = distance_to_nearest_enemy[y][x];
+                if (nearest_enemy_distance < 0 ||
+                    nearest_enemy_distance >= DUNGEON_PATH_UNREACHABLE)
+                    continue;
+            }
+
+            i32 enemy_error = 0;
+            if (has_enemy_distance && nearest_enemy_distance < min_enemy_distance)
+                enemy_error = min_enemy_distance - nearest_enemy_distance;
+
+            i32 target_error = 0;
+            if (target_distance < min_target_distance)
+                target_error = min_target_distance - target_distance;
+
+            i32 target_center_error = target_distance - preferred_target_distance;
+            if (target_center_error < 0)
+                target_center_error = -target_center_error;
+
+            i32 dx = target_x - x;
+            if (dx < 0)
+                dx = -dx;
+            i32 dy = target_y - y;
+            if (dy < 0)
+                dy = -dy;
+            bool is_diagonal = dx == dy && dx > 0;
+
+            bool is_better = false;
+            if (!has_best) {
+                is_better = true;
+            } else if (enemy_error != best_enemy_error) {
+                is_better = enemy_error < best_enemy_error;
+            } else if (enemy_error > 0 && nearest_enemy_distance != best_nearest_enemy_distance) {
+                is_better = nearest_enemy_distance > best_nearest_enemy_distance;
+            } else if (target_error != best_target_error) {
+                is_better = target_error < best_target_error;
+            } else if (prefer_diagonal_alignment && is_diagonal != best_is_diagonal) {
+                is_better = is_diagonal;
+            } else if (target_center_error != best_target_center_error) {
+                is_better = target_center_error < best_target_center_error;
+            } else if (unit_distance != best_unit_distance) {
+                is_better = unit_distance < best_unit_distance;
+            } else if (target_distance != best_target_distance) {
+                is_better = target_distance > best_target_distance;
+            } else if (y < best_y || (y == best_y && x < best_x)) {
+                is_better = true;
+            }
+
+            if (!is_better)
+                continue;
+
+            has_best = true;
+            best_x = x;
+            best_y = y;
+            best_unit_distance = unit_distance;
+            best_nearest_enemy_distance = nearest_enemy_distance;
+            best_enemy_error = enemy_error;
+            best_target_error = target_error;
+            best_target_center_error = target_center_error;
+            best_target_distance = target_distance;
+            best_is_diagonal = is_diagonal;
+        }
+    }
+
+    if (!has_best)
+        return false;
+    if (best_x == start_x && best_y == start_y)
+        return false;
+
+    return game_dungeon_try_move_unit_towards_cell(game, unit_idx, best_x, best_y);
+}
+
 static void game_dungeon_take_aligned_ranged_turn(Game *game, i32 unit_idx, i32 range,
                                                   i32 too_close_distance)
 {
@@ -6043,18 +6393,55 @@ static void game_dungeon_take_aligned_ranged_turn(Game *game, i32 unit_idx, i32 
 
     Dungeon_Unit *unit = &game->units[unit_idx];
     bool prefer_visible_targets = unit->is_friendly;
+    i32 desired_min_distance = max(too_close_distance, 2);
+    i32 min_enemy_distance = 2;
 
     Dungeon_Enemy_Target aligned_target = {0};
-    if (game_dungeon_find_nearest_visible_aligned_hostile_target(game, unit_idx, range,
+    if (game_dungeon_find_nearest_visible_aligned_hostile_target(game, unit_idx, range, true, true,
                                                                  &aligned_target)) {
-        game_dungeon_take_basic_ranged_turn(game, unit_idx, &aligned_target, too_close_distance,
-                                            range);
-        return;
+        i32 aligned_target_x = aligned_target.target_x;
+        i32 aligned_target_y = aligned_target.target_y;
+        if (aligned_target.target_is_player) {
+            aligned_target_x = game->player_x;
+            aligned_target_y = game->player_y;
+        } else if (aligned_target.target_unit_idx >= 0 &&
+                   aligned_target.target_unit_idx < game->unit_count) {
+            aligned_target_x = game->units[aligned_target.target_unit_idx].x;
+            aligned_target_y = game->units[aligned_target.target_unit_idx].y;
+        }
+
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            unit->x, unit->y, aligned_target_x, aligned_target_y, unit->orientation);
+
+        i32 aligned_distance =
+            game_dungeon_get_line_distance(unit->x, unit->y, aligned_target_x, aligned_target_y);
+        if (aligned_distance < desired_min_distance) {
+            if (game_dungeon_try_move_aligned_ranged_unit_to_firing_position(
+                    game, unit_idx, aligned_target_x, aligned_target_y, range, desired_min_distance,
+                    min_enemy_distance, true)) {
+                return;
+            }
+
+            game_dungeon_try_move_unit_away_from_cell(game, unit_idx, aligned_target_x,
+                                                      aligned_target_y);
+            return;
+        }
+
+        if (game_dungeon_take_aligned_piercing_ranged_attack(game, unit_idx, &aligned_target,
+                                                             range)) {
+            return;
+        }
+
+        if (game_dungeon_try_move_aligned_ranged_unit_to_firing_position(
+                game, unit_idx, aligned_target_x, aligned_target_y, range, desired_min_distance,
+                min_enemy_distance, true)) {
+            return;
+        }
     }
 
     Dungeon_Enemy_Target target = {0};
     bool has_target = game_dungeon_find_nearest_aligned_hostile_target(
-        game, unit_idx, -1, prefer_visible_targets, &target);
+        game, unit_idx, -1, prefer_visible_targets, true, true, &target);
     if (!has_target)
         has_target = game_dungeon_find_nearest_hostile_target(game, unit_idx,
                                                               prefer_visible_targets, &target);
@@ -6072,25 +6459,19 @@ static void game_dungeon_take_aligned_ranged_turn(Game *game, i32 unit_idx, i32 
     unit->orientation = game_dungeon_get_orientation_from_positions(unit->x, unit->y, target_x,
                                                                     target_y, unit->orientation);
 
-    if (target.distance < too_close_distance) {
+    if (target.distance < desired_min_distance) {
         if (game_dungeon_try_move_unit_away_from_cell(game, unit_idx, target_x, target_y))
             return;
     }
 
-    if (game_dungeon_cells_are_line_aligned(unit->x, unit->y, target_x, target_y)) {
-        game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
+    if (game_dungeon_try_move_aligned_ranged_unit_to_firing_position(
+            game, unit_idx, target_x, target_y, range, desired_min_distance, min_enemy_distance,
+            true)) {
         return;
     }
 
-    i32 line_target_x = 0;
-    i32 line_target_y = 0;
-    if (game_dungeon_find_closest_line_cell_to_target(game, unit_idx, target_x, target_y,
-                                                      &line_target_x, &line_target_y)) {
-        game_dungeon_try_move_unit_towards_cell(game, unit_idx, line_target_x, line_target_y);
-        return;
-    }
-
-    game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
+    game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
+        game, unit_idx, target_x, target_y, desired_min_distance, range, min_enemy_distance);
 }
 
 static bool game_dungeon_cell_is_in_kamikaze_area(i32 center_x, i32 center_y, i32 target_x,
@@ -6321,7 +6702,7 @@ static bool game_dungeon_take_bat_dash_behavior_toward_target(Game *game, i32 un
 
     i32 line_target_x = 0;
     i32 line_target_y = 0;
-    if (game_dungeon_find_closest_line_cell_to_target(game, unit_idx, target_x, target_y,
+    if (game_dungeon_find_closest_line_cell_to_target(game, unit_idx, target_x, target_y, false,
                                                       &line_target_x, &line_target_y)) {
         return game_dungeon_try_move_unit_towards_cell_with_max_steps(
             game, unit_idx, line_target_x, line_target_y, DUNGEON_FAMILIAR_BAT_MAX_MOVE_TILES);
@@ -6347,8 +6728,8 @@ static void game_dungeon_take_enemy_dash_turn(Game *game, i32 unit_idx)
         unit->dash_cooldown_turns--;
 
     Dungeon_Enemy_Target target = {0};
-    bool has_target =
-        game_dungeon_find_nearest_aligned_hostile_target(game, unit_idx, -1, false, &target);
+    bool has_target = game_dungeon_find_nearest_aligned_hostile_target(game, unit_idx, -1, false,
+                                                                       false, false, &target);
     if (!has_target)
         has_target = game_dungeon_find_nearest_hostile_target(game, unit_idx, false, &target);
     if (!has_target)
@@ -6400,7 +6781,7 @@ static void game_dungeon_take_dash_through_turn(Game *game, i32 unit_idx,
     if (!game_dungeon_cells_are_line_aligned(start_x, start_y, target_x, target_y)) {
         i32 line_target_x = 0;
         i32 line_target_y = 0;
-        if (game_dungeon_find_closest_line_cell_to_target(game, unit_idx, target_x, target_y,
+        if (game_dungeon_find_closest_line_cell_to_target(game, unit_idx, target_x, target_y, false,
                                                           &line_target_x, &line_target_y)) {
             game_dungeon_try_move_unit_towards_cell(game, unit_idx, line_target_x, line_target_y);
             return;
@@ -6903,8 +7284,8 @@ static void game_dungeon_take_friendly_unit_turn(
     }
     case UNIT_AI_DASH: {
         Dungeon_Enemy_Target target = {0};
-        bool has_target =
-            game_dungeon_find_nearest_visible_aligned_hostile_target(game, unit_idx, -1, &target);
+        bool has_target = game_dungeon_find_nearest_visible_aligned_hostile_target(
+            game, unit_idx, -1, false, false, &target);
         if (!has_target)
             has_target = game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &target);
         if (has_target) {
