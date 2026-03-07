@@ -258,6 +258,9 @@
 #define ITEM_KIND_GOLD_COIN ITEM_ART_KIND_AT(15, 1)
 #define ITEM_KIND_GREEN_HERB ITEM_ART_KIND_AT(9, 5)
 #define ITEM_KIND_MAP ITEM_ART_KIND_AT(15, 5)
+#define ITEM_KIND_BLUE_AMULET ITEM_ART_KIND_AT(2, 5)
+
+#define DUNGEON_RETURN_ENEMY_WAVE_COUNT 10
 
 #if defined(GAME_DISABLE_DEBUG_FEATURES)
 #define GAME_DEBUG_FEATURES 0
@@ -434,6 +437,7 @@ typedef struct {
     i16 x;
     i16 y;
     ITEM_ART_KIND kind;
+    bool is_amulet_of_yendor;
 } Dungeon_Item;
 
 typedef struct {
@@ -674,6 +678,12 @@ typedef struct {
     u8 dungeon_visible_mask_valid_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
     u64 dungeon_explored_mask_by_depth[DUNGEON_MAX_FLOOR_DEPTH][DUNGEON_CELL_MASK_WORD_COUNT];
     u8 dungeon_explored_mask_valid_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
+    Dungeon_Unit dungeon_enemy_units_by_depth[DUNGEON_MAX_FLOOR_DEPTH][DUNGEON_MAX_UNITS];
+    u8 dungeon_enemy_count_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
+    u8 dungeon_enemy_state_valid_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
+    u8 dungeon_return_wave_spawned_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
+    bool player_has_amulet_of_yendor;
+    bool amulet_of_yendor_modal_open;
 
     Dungeon_World_Feature world_features[DUNGEON_MAX_WORLD_FEATURES];
     u8 world_feature_count;
@@ -757,10 +767,24 @@ static void game_player_clear_action_bar(Game *game);
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y);
 static u64 game_next_dungeon_seed(Game *game);
 static void game_dungeon_clear_floor_reveal_cache(Game *game);
+static void game_dungeon_clear_floor_enemy_cache(Game *game);
+static void game_dungeon_store_enemy_state_for_depth(Game *game, u32 depth);
+static bool game_dungeon_restore_enemy_state_for_depth(Game *game, u32 depth);
+static bool game_dungeon_find_amulet_of_yendor(const Game *game, i16 *out_x, i16 *out_y);
+static void game_dungeon_add_amulet_of_yendor(Game *game, i32 x, i32 y);
+static bool game_dungeon_try_pickup_item_at_player(Game *game);
+static bool game_dungeon_pick_enemy_spawn_floor_cell(Game *game, RNG *rng, i32 stairs_up_x,
+                                                     i32 stairs_up_y, i16 *out_x, i16 *out_y);
+static bool game_dungeon_pick_adjacent_enemy_spawn_floor_cell(Game *game, RNG *rng, i32 center_x,
+                                                              i32 center_y, i32 stairs_up_x,
+                                                              i32 stairs_up_y, i16 *out_x,
+                                                              i16 *out_y);
 static void game_dungeon_store_revealed_map_for_depth(Game *game, u32 depth);
 static float game_dungeon_get_unit_move_anim_remaining(const Dungeon_Unit *unit);
 static void game_dungeon_trigger_beetle_explosion_at(Game *game, const Dungeon_Unit *exploding_unit,
                                                      float start_delay);
+static bool game_amulet_modal_is_active(const Game *game);
+static bool game_update_amulet_modal(Game *game);
 
 static const char *game_dungeon_music_paths[DUNGEON_MUSIC_TRACK_COUNT] = {
     "assets/dungeon1.mp3", "assets/dungeon2.mp3", "assets/dungeon3.mp3",
@@ -1389,6 +1413,9 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
             game->dungeon_floor_index = 0;
             game->dungeon_floor_seed_count = 0;
             game_dungeon_clear_floor_reveal_cache(game);
+            game_dungeon_clear_floor_enemy_cache(game);
+            game->player_has_amulet_of_yendor = false;
+            game->amulet_of_yendor_modal_open = false;
             game->show_dungeon_view = true;
             *out_rebuild_floor = true;
         }
@@ -1469,6 +1496,16 @@ static void game_dungeon_clear_floor_reveal_cache(Game *game)
     memset(game->dungeon_explored_mask_by_depth, 0, sizeof(game->dungeon_explored_mask_by_depth));
     memset(game->dungeon_explored_mask_valid_by_depth, 0,
            sizeof(game->dungeon_explored_mask_valid_by_depth));
+}
+
+static void game_dungeon_clear_floor_enemy_cache(Game *game)
+{
+    memset(game->dungeon_enemy_units_by_depth, 0, sizeof(game->dungeon_enemy_units_by_depth));
+    memset(game->dungeon_enemy_count_by_depth, 0, sizeof(game->dungeon_enemy_count_by_depth));
+    memset(game->dungeon_enemy_state_valid_by_depth, 0,
+           sizeof(game->dungeon_enemy_state_valid_by_depth));
+    memset(game->dungeon_return_wave_spawned_by_depth, 0,
+           sizeof(game->dungeon_return_wave_spawned_by_depth));
 }
 
 static void game_dungeon_store_revealed_map_for_depth(Game *game, u32 depth)
@@ -1763,6 +1800,13 @@ static void game_dungeon_add_item(Game *game, i32 x, i32 y, ITEM_ART_KIND kind)
         .y = (i16)y,
         .kind = kind,
     };
+}
+
+static void game_dungeon_add_amulet_of_yendor(Game *game, i32 x, i32 y)
+{
+    game_dungeon_add_item(game, x, y, ITEM_KIND_BLUE_AMULET);
+    assert(game->item_count > 0);
+    game->items[game->item_count - 1].is_amulet_of_yendor = true;
 }
 
 static Unit_Stats game_make_unit_stats(i32 max_health, i32 damage)
@@ -3180,6 +3224,23 @@ static bool game_dungeon_find_world_feature_by_role(const Game *game, WORLD_ART_
     return false;
 }
 
+static bool game_dungeon_find_amulet_of_yendor(const Game *game, i16 *out_x, i16 *out_y)
+{
+    for (u8 idx = 0; idx < game->item_count; idx++) {
+        const Dungeon_Item *item = &game->items[idx];
+        if (!item->is_amulet_of_yendor)
+            continue;
+
+        if (out_x)
+            *out_x = item->x;
+        if (out_y)
+            *out_y = item->y;
+        return true;
+    }
+
+    return false;
+}
+
 static i32 game_dungeon_get_item_index_at(const Game *game, i32 x, i32 y)
 {
     for (u8 idx = 0; idx < game->item_count; idx++) {
@@ -3289,6 +3350,23 @@ static void game_dungeon_remove_item_at(Game *game, i32 item_idx)
     game->item_count--;
 }
 
+static bool game_dungeon_try_pickup_item_at_player(Game *game)
+{
+    i32 item_idx = game_dungeon_get_item_index_at(game, game->player_x, game->player_y);
+    if (item_idx < 0)
+        return false;
+
+    Dungeon_Item item = game->items[item_idx];
+    game_dungeon_remove_item_at(game, item_idx);
+
+    if (item.is_amulet_of_yendor && !game->player_has_amulet_of_yendor) {
+        game->player_has_amulet_of_yendor = true;
+        game->amulet_of_yendor_modal_open = true;
+    }
+
+    return true;
+}
+
 static void game_dungeon_add_defeated_unit_visual(Game *game, const Dungeon_Unit *unit)
 {
     assert(game != 0);
@@ -3325,6 +3403,82 @@ static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
     if ((u8)unit_idx != last_idx)
         game->units[unit_idx] = game->units[last_idx];
     game->unit_count--;
+}
+
+static void game_dungeon_prepare_enemy_for_floor_state(Dungeon_Unit *enemy)
+{
+    assert(enemy != 0);
+
+    enemy->move_anim_from_x = (float)enemy->x;
+    enemy->move_anim_from_y = (float)enemy->y;
+    enemy->move_anim_elapsed = DUNGEON_MOVE_ANIM_DURATION;
+    enemy->attack_anim_dir_x = 0.0f;
+    enemy->attack_anim_dir_y = 0.0f;
+    enemy->attack_anim_delay = 0.0f;
+    enemy->attack_anim_elapsed = DUNGEON_ATTACK_ANIM_DURATION;
+    enemy->move_anim_active = false;
+    enemy->attack_anim_active = false;
+    enemy->has_acted_this_turn = false;
+    enemy->skip_friendly_turn_once = false;
+    enemy->skip_enemy_turn_once = false;
+    enemy->is_returning_to_player = false;
+}
+
+static void game_dungeon_store_enemy_state_for_depth(Game *game, u32 depth)
+{
+    if (depth >= DUNGEON_MAX_FLOOR_DEPTH)
+        return;
+
+    u8 enemy_count = 0;
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        const Dungeon_Unit *unit = &game->units[unit_idx];
+        if (unit->is_friendly)
+            continue;
+        if (enemy_count >= DUNGEON_MAX_UNITS)
+            break;
+
+        Dungeon_Unit stored_enemy = *unit;
+        game_dungeon_prepare_enemy_for_floor_state(&stored_enemy);
+        game->dungeon_enemy_units_by_depth[depth][enemy_count++] = stored_enemy;
+    }
+
+    game->dungeon_enemy_count_by_depth[depth] = enemy_count;
+    game->dungeon_enemy_state_valid_by_depth[depth] = 1;
+}
+
+static bool game_dungeon_restore_enemy_state_for_depth(Game *game, u32 depth)
+{
+    if (depth >= DUNGEON_MAX_FLOOR_DEPTH)
+        return false;
+    if (game->dungeon_enemy_state_valid_by_depth[depth] == 0)
+        return false;
+
+    game->unit_count = 0;
+    game->next_unit_id = 0;
+
+    u8 enemy_count = game->dungeon_enemy_count_by_depth[depth];
+    for (u8 enemy_idx = 0; enemy_idx < enemy_count; enemy_idx++) {
+        Dungeon_Unit enemy = game->dungeon_enemy_units_by_depth[depth][enemy_idx];
+        if (enemy.is_friendly)
+            continue;
+        if (game->unit_count >= DUNGEON_MAX_UNITS)
+            break;
+
+        u8 orientation = enemy.orientation;
+        if (orientation >= UNIT_ART_ORIENTATION_COUNT)
+            orientation = PLAYER_START_ORIENTATION;
+
+        game_dungeon_add_unit(game, enemy.x, enemy.y, enemy.kind, orientation, false);
+
+        Dungeon_Unit *restored_enemy = &game->units[game->unit_count - 1];
+        u16 restored_id = restored_enemy->id;
+        *restored_enemy = enemy;
+        restored_enemy->id = restored_id;
+        restored_enemy->is_friendly = false;
+        game_dungeon_prepare_enemy_for_floor_state(restored_enemy);
+    }
+
+    return true;
 }
 
 static void game_dungeon_return_familiar_to_player(Game *game, i32 unit_idx)
@@ -7140,31 +7294,29 @@ static void game_dungeon_clear_spawn_to_exit_path(Game *game)
 
 static bool game_dungeon_find_exit_cell(const Game *game, i16 *out_x, i16 *out_y)
 {
-    return game_dungeon_find_world_feature_by_role(game, WORLD_ART_ROLE_STAIRS_DOWN, out_x, out_y);
+    if (game_dungeon_find_world_feature_by_role(game, WORLD_ART_ROLE_STAIRS_DOWN, out_x, out_y))
+        return true;
+
+    return game_dungeon_find_amulet_of_yendor(game, out_x, out_y);
 }
 
-static bool game_dungeon_build_spawn_to_exit_path(Game *game)
+static bool game_dungeon_build_spawn_to_target_path(Game *game, i16 target_x, i16 target_y)
 {
     game_dungeon_clear_spawn_to_exit_path(game);
 
-    i16 exit_x = 0;
-    i16 exit_y = 0;
-    if (!game_dungeon_find_exit_cell(game, &exit_x, &exit_y))
-        return false;
-
     game->has_exit = true;
-    game->exit_x = exit_x;
-    game->exit_y = exit_y;
+    game->exit_x = target_x;
+    game->exit_y = target_y;
 
     i32 start_x = game->player_x;
     i32 start_y = game->player_y;
     if (!game_dungeon_cell_is_floor(game, start_x, start_y))
         return false;
-    if (!game_dungeon_cell_is_floor(game, exit_x, exit_y))
+    if (!game_dungeon_cell_is_floor(game, target_x, target_y))
         return false;
 
     i32 start_idx = start_y * DUNGEON_COL_COUNT + start_x;
-    i32 exit_idx = exit_y * DUNGEON_COL_COUNT + exit_x;
+    i32 target_idx = target_y * DUNGEON_COL_COUNT + target_x;
 
     i32 parent[DUNGEON_CELL_COUNT];
     i32 queue[DUNGEON_CELL_COUNT];
@@ -7183,7 +7335,7 @@ static bool game_dungeon_build_spawn_to_exit_path(Game *game)
         {0, -1},
     };
 
-    bool found = start_idx == exit_idx;
+    bool found = start_idx == target_idx;
     while (!found && head < tail) {
         i32 current_idx = queue[head++];
         i32 current_x = current_idx % DUNGEON_COL_COUNT;
@@ -7200,7 +7352,7 @@ static bool game_dungeon_build_spawn_to_exit_path(Game *game)
                 continue;
 
             parent[next_idx] = current_idx;
-            if (next_idx == exit_idx) {
+            if (next_idx == target_idx) {
                 found = true;
                 break;
             }
@@ -7212,7 +7364,7 @@ static bool game_dungeon_build_spawn_to_exit_path(Game *game)
     if (!found)
         return false;
 
-    for (i32 idx = exit_idx; idx >= 0; idx = parent[idx]) {
+    for (i32 idx = target_idx; idx >= 0; idx = parent[idx]) {
         i32 x = idx % DUNGEON_COL_COUNT;
         i32 y = idx / DUNGEON_COL_COUNT;
         game->spawn_to_exit_path[y][x] = 1;
@@ -7220,6 +7372,18 @@ static bool game_dungeon_build_spawn_to_exit_path(Game *game)
     }
 
     return game->spawn_to_exit_path_len > 0;
+}
+
+static bool game_dungeon_build_spawn_to_exit_path(Game *game)
+{
+    game_dungeon_clear_spawn_to_exit_path(game);
+
+    i16 exit_x = 0;
+    i16 exit_y = 0;
+    if (!game_dungeon_find_exit_cell(game, &exit_x, &exit_y))
+        return false;
+
+    return game_dungeon_build_spawn_to_target_path(game, exit_x, exit_y);
 }
 
 static bool game_dungeon_cell_is_on_spawn_to_exit_path(const Game *game, i32 x, i32 y)
@@ -7549,6 +7713,66 @@ static UNIT_ART_KIND game_dungeon_pick_shaman_companion_kind_for_depth(RNG *rng,
     return UNIT_ART_GOBLIN_GRUNT;
 }
 
+static void game_dungeon_spawn_enemy_group(Game *game, RNG *rng, u32 enemy_depth,
+                                           i32 enemy_spawn_count, i32 stairs_up_x, i32 stairs_up_y)
+{
+    assert(game != 0);
+    assert(rng != 0);
+
+    i16 x = 0;
+    i16 y = 0;
+
+    for (i32 enemy_idx = 0; enemy_idx < enemy_spawn_count && game->unit_count < DUNGEON_MAX_UNITS;
+         enemy_idx++) {
+        if (!game_dungeon_pick_enemy_spawn_floor_cell(game, rng, stairs_up_x, stairs_up_y, &x, &y))
+            break;
+
+        u8 orientation = (u8)ck_rand_int(rng, 0, UNIT_ART_ORIENTATION_COUNT);
+        UNIT_ART_KIND enemy_kind = game_dungeon_pick_enemy_kind_for_depth(rng, enemy_depth);
+
+        if (enemy_kind == UNIT_ART_GOBLIN_SHAMAN) {
+            UNIT_ART_KIND companion_kind =
+                game_dungeon_pick_shaman_companion_kind_for_depth(rng, enemy_depth);
+            bool can_spawn_companion =
+                enemy_idx + 1 < enemy_spawn_count && game->unit_count + 1 < DUNGEON_MAX_UNITS;
+            i16 companion_x = -1;
+            i16 companion_y = -1;
+
+            if (can_spawn_companion &&
+                game_dungeon_pick_adjacent_enemy_spawn_floor_cell(
+                    game, rng, x, y, stairs_up_x, stairs_up_y, &companion_x, &companion_y)) {
+                u8 companion_orientation = (u8)ck_rand_int(rng, 0, UNIT_ART_ORIENTATION_COUNT);
+
+                game_dungeon_add_unit(game, x, y, enemy_kind, orientation, false);
+                game_dungeon_add_unit(game, companion_x, companion_y, companion_kind,
+                                      companion_orientation, false);
+
+                enemy_idx++;
+                continue;
+            }
+
+            enemy_kind = companion_kind;
+        }
+
+        game_dungeon_add_unit(game, x, y, enemy_kind, orientation, false);
+    }
+}
+
+static u32 game_dungeon_get_return_wave_enemy_depth(u32 floor_depth)
+{
+    u32 return_depth = floor_depth + 1;
+    if (return_depth > DUNGEON_FINAL_FLOOR_DEPTH)
+        return DUNGEON_FINAL_FLOOR_DEPTH;
+    return return_depth;
+}
+
+static void game_dungeon_spawn_return_enemy_wave(Game *game, u32 depth, i32 entry_x, i32 entry_y)
+{
+    u32 enemy_depth = game_dungeon_get_return_wave_enemy_depth(depth);
+    game_dungeon_spawn_enemy_group(game, &game->dungeon_populate_rng, enemy_depth,
+                                   DUNGEON_RETURN_ENEMY_WAVE_COUNT, entry_x, entry_y);
+}
+
 static bool game_dungeon_cell_is_in_los_range_from_origin(const Game *game, i32 origin_x,
                                                           i32 origin_y, i32 target_x, i32 target_y)
 {
@@ -7861,6 +8085,7 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
 {
     i16 x = 0;
     i16 y = 0;
+    bool is_final_floor = depth >= DUNGEON_FINAL_FLOOR_DEPTH;
     WORLD_ART_THEME stairs_theme = game->dungeon_wall_theme;
     i32 stairs_up_x = -1;
     i32 stairs_up_y = -1;
@@ -7868,9 +8093,14 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
 
     if (game_dungeon_pick_exit_floor_cell(game, &game->dungeon_populate_rng,
                                           DUNGEON_EXIT_MIN_PATH_STEPS, &x, &y)) {
-        game_dungeon_add_world_feature(game, x, y, world_art_get_down_stairs_tile(stairs_theme));
+        if (!is_final_floor) {
+            game_dungeon_add_world_feature(game, x, y,
+                                           world_art_get_down_stairs_tile(stairs_theme));
+        } else if (!game->player_has_amulet_of_yendor) {
+            game_dungeon_add_amulet_of_yendor(game, x, y);
+        }
 
-        if (game_dungeon_build_spawn_to_exit_path(game))
+        if (game_dungeon_build_spawn_to_target_path(game, x, y))
             game_dungeon_cull_outside_main_path(game, &game->dungeon_cull_rng);
     }
 
@@ -7881,44 +8111,8 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
         stairs_up_y = game->player_spawn_y;
     }
 
-    for (i32 enemy_idx = 0; enemy_idx < enemy_spawn_count && game->unit_count < DUNGEON_MAX_UNITS;
-         enemy_idx++) {
-        if (!game_dungeon_pick_enemy_spawn_floor_cell(game, &game->dungeon_populate_rng,
-                                                      stairs_up_x, stairs_up_y, &x, &y))
-            break;
-
-        u8 orientation =
-            (u8)ck_rand_int(&game->dungeon_populate_rng, 0, UNIT_ART_ORIENTATION_COUNT);
-        UNIT_ART_KIND enemy_kind =
-            game_dungeon_pick_enemy_kind_for_depth(&game->dungeon_populate_rng, depth);
-
-        if (enemy_kind == UNIT_ART_GOBLIN_SHAMAN) {
-            UNIT_ART_KIND companion_kind = game_dungeon_pick_shaman_companion_kind_for_depth(
-                &game->dungeon_populate_rng, depth);
-            bool can_spawn_companion =
-                enemy_idx + 1 < enemy_spawn_count && game->unit_count + 1 < DUNGEON_MAX_UNITS;
-            i16 companion_x = -1;
-            i16 companion_y = -1;
-
-            if (can_spawn_companion && game_dungeon_pick_adjacent_enemy_spawn_floor_cell(
-                                           game, &game->dungeon_populate_rng, x, y, stairs_up_x,
-                                           stairs_up_y, &companion_x, &companion_y)) {
-                u8 companion_orientation =
-                    (u8)ck_rand_int(&game->dungeon_populate_rng, 0, UNIT_ART_ORIENTATION_COUNT);
-
-                game_dungeon_add_unit(game, x, y, enemy_kind, orientation, false);
-                game_dungeon_add_unit(game, companion_x, companion_y, companion_kind,
-                                      companion_orientation, false);
-
-                enemy_idx++;
-                continue;
-            }
-
-            enemy_kind = companion_kind;
-        }
-
-        game_dungeon_add_unit(game, x, y, enemy_kind, orientation, false);
-    }
+    game_dungeon_spawn_enemy_group(game, &game->dungeon_populate_rng, depth, enemy_spawn_count,
+                                   stairs_up_x, stairs_up_y);
 
     return true;
 }
@@ -8003,13 +8197,25 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_i
 
     if (!game_dungeon_populate_test_entities(game, depth, include_up_stairs))
         return false;
-    if (game->item_count != 0)
+    if (depth >= DUNGEON_FINAL_FLOOR_DEPTH) {
+        if (!game->player_has_amulet_of_yendor) {
+            if (game->item_count != 1)
+                return false;
+            if (!game_dungeon_find_amulet_of_yendor(game, 0, 0))
+                return false;
+        } else if (game->item_count != 0) {
+            return false;
+        }
+    } else if (game->item_count != 0) {
         return false;
+    }
+
     i32 expected_enemy_count = game_dungeon_enemy_spawn_count_for_depth(depth);
     if (game->unit_count != expected_enemy_count)
         return false;
 
-    game_dungeon_build_spawn_to_exit_path(game);
+    if (!(depth >= DUNGEON_FINAL_FLOOR_DEPTH && game->player_has_amulet_of_yendor))
+        game_dungeon_build_spawn_to_exit_path(game);
 
     if (!game->has_exit || game->spawn_to_exit_path_len <= 0)
         return false;
@@ -8040,7 +8246,7 @@ static bool game_dungeon_resolve_floor_index_for_depth(Game *game, u32 depth, u3
         u32 resolving_depth = game->dungeon_floor_seed_count;
         u32 start_floor_index =
             resolving_depth == 0 ? 0 : game->dungeon_floor_seed_by_depth[resolving_depth - 1] + 1;
-        bool include_up_stairs = resolving_depth > 0;
+        bool include_up_stairs = true;
         bool found_floor = false;
 
         for (i32 attempt = 0; attempt < DUNGEON_FLOOR_VALIDATION_RETRY_LIMIT; attempt++) {
@@ -8071,13 +8277,16 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
 {
     bool first_floor_visit = depth >= game->dungeon_floor_seed_count;
 
-    if (depth != game->dungeon_depth && game->dungeon_floor_seed_count > game->dungeon_depth &&
-        game->dungeon_depth < DUNGEON_MAX_FLOOR_DEPTH)
-        game_dungeon_store_revealed_map_for_depth(game, game->dungeon_depth);
-
     bool transitioning_floors =
         depth != game->dungeon_depth &&
         (arrival_role == WORLD_ART_ROLE_STAIRS_DOWN || arrival_role == WORLD_ART_ROLE_STAIRS_UP);
+
+    if (depth != game->dungeon_depth && game->dungeon_floor_seed_count > game->dungeon_depth &&
+        game->dungeon_depth < DUNGEON_MAX_FLOOR_DEPTH) {
+        game_dungeon_store_revealed_map_for_depth(game, game->dungeon_depth);
+        game_dungeon_store_enemy_state_for_depth(game, game->dungeon_depth);
+    }
+
     Dungeon_Unit carried_familiars[DUNGEON_MAX_UNITS];
     u8 carried_familiar_count = 0;
     if (transitioning_floors)
@@ -8087,12 +8296,15 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     if (!game_dungeon_resolve_floor_index_for_depth(game, depth, &floor_index))
         return false;
 
-    bool include_up_stairs = depth > 0;
+    bool include_up_stairs = true;
     if (!game_build_test_dungeon_candidate(game, depth, floor_index, include_up_stairs)) {
         snprintf(game->dungeon_template_error, sizeof(game->dungeon_template_error),
                  "Failed to regenerate level %u", depth + 1);
         return false;
     }
+
+    if (!first_floor_visit)
+        game_dungeon_restore_enemy_state_for_depth(game, depth);
 
     game->dungeon_depth = depth;
 
@@ -8136,6 +8348,15 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     if (transitioning_floors && carried_familiar_count > 0) {
         game_dungeon_restore_familiars_near_player(game, carried_familiars, carried_familiar_count,
                                                    first_floor_visit);
+    }
+
+    bool should_spawn_return_wave =
+        transitioning_floors && !first_floor_visit && arrival_role == WORLD_ART_ROLE_STAIRS_DOWN &&
+        game->player_has_amulet_of_yendor && depth < DUNGEON_MAX_FLOOR_DEPTH &&
+        game->dungeon_return_wave_spawned_by_depth[depth] == 0;
+    if (should_spawn_return_wave) {
+        game_dungeon_spawn_return_enemy_wave(game, depth, game->player_x, game->player_y);
+        game->dungeon_return_wave_spawned_by_depth[depth] = 1;
     }
 
     game_dungeon_rebuild_line_of_sight(game);
@@ -11352,14 +11573,11 @@ static bool game_update_player(Game *game)
     game->player_x = (i16)next_x;
     game->player_y = (i16)next_y;
 
+    game_dungeon_try_pickup_item_at_player(game);
+
     WORLD_ART_ROLE stepped_feature_role = WORLD_ART_ROLE_FLOOR;
     if (game_dungeon_get_world_feature_role_at(game, next_x, next_y, &stepped_feature_role)) {
         if (stepped_feature_role == WORLD_ART_ROLE_STAIRS_DOWN) {
-            if (game->dungeon_depth >= DUNGEON_FINAL_FLOOR_DEPTH) {
-                game_open_end_menu(game, END_MENU_WIN);
-                return false;
-            }
-
             if (game->dungeon_depth + 1 < DUNGEON_RUN_FLOOR_COUNT &&
                 game_build_test_dungeon_for_depth(game, game->dungeon_depth + 1,
                                                   WORLD_ART_ROLE_STAIRS_UP)) {
@@ -11368,11 +11586,16 @@ static bool game_update_player(Game *game)
             }
         }
 
-        if (stepped_feature_role == WORLD_ART_ROLE_STAIRS_UP && game->dungeon_depth > 0) {
-            if (game_build_test_dungeon_for_depth(game, game->dungeon_depth - 1,
-                                                  WORLD_ART_ROLE_STAIRS_DOWN)) {
-                game_center_dungeon_camera_on_player(game);
-                return true;
+        if (stepped_feature_role == WORLD_ART_ROLE_STAIRS_UP) {
+            if (game->dungeon_depth > 0) {
+                if (game_build_test_dungeon_for_depth(game, game->dungeon_depth - 1,
+                                                      WORLD_ART_ROLE_STAIRS_DOWN)) {
+                    game_center_dungeon_camera_on_player(game);
+                    return true;
+                }
+            } else if (game->player_has_amulet_of_yendor) {
+                game_open_end_menu(game, END_MENU_WIN);
+                return false;
             }
         }
     }
@@ -11910,6 +12133,115 @@ static void game_draw_end_menu(Game *game)
                (Color){241, 236, 226, 255});
 }
 
+static bool game_amulet_modal_is_active(const Game *game)
+{
+    return game->amulet_of_yendor_modal_open;
+}
+
+static Rectangle game_amulet_modal_panel_rect(void)
+{
+    float screen_w = (float)GetScreenWidth();
+    float screen_h = (float)GetScreenHeight();
+
+    float panel_w = clamp(screen_w * 0.82f, 360.0f, 760.0f);
+    float panel_h = clamp(screen_h * 0.50f, 250.0f, 380.0f);
+    panel_w = min(panel_w, screen_w - 24.0f);
+    panel_h = min(panel_h, screen_h - 24.0f);
+
+    return (Rectangle){
+        .x = roundf((screen_w - panel_w) * 0.5f),
+        .y = roundf((screen_h - panel_h) * 0.5f),
+        .width = panel_w,
+        .height = panel_h,
+    };
+}
+
+static Rectangle game_amulet_modal_continue_button_rect(Rectangle panel)
+{
+    float button_w = min(panel.width - 52.0f, 260.0f);
+    button_w = max(button_w, 150.0f);
+    float button_h = clamp(panel.height * 0.17f, 40.0f, 52.0f);
+
+    return (Rectangle){
+        .x = panel.x + (panel.width - button_w) * 0.5f,
+        .y = panel.y + panel.height - button_h - 20.0f,
+        .width = button_w,
+        .height = button_h,
+    };
+}
+
+static bool game_update_amulet_modal(Game *game)
+{
+    if (!game_amulet_modal_is_active(game))
+        return false;
+
+    if (game->input.pressed[INPUT_CONFIRM] || game->input.pressed[INPUT_BACK]) {
+        game->amulet_of_yendor_modal_open = false;
+        return true;
+    }
+
+    if (game->input.pressed[INPUT_MOUSE_LEFT]) {
+        Rectangle panel = game_amulet_modal_panel_rect();
+        Rectangle button = game_amulet_modal_continue_button_rect(panel);
+        if (game_point_in_rect(GetMousePosition(), button))
+            game->amulet_of_yendor_modal_open = false;
+    }
+
+    return true;
+}
+
+static void game_draw_amulet_modal(Game *game)
+{
+    if (!game_amulet_modal_is_active(game))
+        return;
+
+    Rectangle panel = game_amulet_modal_panel_rect();
+    Rectangle button = game_amulet_modal_continue_button_rect(panel);
+    bool button_hovered = game_point_in_rect(GetMousePosition(), button);
+
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){4, 4, 4, 214});
+
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
+
+    const char *title = "The Amulet of Yendor";
+    float title_size = clamp(panel.height * 0.13f, 22.0f, 34.0f);
+    Vector2 title_measure = MeasureTextEx(game->font, title, title_size, game->font_spacing);
+    Vector2 title_pos = {
+        .x = panel.x + (panel.width - title_measure.x) * 0.5f,
+        .y = panel.y + 18.0f,
+    };
+    DrawTextEx(game->font, title, title_pos, title_size, game->font_spacing,
+               (Color){239, 227, 198, 255});
+
+    static const char *body_lines[] = {
+        "You have found The Amulet of Yendor.",
+        "As you pick it up, you hear roars echo throughout the dungeon.",
+        "Escaping with your life might be a challenge...",
+    };
+
+    float body_size = clamp(panel.height * 0.08f, 16.0f, 21.0f);
+    float line_gap = 6.0f;
+    float text_x = panel.x + 22.0f;
+    float text_y = title_pos.y + title_size + 16.0f;
+    for (u32 line_idx = 0; line_idx < sizeof(body_lines) / sizeof(body_lines[0]); line_idx++) {
+        DrawTextEx(game->font, body_lines[line_idx], (Vector2){text_x, text_y}, body_size,
+                   game->font_spacing, (Color){226, 226, 226, 255});
+        text_y += body_size + line_gap;
+    }
+
+    game_draw_gray_menu_panel(button, button_hovered);
+
+    float button_text_size = clamp(button.height * 0.45f, 17.0f, 24.0f);
+    Vector2 button_text_measure =
+        MeasureTextEx(game->font, "Continue", button_text_size, game->font_spacing);
+    Vector2 button_text_pos = {
+        .x = button.x + (button.width - button_text_measure.x) * 0.5f,
+        .y = button.y + (button.height - button_text_measure.y) * 0.5f,
+    };
+    DrawTextEx(game->font, "Continue", button_text_pos, button_text_size, game->font_spacing,
+               (Color){241, 236, 226, 255});
+}
+
 static bool game_start_new_dungeon_run(Game *game)
 {
     if (game_class_menu_is_active(game))
@@ -11920,6 +12252,9 @@ static bool game_start_new_dungeon_run(Game *game)
     game->dungeon_depth = 0;
     game->dungeon_floor_seed_count = 0;
     game_dungeon_clear_floor_reveal_cache(game);
+    game_dungeon_clear_floor_enemy_cache(game);
+    game->player_has_amulet_of_yendor = false;
+    game->amulet_of_yendor_modal_open = false;
     game->player_stats = game_get_player_base_stats();
     game_dungeon_clear_all_player_statuses(game);
     game_player_clear_action_bar(game);
@@ -12297,6 +12632,9 @@ void game_update(Mem mem)
     if (game_update_end_menu(game))
         return;
 
+    if (game_update_amulet_modal(game))
+        return;
+
     if (game->input.pressed[INPUT_TOGGLE_MINIMAP])
         game->minimap_opacity_level =
             (u8)((game->minimap_opacity_level + 1) % DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT);
@@ -12457,4 +12795,6 @@ void game_render(Mem mem)
 
     if (game_end_menu_is_active(game))
         game_draw_end_menu(game);
+    else if (game_amulet_modal_is_active(game))
+        game_draw_amulet_modal(game);
 }
