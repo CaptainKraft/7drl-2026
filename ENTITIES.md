@@ -9,7 +9,8 @@ Only one familiar can be alive at any given time, so the action bar should be di
 Unless otherwise noted, these will wear off in 5 turns.
 
 ### Burn
-- take dmg each turn equal to the number of turns burn has been active
+- take 1 dmg each turn for each stack
+- adding a stack of burn resets the time to wear off
 
 ### Disease
 - dmg reduced by 1
@@ -133,8 +134,8 @@ Unless otherwise noted, these will wear off in 5 turns.
 ### Imp
 - 5hp, 3dmg
 - target: nearest enemy
-- basic melee
-- applies burn on attack
+- basic ranged
+- applies increasing stacks of burn on each attack
 
 ### Beholder
 - 10hp, 2dmg

@@ -81,6 +81,9 @@
 #define DUNGEON_MAX_ITEMS 64
 #define DUNGEON_MAX_UNITS 64
 #define DUNGEON_CELL_COUNT (DUNGEON_COL_COUNT * DUNGEON_ROW_COUNT)
+#define DUNGEON_CELL_MASK_WORD_BITS 64
+#define DUNGEON_CELL_MASK_WORD_COUNT                                                               \
+    ((DUNGEON_CELL_COUNT + DUNGEON_CELL_MASK_WORD_BITS - 1) / DUNGEON_CELL_MASK_WORD_BITS)
 #define DUNGEON_MAX_FLOOR_DEPTH 512
 #define DUNGEON_RUN_FLOOR_COUNT 10
 #define DUNGEON_FINAL_FLOOR_DEPTH (DUNGEON_RUN_FLOOR_COUNT - 1)
@@ -97,6 +100,10 @@
 #define DUNGEON_ENEMY_DORMANT_DELAY_TURNS 5
 #define DUNGEON_ENTRY_OFFSCREEN_MARGIN_TILES 1.0f
 #define DUNGEON_FAMILIAR_BASIC_MELEE_FOLLOW_DISTANCE 2
+#define DUNGEON_FAMILIAR_BASIC_RANGED_FOLLOW_MIN_DISTANCE 2
+#define DUNGEON_FAMILIAR_BASIC_RANGED_FOLLOW_MAX_DISTANCE 4
+#define DUNGEON_FAMILIAR_BASIC_RANGED_ATTACK_MIN_DISTANCE 2
+#define DUNGEON_FAMILIAR_BASIC_RANGED_ATTACK_MAX_DISTANCE 6
 #define DUNGEON_FAMILIAR_TRANSITION_SPAWN_MIN_PLAYER_DISTANCE 2
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_FOLLOW_MIN_DISTANCE 3
 #define DUNGEON_FAMILIAR_DEFEND_RANGED_FOLLOW_MAX_DISTANCE 5
@@ -145,6 +152,7 @@
 
 #define DUNGEON_PLAYER_PANEL_MARGIN 16.0f
 #define DUNGEON_PLAYER_PANEL_PADDING 12.0f
+#define DUNGEON_PLAYER_PANEL_GAP 8.0f
 #define DUNGEON_PLAYER_PANEL_HEART_SIZE ((float)ITEM_ART_TILE_SIZE * DUNGEON_TILE_SCALE)
 #define DUNGEON_PLAYER_PANEL_HEART_GAP 4.0f
 
@@ -249,6 +257,7 @@ typedef enum {
 
 typedef enum {
     UNIT_AI_BASIC_MELEE,
+    UNIT_AI_BASIC_RANGED,
     UNIT_AI_DEFEND_RANGED,
     UNIT_AI_DASH,
     UNIT_AI_TURRET,
@@ -533,6 +542,10 @@ typedef struct {
     u8 dungeon_cells[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
     u8 dungeon_visible[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
     u8 dungeon_explored[DUNGEON_ROW_COUNT][DUNGEON_COL_COUNT];
+    u64 dungeon_visible_mask_by_depth[DUNGEON_MAX_FLOOR_DEPTH][DUNGEON_CELL_MASK_WORD_COUNT];
+    u8 dungeon_visible_mask_valid_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
+    u64 dungeon_explored_mask_by_depth[DUNGEON_MAX_FLOOR_DEPTH][DUNGEON_CELL_MASK_WORD_COUNT];
+    u8 dungeon_explored_mask_valid_by_depth[DUNGEON_MAX_FLOOR_DEPTH];
 
     Dungeon_World_Feature world_features[DUNGEON_MAX_WORLD_FEATURES];
     u8 world_feature_count;
@@ -593,6 +606,7 @@ typedef struct {
 static void game_player_clear_action_bar(Game *game);
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y);
 static u64 game_next_dungeon_seed(Game *game);
+static void game_dungeon_clear_floor_reveal_cache(Game *game);
 
 static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
@@ -1013,6 +1027,7 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
             game->dungeon_seed = game_next_dungeon_seed(game);
             game->dungeon_floor_index = 0;
             game->dungeon_floor_seed_count = 0;
+            game_dungeon_clear_floor_reveal_cache(game);
             game->show_dungeon_view = true;
             *out_rebuild_floor = true;
         }
@@ -1078,6 +1093,77 @@ static void game_dungeon_reset_visibility(Game *game)
 {
     game_dungeon_clear_visible_cells(game);
     memset(game->dungeon_explored, 0, sizeof(game->dungeon_explored));
+}
+
+static i32 game_dungeon_cell_index(i32 x, i32 y)
+{
+    return y * DUNGEON_COL_COUNT + x;
+}
+
+static void game_dungeon_clear_floor_reveal_cache(Game *game)
+{
+    memset(game->dungeon_visible_mask_by_depth, 0, sizeof(game->dungeon_visible_mask_by_depth));
+    memset(game->dungeon_visible_mask_valid_by_depth, 0,
+           sizeof(game->dungeon_visible_mask_valid_by_depth));
+    memset(game->dungeon_explored_mask_by_depth, 0, sizeof(game->dungeon_explored_mask_by_depth));
+    memset(game->dungeon_explored_mask_valid_by_depth, 0,
+           sizeof(game->dungeon_explored_mask_valid_by_depth));
+}
+
+static void game_dungeon_store_revealed_map_for_depth(Game *game, u32 depth)
+{
+    if (depth >= DUNGEON_MAX_FLOOR_DEPTH)
+        return;
+
+    u64 *visible_mask = game->dungeon_visible_mask_by_depth[depth];
+    u64 *explored_mask = game->dungeon_explored_mask_by_depth[depth];
+    memset(visible_mask, 0, sizeof(game->dungeon_visible_mask_by_depth[depth]));
+    memset(explored_mask, 0, sizeof(game->dungeon_explored_mask_by_depth[depth]));
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            i32 cell_idx = game_dungeon_cell_index(x, y);
+            i32 word_idx = cell_idx / DUNGEON_CELL_MASK_WORD_BITS;
+            i32 bit_idx = cell_idx % DUNGEON_CELL_MASK_WORD_BITS;
+            u64 mask_bit = 1ull << bit_idx;
+
+            if (game->dungeon_visible[y][x] != 0)
+                visible_mask[word_idx] |= mask_bit;
+            if (game->dungeon_explored[y][x] != 0)
+                explored_mask[word_idx] |= mask_bit;
+        }
+    }
+
+    game->dungeon_visible_mask_valid_by_depth[depth] = 1;
+    game->dungeon_explored_mask_valid_by_depth[depth] = 1;
+}
+
+static bool game_dungeon_restore_revealed_map_for_depth(Game *game, u32 depth)
+{
+    if (depth >= DUNGEON_MAX_FLOOR_DEPTH)
+        return false;
+    if (game->dungeon_visible_mask_valid_by_depth[depth] == 0)
+        return false;
+    if (game->dungeon_explored_mask_valid_by_depth[depth] == 0)
+        return false;
+
+    const u64 *visible_mask = game->dungeon_visible_mask_by_depth[depth];
+    const u64 *explored_mask = game->dungeon_explored_mask_by_depth[depth];
+    memset(game->dungeon_explored, 0, sizeof(game->dungeon_explored));
+    game_dungeon_clear_visible_cells(game);
+
+    for (i32 y = 0; y < DUNGEON_ROW_COUNT; y++) {
+        for (i32 x = 0; x < DUNGEON_COL_COUNT; x++) {
+            i32 cell_idx = game_dungeon_cell_index(x, y);
+            i32 word_idx = cell_idx / DUNGEON_CELL_MASK_WORD_BITS;
+            i32 bit_idx = cell_idx % DUNGEON_CELL_MASK_WORD_BITS;
+            u64 mask_bit = 1ull << bit_idx;
+            game->dungeon_visible[y][x] = (visible_mask[word_idx] & mask_bit) != 0 ? 1 : 0;
+            game->dungeon_explored[y][x] = (explored_mask[word_idx] & mask_bit) != 0 ? 1 : 0;
+        }
+    }
+
+    return true;
 }
 
 static void game_dungeon_reveal_all_cells(Game *game)
@@ -1406,12 +1492,10 @@ static void game_dungeon_apply_burning_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
 
-    if (unit->is_burning)
-        return;
-
     unit->is_burning = true;
     unit->burning_applied_this_turn = true;
-    unit->burn_turns_active = 0;
+    if (unit->burn_turns_active < 255)
+        unit->burn_turns_active++;
     unit->burn_turns_remaining = DUNGEON_BURN_DURATION_TURNS;
 }
 
@@ -1433,6 +1517,90 @@ static void game_dungeon_apply_player_webbed_status(Game *game)
     game->player_webbed_applied_this_turn = true;
     game->player_webbed_skip_next_turn = true;
     game->player_webbed_turns_remaining = DUNGEON_WEBBED_DURATION_TURNS;
+}
+
+static void game_status_text_append(char *buffer, u32 buffer_cap, bool *in_out_has_status,
+                                    const char *label)
+{
+    assert(buffer != 0);
+    assert(buffer_cap > 0);
+    assert(in_out_has_status != 0);
+    assert(label != 0);
+
+    u32 len = (u32)strlen(buffer);
+    if (len >= buffer_cap - 1)
+        return;
+
+    const char *prefix = *in_out_has_status ? ", " : "";
+    snprintf(buffer + len, buffer_cap - len, "%s%s", prefix, label);
+    *in_out_has_status = true;
+}
+
+static bool game_dungeon_build_unit_status_text(const Dungeon_Unit *unit, char *buffer,
+                                                u32 buffer_cap)
+{
+    assert(unit != 0);
+    assert(buffer != 0);
+    assert(buffer_cap > 0);
+
+    buffer[0] = '\0';
+    bool has_status = false;
+
+    if (unit->is_diseased)
+        game_status_text_append(buffer, buffer_cap, &has_status, "Diseased");
+    if (unit->is_poisoned)
+        game_status_text_append(buffer, buffer_cap, &has_status, "Poisoned");
+    if (unit->is_burning) {
+        char burn_label[40];
+        i32 burn_stacks = max((i32)unit->burn_turns_active, 1);
+        snprintf(burn_label, sizeof(burn_label), "Burn x%d (%dt)", burn_stacks,
+                 (i32)unit->burn_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, burn_label);
+    }
+    if (unit->is_webbed) {
+        char webbed_label[28];
+        snprintf(webbed_label, sizeof(webbed_label), "Webbed (%dt)",
+                 (i32)unit->webbed_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, webbed_label);
+    }
+
+    return has_status;
+}
+
+static bool game_dungeon_build_player_status_text(const Game *game, char *buffer, u32 buffer_cap)
+{
+    assert(game != 0);
+    assert(buffer != 0);
+    assert(buffer_cap > 0);
+
+    buffer[0] = '\0';
+    bool has_status = false;
+
+    if (game->player_is_webbed) {
+        char webbed_label[28];
+        snprintf(webbed_label, sizeof(webbed_label), "Webbed (%dt)",
+                 (i32)game->player_webbed_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, webbed_label);
+    }
+
+    return has_status;
+}
+
+static void game_dungeon_reset_familiar_for_new_floor(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    unit->stats.health = unit->stats.max_health;
+    unit->is_diseased = false;
+    unit->diseased_particle_spawn_timer = 0.0f;
+    unit->is_poisoned = false;
+    unit->poisoned_applied_this_turn = false;
+    unit->poisoned_particle_spawn_timer = 0.0f;
+    game_dungeon_clear_burning_status(unit);
+    game_dungeon_clear_webbed_status(unit);
+    unit->shaman_heal_cooldown_turns = 0;
+    unit->dash_cooldown_turns = 0;
+    unit->is_returning_to_player = false;
 }
 
 static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
@@ -1595,6 +1763,8 @@ static UNIT_AI_KIND game_get_unit_ai_kind(UNIT_ART_KIND kind)
         return UNIT_AI_DASH;
     case UNIT_ART_BEHOLDER:
         return UNIT_AI_TURRET;
+    case UNIT_ART_IMP:
+        return UNIT_AI_BASIC_RANGED;
     case UNIT_ART_GOBLIN_SHAMAN:
         return UNIT_AI_GOBLIN_SHAMAN;
     case UNIT_ART_BEETLE:
@@ -1602,7 +1772,6 @@ static UNIT_AI_KIND game_get_unit_ai_kind(UNIT_ART_KIND kind)
     case UNIT_ART_GOBLIN_GRUNT:
     case UNIT_ART_GOBLIN_WARRIOR:
     case UNIT_ART_TROLL:
-    case UNIT_ART_IMP:
     case UNIT_ART_REAPER:
     case UNIT_ART_PHOENIX:
     case UNIT_ART_TREANT:
@@ -4265,6 +4434,87 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
     game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
 }
 
+static void game_dungeon_take_basic_ranged_turn(Game *game, i32 unit_idx,
+                                                const Dungeon_Enemy_Target *target, i32 min_range,
+                                                i32 max_range)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+    assert(target != 0);
+    assert(min_range > 0);
+    assert(max_range >= min_range);
+
+    Dungeon_Unit *unit = &game->units[unit_idx];
+    i32 start_x = unit->x;
+    i32 start_y = unit->y;
+    if (!game_dungeon_cell_in_bounds(start_x, start_y))
+        return;
+
+    i32 target_x = target->target_x;
+    i32 target_y = target->target_y;
+    float attack_delay = 0.0f;
+    Dungeon_Unit *target_unit = 0;
+
+    if (target->target_is_player) {
+        target_x = game->player_x;
+        target_y = game->player_y;
+        attack_delay = game_dungeon_get_player_move_anim_remaining(game);
+    } else {
+        if (target->target_unit_idx < 0 || target->target_unit_idx >= game->unit_count)
+            return;
+
+        target_unit = &game->units[target->target_unit_idx];
+        if (target_unit->is_friendly == unit->is_friendly)
+            return;
+
+        target_x = target_unit->x;
+        target_y = target_unit->y;
+        attack_delay = game_dungeon_get_unit_move_anim_remaining(target_unit);
+    }
+
+    unit->orientation = game_dungeon_get_orientation_from_positions(start_x, start_y, target_x,
+                                                                    target_y, unit->orientation);
+
+    i32 target_distance = target->distance;
+    bool in_attack_range = target_distance >= min_range && target_distance <= max_range;
+    if (in_attack_range &&
+        game_dungeon_unit_can_see_cell(game, start_x, start_y, target_x, target_y)) {
+        game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
+                                                 attack_delay);
+
+        i32 attack_damage = game_dungeon_get_unit_attack_damage(unit);
+        if (target->target_is_player) {
+            game->player_damage_event_count++;
+            if (game->player_damage_event_count == 0)
+                game->player_damage_event_count = 1;
+            unit->last_damaged_player_event = game->player_damage_event_count;
+            game_unit_stats_take_damage(&game->player_stats, attack_damage);
+            return;
+        }
+
+        if (target_unit == 0)
+            return;
+
+        if (unit->is_friendly && !target_unit->is_friendly) {
+            target_unit->is_awake = true;
+            target_unit->turns_out_of_player_los = 0;
+        }
+
+        if (unit->kind == UNIT_ART_IMP)
+            game_dungeon_apply_burning_status(target_unit);
+
+        game_dungeon_apply_damage_to_unit(game, target->target_unit_idx, attack_damage,
+                                          DAMAGE_KIND_NORMAL);
+        return;
+    }
+
+    if (target_distance < min_range)
+        game_dungeon_try_move_unit_away_from_cell(game, unit_idx, target_x, target_y);
+    else
+        game_dungeon_try_move_unit_towards_cell(game, unit_idx, target_x, target_y);
+}
+
 static void game_dungeon_take_turret_turn(Game *game, i32 unit_idx, i32 range)
 {
     assert(game != 0);
@@ -4726,6 +4976,10 @@ static void game_dungeon_take_friendly_unit_turn(
     i32 follow_min_distance = DUNGEON_FAMILIAR_BASIC_MELEE_FOLLOW_DISTANCE;
     i32 follow_max_distance = DUNGEON_FAMILIAR_BASIC_MELEE_FOLLOW_DISTANCE;
     switch (ai_kind) {
+    case UNIT_AI_BASIC_RANGED:
+        follow_min_distance = DUNGEON_FAMILIAR_BASIC_RANGED_FOLLOW_MIN_DISTANCE;
+        follow_max_distance = DUNGEON_FAMILIAR_BASIC_RANGED_FOLLOW_MAX_DISTANCE;
+        break;
     case UNIT_AI_DEFEND_RANGED:
         follow_min_distance = DUNGEON_FAMILIAR_DEFEND_RANGED_FOLLOW_MIN_DISTANCE;
         follow_max_distance = DUNGEON_FAMILIAR_DEFEND_RANGED_FOLLOW_MAX_DISTANCE;
@@ -4741,46 +4995,50 @@ static void game_dungeon_take_friendly_unit_turn(
         break;
     }
 
-    if (ai_kind == UNIT_AI_TURRET)
-        unit->is_returning_to_player = false;
-
     if (unit->is_returning_to_player) {
-        if (player_distance_valid) {
-            i16 distance_to_player = player_distance[start_y][start_x];
-            if (distance_to_player >= follow_min_distance &&
-                distance_to_player <= follow_max_distance) {
-                unit->is_returning_to_player = false;
-            }
-        }
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, game->player_x, game->player_y, unit->orientation);
 
-        if (unit->is_returning_to_player) {
-            if (ai_kind == UNIT_AI_DEFEND_RANGED) {
-                game_dungeon_try_follow_player_with_enemy_avoidance(
-                    game, unit_idx, follow_min_distance, follow_max_distance, player_distance,
-                    player_distance_valid, DUNGEON_FAMILIAR_DEFEND_RANGED_ENEMY_AVOID_DISTANCE, 1);
-            } else if (ai_kind == UNIT_AI_DASH) {
-                game_dungeon_try_follow_player_with_enemy_avoidance(
-                    game, unit_idx, follow_min_distance, follow_max_distance, player_distance,
-                    player_distance_valid, DUNGEON_FAMILIAR_FOLLOW_ENEMY_AVOID_DISTANCE,
-                    DUNGEON_FAMILIAR_BAT_MAX_MOVE_TILES);
-            } else {
-                game_dungeon_try_follow_player_with_enemy_avoidance(
-                    game, unit_idx, follow_min_distance, follow_max_distance, player_distance,
-                    player_distance_valid, DUNGEON_FAMILIAR_FOLLOW_ENEMY_AVOID_DISTANCE, 1);
-            }
-
-            if (player_distance_valid && game_dungeon_cell_in_bounds(unit->x, unit->y)) {
-                i16 distance_to_player = player_distance[unit->y][unit->x];
-                if (distance_to_player >= follow_min_distance &&
-                    distance_to_player <= follow_max_distance) {
-                    unit->is_returning_to_player = false;
-                }
-            }
+        if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, game->player_x,
+                                                      game->player_y)) {
+            game_dungeon_remove_unit_at(game, unit_idx);
             return;
         }
+
+        game_dungeon_try_move_unit_towards_cell(game, unit_idx, game->player_x, game->player_y);
+
+        if (unit_idx >= game->unit_count)
+            return;
+
+        Dungeon_Unit *current_unit = &game->units[unit_idx];
+        if (!current_unit->is_friendly)
+            return;
+
+        if (game_dungeon_cells_are_cardinal_neighbors(current_unit->x, current_unit->y,
+                                                      game->player_x, game->player_y)) {
+            game_dungeon_remove_unit_at(game, unit_idx);
+        }
+
+        return;
     }
 
     switch (ai_kind) {
+    case UNIT_AI_BASIC_RANGED: {
+        Dungeon_Enemy_Target target = {0};
+        if (game_dungeon_find_nearest_visible_hostile_target(game, unit_idx, &target)) {
+            game_dungeon_take_basic_ranged_turn(game, unit_idx, &target,
+                                                DUNGEON_FAMILIAR_BASIC_RANGED_ATTACK_MIN_DISTANCE,
+                                                DUNGEON_FAMILIAR_BASIC_RANGED_ATTACK_MAX_DISTANCE);
+            return;
+        }
+
+        unit->orientation = game_dungeon_get_orientation_from_positions(
+            start_x, start_y, game->player_x, game->player_y, unit->orientation);
+        game_dungeon_try_follow_player_with_enemy_avoidance(
+            game, unit_idx, follow_min_distance, follow_max_distance, player_distance,
+            player_distance_valid, DUNGEON_FAMILIAR_FOLLOW_ENEMY_AVOID_DISTANCE, 1);
+        return;
+    }
     case UNIT_AI_TURRET:
         game_dungeon_take_turret_turn(game, unit_idx, DUNGEON_BEHOLDER_TURRET_RANGE);
         return;
@@ -5003,10 +5261,7 @@ static void game_dungeon_apply_burn_turn_damage(Game *game)
             continue;
         }
 
-        if (unit->burn_turns_active < 255)
-            unit->burn_turns_active++;
-        i32 burn_damage = max((i32)unit->burn_turns_active, 1);
-        if (game_dungeon_apply_damage_to_unit(game, unit_idx, burn_damage, DAMAGE_KIND_FIRE))
+        if (game_dungeon_apply_damage_to_unit(game, unit_idx, 1, DAMAGE_KIND_FIRE))
             continue;
 
         unit->burn_turns_remaining--;
@@ -5097,6 +5352,16 @@ static void game_dungeon_take_enemy_turns(Game *game)
         case UNIT_AI_TURRET:
             game_dungeon_take_turret_turn(game, next_enemy_idx, DUNGEON_BEHOLDER_TURRET_RANGE);
             break;
+        case UNIT_AI_BASIC_RANGED: {
+            Dungeon_Enemy_Target target = {0};
+            if (game_dungeon_find_nearest_visible_hostile_target(game, next_enemy_idx, &target)) {
+                game_dungeon_take_basic_ranged_turn(
+                    game, next_enemy_idx, &target,
+                    DUNGEON_FAMILIAR_BASIC_RANGED_ATTACK_MIN_DISTANCE,
+                    DUNGEON_FAMILIAR_BASIC_RANGED_ATTACK_MAX_DISTANCE);
+            }
+            break;
+        }
         case UNIT_AI_KAMIKAZE: {
             Dungeon_Enemy_Target target = {0};
             if (game_dungeon_find_nearest_visible_hostile_target(game, next_enemy_idx, &target))
@@ -6071,6 +6336,11 @@ static bool game_dungeon_resolve_floor_index_for_depth(Game *game, u32 depth, u3
 
 static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_ROLE arrival_role)
 {
+    bool first_floor_visit = depth >= game->dungeon_floor_seed_count;
+
+    if (game->dungeon_floor_seed_count > 0 && game->dungeon_depth < DUNGEON_MAX_FLOOR_DEPTH)
+        game_dungeon_store_revealed_map_for_depth(game, game->dungeon_depth);
+
     bool transitioning_floors =
         depth != game->dungeon_depth &&
         (arrival_role == WORLD_ART_ROLE_STAIRS_DOWN || arrival_role == WORLD_ART_ROLE_STAIRS_UP);
@@ -6078,6 +6348,11 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     u8 carried_familiar_count = 0;
     if (transitioning_floors)
         carried_familiar_count = game_dungeon_capture_living_familiars(game, carried_familiars);
+
+    if (transitioning_floors && first_floor_visit) {
+        for (u8 familiar_idx = 0; familiar_idx < carried_familiar_count; familiar_idx++)
+            game_dungeon_reset_familiar_for_new_floor(&carried_familiars[familiar_idx]);
+    }
 
     u32 floor_index = 0;
     if (!game_dungeon_resolve_floor_index_for_depth(game, depth, &floor_index))
@@ -6091,6 +6366,12 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     }
 
     game->dungeon_depth = depth;
+
+    if (transitioning_floors && first_floor_visit) {
+        game->player_stats.health = game->player_stats.max_health;
+        game_dungeon_clear_player_webbed_status(game);
+        game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+    }
 
     if (arrival_role == WORLD_ART_ROLE_STAIRS_DOWN || arrival_role == WORLD_ART_ROLE_STAIRS_UP) {
         i16 arrival_x = 0;
@@ -6116,9 +6397,12 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
         game_dungeon_rebuild_line_of_sight(game);
     }
 
+    bool restored_revealed_map = game_dungeon_restore_revealed_map_for_depth(game, depth);
+
     if (transitioning_floors && carried_familiar_count > 0) {
         game_dungeon_restore_familiars_near_player(game, carried_familiars, carried_familiar_count);
-        game_dungeon_rebuild_line_of_sight(game);
+        if (!restored_revealed_map)
+            game_dungeon_rebuild_line_of_sight(game);
     }
 
     return true;
@@ -7405,10 +7689,20 @@ static Color game_ui_hover_color(Color color)
     return color;
 }
 
+static Color game_ui_gray_outer_color(void)
+{
+    return (Color){62, 62, 62, 255};
+}
+
+static Color game_ui_gray_inner_color(void)
+{
+    return (Color){74, 74, 74, 255};
+}
+
 static void game_draw_gray_menu_panel(Rectangle panel, bool hovered)
 {
-    Color outer_fill = (Color){62, 62, 62, 255};
-    Color inner_fill = (Color){74, 74, 74, 255};
+    Color outer_fill = game_ui_gray_outer_color();
+    Color inner_fill = game_ui_gray_inner_color();
     if (hovered) {
         outer_fill = game_ui_hover_color(outer_fill);
         inner_fill = game_ui_hover_color(inner_fill);
@@ -7889,7 +8183,7 @@ static void game_draw_familiar_command_bar(Game *game)
 
     Rectangle panel = game_familiar_command_panel_rect(game);
     bool has_familiar = game_dungeon_has_living_familiar(game);
-    game_draw_dungeon_ui_panel(panel, (Color){15, 18, 14, 232}, (Color){22, 28, 21, 226});
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
 
     float buttons_w = panel.width - DUNGEON_FAMILIAR_COMMAND_PANEL_PADDING * 2.0f;
     float button_w =
@@ -7906,15 +8200,15 @@ static void game_draw_familiar_command_bar(Game *game)
         };
 
         bool active = game->familiar_turn_command == commands[command_idx];
-        Color fill = (Color){55, 72, 51, 255};
-        Color text = (Color){228, 242, 218, 255};
+        Color fill = game_ui_hover_color(game_ui_gray_inner_color());
+        Color text = (Color){236, 236, 236, 255};
 
         if (!has_familiar) {
-            fill = (Color){40, 44, 43, 250};
-            text = (Color){124, 132, 129, 255};
+            fill = game_ui_gray_outer_color();
+            text = (Color){168, 168, 168, 255};
         } else if (!active) {
-            fill = (Color){44, 55, 42, 252};
-            text = (Color){194, 212, 187, 255};
+            fill = game_ui_gray_inner_color();
+            text = (Color){220, 220, 220, 255};
         }
 
         DrawRectangleRec(button, fill);
@@ -7933,7 +8227,7 @@ static void game_draw_familiar_command_bar(Game *game)
 static void game_draw_player_action_bar(Game *game)
 {
     Rectangle panel = game_action_bar_panel_rect();
-    game_draw_dungeon_ui_panel(panel, (Color){18, 14, 11, 236}, (Color){29, 21, 16, 232});
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
 
     int anim_frame = game_unit_anim_frame();
     bool action_bar_disabled = game_player_action_bar_is_disabled(game);
@@ -7945,12 +8239,12 @@ static void game_draw_player_action_bar(Game *game)
         bool has_familiar = game_player_action_bar_slot_has_familiar(game, slot_idx);
         bool is_active_slot = game_player_has_active_summon_target(game) &&
                               game->player_active_action_bar_slot == slot_idx;
-        Color slot_fill = has_familiar ? (Color){72, 59, 40, 255} : (Color){44, 36, 27, 255};
+        Color slot_fill = has_familiar ? game_ui_gray_inner_color() : game_ui_gray_outer_color();
         if (is_active_slot) {
-            slot_fill = (Color){86, 70, 47, 255};
+            slot_fill = game_ui_hover_color(game_ui_gray_inner_color());
         }
         if (action_bar_disabled) {
-            slot_fill = has_familiar ? (Color){54, 52, 49, 255} : (Color){36, 35, 33, 255};
+            slot_fill = game_ui_gray_outer_color();
         }
         if (!action_bar_disabled && has_familiar && slot_idx == hovered_slot)
             slot_fill = game_ui_hover_color(slot_fill);
@@ -7974,8 +8268,8 @@ static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kin
                                        i32 unit_kind_count, i32 implemented_kind_count,
                                        bool is_friendly_row, Rectangle panel)
 {
-    Color outer_fill = is_friendly_row ? (Color){14, 20, 16, 236} : (Color){25, 14, 14, 236};
-    Color inner_fill = is_friendly_row ? (Color){22, 31, 24, 232} : (Color){35, 20, 20, 232};
+    Color outer_fill = game_ui_gray_outer_color();
+    Color inner_fill = game_ui_gray_inner_color();
     game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill);
 
     float slot_size = game_testing_unit_bar_slot_size();
@@ -7996,9 +8290,9 @@ static void game_draw_testing_unit_bar(Game *game, const UNIT_ART_KIND *unit_kin
         bool selected = placement_active && selected_is_friendly == is_friendly_row &&
                         selected_kind == unit_kind;
 
-        Color slot_fill = is_friendly_row ? (Color){44, 56, 45, 255} : (Color){63, 42, 41, 255};
+        Color slot_fill = game_ui_gray_inner_color();
         if (selected) {
-            slot_fill = is_friendly_row ? (Color){73, 92, 72, 255} : (Color){108, 68, 64, 255};
+            slot_fill = game_ui_hover_color(game_ui_gray_inner_color());
         }
         if (hovered)
             slot_fill = game_ui_hover_color(slot_fill);
@@ -8027,33 +8321,75 @@ static void game_draw_testing_unit_action_bars(Game *game)
                                TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT, false, enemy_panel);
 }
 
-static Rectangle game_draw_player_stats_panel(Game *game)
+static Rectangle game_draw_floor_info_panel(Game *game)
 {
     char floor_line[32];
     snprintf(floor_line, sizeof(floor_line), "Floor %u/%d", game->dungeon_depth + 1,
              DUNGEON_RUN_FLOOR_COUNT);
 
     float floor_size = 17.0f;
-    i32 heart_count = max((i32)game->player_stats.max_health, 1);
-    float hearts_w = (float)heart_count * DUNGEON_PLAYER_PANEL_HEART_SIZE +
-                     (float)(heart_count - 1) * DUNGEON_PLAYER_PANEL_HEART_GAP;
-
     Vector2 floor_measure = MeasureTextEx(game->font, floor_line, floor_size, game->font_spacing);
-
-    float content_w = max(floor_measure.x, hearts_w);
-
-    float panel_w = content_w + (DUNGEON_PLAYER_PANEL_PADDING * 2.0f);
-    float panel_h =
-        (DUNGEON_PLAYER_PANEL_PADDING * 2.0f) + DUNGEON_PLAYER_PANEL_HEART_SIZE + 8.0f + floor_size;
 
     Rectangle panel = {
         .x = DUNGEON_PLAYER_PANEL_MARGIN,
         .y = DUNGEON_PLAYER_PANEL_MARGIN,
+        .width = floor_measure.x + DUNGEON_PLAYER_PANEL_PADDING * 2.0f,
+        .height = floor_size + DUNGEON_PLAYER_PANEL_PADDING * 2.0f,
+    };
+
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
+
+    Vector2 floor_pos = {
+        .x = panel.x + (panel.width - floor_measure.x) * 0.5f,
+        .y = panel.y + DUNGEON_PLAYER_PANEL_PADDING,
+    };
+    DrawTextEx(game->font, floor_line, floor_pos, floor_size, game->font_spacing,
+               (Color){232, 232, 232, 255});
+
+    return panel;
+}
+
+static Rectangle game_draw_player_stats_panel(Game *game, Rectangle floor_panel)
+{
+    char damage_line[24];
+    snprintf(damage_line, sizeof(damage_line), "DMG %d", (i32)game->player_stats.damage);
+
+    char status_text[128];
+    bool has_status = game_dungeon_build_player_status_text(game, status_text, sizeof(status_text));
+    char status_line[160];
+    status_line[0] = '\0';
+    if (has_status)
+        snprintf(status_line, sizeof(status_line), "Status: %s", status_text);
+
+    float damage_size = 17.0f;
+    float status_size = 15.0f;
+    i32 heart_count = max((i32)game->player_stats.max_health, 1);
+    float hearts_w = (float)heart_count * DUNGEON_PLAYER_PANEL_HEART_SIZE +
+                     (float)(heart_count - 1) * DUNGEON_PLAYER_PANEL_HEART_GAP;
+
+    Vector2 damage_measure =
+        MeasureTextEx(game->font, damage_line, damage_size, game->font_spacing);
+    float content_w = max(damage_measure.x, hearts_w);
+    Vector2 status_measure = {0.0f, 0.0f};
+    if (has_status) {
+        status_measure = MeasureTextEx(game->font, status_line, status_size, game->font_spacing);
+        content_w = max(content_w, status_measure.x);
+    }
+
+    float panel_w = content_w + (DUNGEON_PLAYER_PANEL_PADDING * 2.0f);
+    float panel_h = (DUNGEON_PLAYER_PANEL_PADDING * 2.0f) + DUNGEON_PLAYER_PANEL_HEART_SIZE + 7.0f +
+                    damage_size;
+    if (has_status)
+        panel_h += 5.0f + status_size;
+
+    Rectangle panel = {
+        .x = DUNGEON_PLAYER_PANEL_MARGIN,
+        .y = floor_panel.y + floor_panel.height + DUNGEON_PLAYER_PANEL_GAP,
         .width = panel_w,
         .height = panel_h,
     };
 
-    game_draw_dungeon_ui_panel(panel, (Color){20, 15, 12, 236}, (Color){32, 23, 17, 232});
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
 
     Vector2 hearts_pos = {
         .x = panel.x + (panel.width - hearts_w) * 0.5f,
@@ -8063,21 +8399,32 @@ static Rectangle game_draw_player_stats_panel(Game *game)
                             game->player_stats.max_health, DUNGEON_PLAYER_PANEL_HEART_SIZE,
                             DUNGEON_PLAYER_PANEL_HEART_GAP);
 
-    Vector2 line_pos = {
-        .x = panel.x + (panel.width - floor_measure.x) * 0.5f,
-        .y = hearts_pos.y + DUNGEON_PLAYER_PANEL_HEART_SIZE + 8.0f,
+    Vector2 damage_pos = {
+        .x = panel.x + (panel.width - damage_measure.x) * 0.5f,
+        .y = hearts_pos.y + DUNGEON_PLAYER_PANEL_HEART_SIZE + 7.0f,
     };
-    DrawTextEx(game->font, floor_line, line_pos, floor_size, game->font_spacing,
-               (Color){185, 164, 133, 255});
+    DrawTextEx(game->font, damage_line, damage_pos, damage_size, game->font_spacing,
+               (Color){234, 234, 234, 255});
+
+    if (has_status) {
+        Vector2 status_pos = {
+            .x = panel.x + (panel.width - status_measure.x) * 0.5f,
+            .y = damage_pos.y + damage_size + 5.0f,
+        };
+        DrawTextEx(game->font, status_line, status_pos, status_size, game->font_spacing,
+                   (Color){215, 215, 215, 255});
+    }
 
     return panel;
 }
 
 static bool game_mouse_is_over_dungeon_hud_panel(Game *game, Vector2 mouse_screen,
-                                                 Rectangle player_panel, Rectangle minimap_panel,
-                                                 Rectangle familiar_panel,
+                                                 Rectangle floor_panel, Rectangle player_panel,
+                                                 Rectangle minimap_panel, Rectangle familiar_panel,
                                                  Rectangle action_bar_panel)
 {
+    if (game_point_in_rect(mouse_screen, floor_panel))
+        return true;
     if (game_point_in_rect(mouse_screen, player_panel))
         return true;
     if (game_point_in_rect(mouse_screen, minimap_panel))
@@ -8102,6 +8449,8 @@ typedef struct {
     Unit_Stats stats;
     i32 damage;
     char name[UNIT_ART_DISPLAY_NAME_CAP];
+    char status_line[128];
+    bool has_status_effects;
 } Dungeon_Hovered_Unit;
 
 static void game_fill_hovered_unit_from_kind(Dungeon_Hovered_Unit *hovered, UNIT_ART_KIND kind)
@@ -8113,6 +8462,8 @@ static void game_fill_hovered_unit_from_kind(Dungeon_Hovered_Unit *hovered, UNIT
     hovered->stats = game_get_unit_base_stats(kind);
     hovered->damage = (i32)hovered->stats.damage;
     unit_art_get_display_name(kind, hovered->name, UNIT_ART_DISPLAY_NAME_CAP);
+    hovered->status_line[0] = '\0';
+    hovered->has_status_effects = false;
 }
 
 static void game_fill_hovered_unit_from_world_unit(Dungeon_Hovered_Unit *hovered,
@@ -8125,6 +8476,8 @@ static void game_fill_hovered_unit_from_world_unit(Dungeon_Hovered_Unit *hovered
     hovered->stats = unit->stats;
     hovered->damage = game_dungeon_get_unit_attack_damage(unit);
     unit_art_get_display_name(unit->kind, hovered->name, UNIT_ART_DISPLAY_NAME_CAP);
+    hovered->has_status_effects = game_dungeon_build_unit_status_text(unit, hovered->status_line,
+                                                                      sizeof(hovered->status_line));
 }
 
 static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, u32 buffer_cap)
@@ -8152,7 +8505,8 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         snprintf(buffer, buffer_cap, "Stationary turret that shoots aligned targets at range");
         return;
     case UNIT_ART_IMP:
-        snprintf(buffer, buffer_cap, "Melee familiar that inflicts scaling burn damage");
+        snprintf(buffer, buffer_cap,
+                 "Ranged familiar that stacks burn and refreshes it to 5 turns per hit");
         return;
     case UNIT_ART_REAPER:
         snprintf(buffer, buffer_cap, "Warlock familiar that excels in close-range combat");
@@ -8195,9 +8549,9 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
     snprintf(buffer, buffer_cap, "Unimplemented unit");
 }
 
-static bool game_try_get_hovered_unit(Game *game, Rectangle player_panel, Rectangle minimap_panel,
-                                      Rectangle familiar_panel, Rectangle action_bar_panel,
-                                      Dungeon_Hovered_Unit *out_hovered)
+static bool game_try_get_hovered_unit(Game *game, Rectangle floor_panel, Rectangle player_panel,
+                                      Rectangle minimap_panel, Rectangle familiar_panel,
+                                      Rectangle action_bar_panel, Dungeon_Hovered_Unit *out_hovered)
 {
     assert(out_hovered != 0);
 
@@ -8241,8 +8595,8 @@ static bool game_try_get_hovered_unit(Game *game, Rectangle player_panel, Rectan
         }
     }
 
-    if (game_mouse_is_over_dungeon_hud_panel(game, mouse_screen, player_panel, minimap_panel,
-                                             familiar_panel, action_bar_panel)) {
+    if (game_mouse_is_over_dungeon_hud_panel(game, mouse_screen, floor_panel, player_panel,
+                                             minimap_panel, familiar_panel, action_bar_panel)) {
         return false;
     }
 
@@ -8260,12 +8614,12 @@ static bool game_try_get_hovered_unit(Game *game, Rectangle player_panel, Rectan
     return false;
 }
 
-static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
-                                           Rectangle minimap_panel, Rectangle familiar_panel,
-                                           Rectangle action_bar_panel)
+static void game_draw_hovered_unit_tooltip(Game *game, Rectangle floor_panel,
+                                           Rectangle player_panel, Rectangle minimap_panel,
+                                           Rectangle familiar_panel, Rectangle action_bar_panel)
 {
     Dungeon_Hovered_Unit hovered = {0};
-    if (!game_try_get_hovered_unit(game, player_panel, minimap_panel, familiar_panel,
+    if (!game_try_get_hovered_unit(game, floor_panel, player_panel, minimap_panel, familiar_panel,
                                    action_bar_panel, &hovered)) {
         return;
     }
@@ -8274,11 +8628,18 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
     snprintf(stats_line, sizeof(stats_line), "HP %d/%d, DMG %d", (i32)hovered.stats.health,
              (i32)hovered.stats.max_health, hovered.damage);
 
+    char status_line[160];
+    status_line[0] = '\0';
+    bool has_status_line = hovered.has_status_effects;
+    if (has_status_line)
+        snprintf(status_line, sizeof(status_line), "Status: %s", hovered.status_line);
+
     char description_line[192];
     game_get_hovered_unit_description(hovered.kind, description_line, sizeof(description_line));
 
     float title_size = 19.0f;
     float stats_size = 16.0f;
+    float status_size = 15.0f;
     float description_size = 15.0f;
     float line_gap = 4.0f;
 
@@ -8289,10 +8650,17 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
     float panel_w = max(title_measure.x, description_measure.x);
     Vector2 stats_measure = MeasureTextEx(game->font, stats_line, stats_size, game->font_spacing);
     panel_w = max(panel_w, stats_measure.x);
+    Vector2 status_measure = {0.0f, 0.0f};
+    if (has_status_line) {
+        status_measure = MeasureTextEx(game->font, status_line, status_size, game->font_spacing);
+        panel_w = max(panel_w, status_measure.x);
+    }
     panel_w += DUNGEON_HOVER_PANEL_PADDING * 2.0f;
 
     float panel_h = (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_size + 8.0f + stats_size +
                     line_gap + description_size;
+    if (has_status_line)
+        panel_h += status_size + line_gap;
 
     Vector2 mouse_screen = GetMousePosition();
     Rectangle panel = {
@@ -8312,7 +8680,7 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
     panel.x = clamp(panel.x, 8.0f, screen_w - panel.width - 8.0f);
     panel.y = clamp(panel.y, 8.0f, screen_h - panel.height - 8.0f);
 
-    game_draw_dungeon_ui_panel(panel, (Color){19, 15, 12, 244}, (Color){31, 23, 18, 240});
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
 
     Color title_color = game_unit_kind_tint(hovered.kind);
     title_color.r = (u8)min(255, (i32)title_color.r + 16);
@@ -8327,11 +8695,17 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle player_panel,
 
     text_pos.y += title_size + 8.0f;
     DrawTextEx(game->font, stats_line, text_pos, stats_size, game->font_spacing,
-               (Color){215, 194, 158, 255});
+               (Color){233, 233, 233, 255});
     text_pos.y += stats_size + line_gap;
 
+    if (has_status_line) {
+        DrawTextEx(game->font, status_line, text_pos, status_size, game->font_spacing,
+                   (Color){218, 218, 218, 255});
+        text_pos.y += status_size + line_gap;
+    }
+
     DrawTextEx(game->font, description_line, text_pos, description_size, game->font_spacing,
-               (Color){178, 163, 136, 255});
+               (Color){208, 208, 208, 255});
 }
 
 static void game_draw_summon_target_indicator(Game *game, Vector2 origin, float tile_size)
@@ -8812,7 +9186,13 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
 
     float screen_w = (float)GetScreenWidth();
     float screen_h = (float)GetScreenHeight();
-    float map_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w * DUNGEON_MINIMAP_SCREEN_WIDTH_FRACTION);
+    float minimap_width_fraction = DUNGEON_MINIMAP_SCREEN_WIDTH_FRACTION;
+    if (screen_w <= 960.0f)
+        minimap_width_fraction = 0.42f;
+    if (screen_w <= 720.0f)
+        minimap_width_fraction = 0.36f;
+
+    float map_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w * minimap_width_fraction);
     float map_h = min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f));
     map_w = min(map_w, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f));
     map_w = max(map_w, 1.0f);
@@ -8958,11 +9338,12 @@ static void game_draw_debug_hud_button(Game *game, Rectangle button, const char 
 #if GAME_DEBUG_FEATURES
     bool hovered = game_point_in_rect(GetMousePosition(), button);
 
-    Color fill = active ? (Color){69, 96, 59, 244} : (Color){60, 46, 35, 244};
+    Color fill =
+        active ? game_ui_hover_color(game_ui_gray_inner_color()) : game_ui_gray_inner_color();
     if (hovered)
         fill = game_ui_hover_color(fill);
 
-    Color text = active ? (Color){229, 247, 208, 255} : (Color){222, 198, 167, 255};
+    Color text = active ? (Color){244, 244, 244, 255} : (Color){224, 224, 224, 255};
 
     DrawRectangleRec(button, fill);
 
@@ -8988,21 +9369,21 @@ static void game_draw_debug_hud(Game *game)
         return;
 
     Rectangle panel = game_debug_hud_panel_rect(game);
-    game_draw_dungeon_ui_panel(panel, (Color){14, 18, 16, 246}, (Color){21, 27, 23, 241});
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
 
     Vector2 title_pos = {
         .x = panel.x + DEBUG_HUD_PANEL_PADDING,
         .y = panel.y + DEBUG_HUD_PANEL_PADDING - 1.0f,
     };
     DrawTextEx(game->font, "Debug HUD", title_pos, DEBUG_HUD_TITLE_SIZE, game->font_spacing,
-               (Color){224, 236, 210, 255});
+               (Color){238, 238, 238, 255});
 
     Vector2 hint_pos = {
         .x = panel.x + DEBUG_HUD_PANEL_PADDING,
         .y = title_pos.y + DEBUG_HUD_TITLE_SIZE + 2.0f,
     };
     DrawTextEx(game->font, "Press ` to hide", hint_pos, DEBUG_HUD_HINT_SIZE, game->font_spacing,
-               (Color){176, 198, 167, 255});
+               (Color){196, 196, 196, 255});
 
     char line[160];
     if (game->debug_in_testing_area) {
@@ -9023,7 +9404,7 @@ static void game_draw_debug_hud(Game *game)
         .y = hint_pos.y + DEBUG_HUD_HINT_SIZE + 1.0f,
     };
     DrawTextEx(game->font, line, template_pos, DEBUG_HUD_HINT_SIZE - 1.0f, game->font_spacing,
-               (Color){160, 182, 152, 255});
+               (Color){182, 182, 182, 255});
 
     float cursor_y = game_debug_hud_button_start_y(panel);
 
@@ -9060,7 +9441,8 @@ static void game_draw_debug_hud(Game *game)
 
 static void game_draw_dungeon_hud(Game *game)
 {
-    Rectangle player_panel = game_draw_player_stats_panel(game);
+    Rectangle floor_panel = game_draw_floor_info_panel(game);
+    Rectangle player_panel = game_draw_player_stats_panel(game, floor_panel);
     Rectangle familiar_panel = game_familiar_command_panel_rect(game);
     Rectangle action_bar_panel = game->debug_in_testing_area ? (Rectangle){0.0f, 0.0f, 0.0f, 0.0f}
                                                              : game_action_bar_panel_rect();
@@ -9082,7 +9464,7 @@ static void game_draw_dungeon_hud(Game *game)
         game_draw_player_action_bar(game);
     game_draw_debug_hud(game);
 
-    game_draw_hovered_unit_tooltip(game, player_panel, minimap_panel, familiar_panel,
+    game_draw_hovered_unit_tooltip(game, floor_panel, player_panel, minimap_panel, familiar_panel,
                                    action_bar_panel);
 }
 
@@ -9162,9 +9544,7 @@ static void game_draw_end_menu(Game *game)
 
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){4, 4, 4, 226});
 
-    Color outer_fill = (Color){34, 34, 34, 246};
-    Color inner_fill = (Color){48, 48, 48, 241};
-    game_draw_dungeon_ui_panel(panel, outer_fill, inner_fill);
+    game_draw_dungeon_ui_panel(panel, game_ui_gray_outer_color(), game_ui_gray_inner_color());
 
     float title_size = clamp(panel.height * 0.18f, 32.0f, 48.0f);
 
@@ -9208,6 +9588,7 @@ static bool game_start_new_dungeon_run(Game *game)
     game->dungeon_floor_index = 0;
     game->dungeon_depth = 0;
     game->dungeon_floor_seed_count = 0;
+    game_dungeon_clear_floor_reveal_cache(game);
     game->player_stats = game_get_player_base_stats();
     game->player_is_webbed = false;
     game->player_webbed_applied_this_turn = false;
