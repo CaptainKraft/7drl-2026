@@ -14,6 +14,11 @@
 #define ITEMS_SHEET_PATH "assets/items.png"
 #define WORLD_SHEET_PATH "assets/world.png"
 #define FX_SHEET_PATH "assets/fx.png"
+#define MENU_MUSIC_PATH "assets/menu.mp3"
+#define DUNGEON_MUSIC_TRACK_COUNT 6
+#define GAME_MUSIC_VOLUME 0.8f
+#define GAME_MUSIC_FADE_DURATION_SECONDS 5.0f
+#define GAME_MUSIC_TRACK_END_EPSILON_SECONDS 0.05f
 #define PREVIEW_TOP_MARGIN_Y 24.0f
 #define PREVIEW_SECTION_GAP_Y 40.0f
 
@@ -382,6 +387,11 @@ typedef enum {
 } END_MENU_ACTION;
 
 typedef enum {
+    MUSIC_CONTEXT_MENU,
+    MUSIC_CONTEXT_DUNGEON,
+} MUSIC_CONTEXT;
+
+typedef enum {
     PLAYER_CLASS_NONE,
     PLAYER_CLASS_WARLOCK,
     PLAYER_CLASS_DRUID,
@@ -591,6 +601,14 @@ typedef struct {
     Texture2D items_texture;
     Texture2D world_texture;
     Texture2D fx_texture;
+    Music menu_music;
+    Music dungeon_music[DUNGEON_MUSIC_TRACK_COUNT];
+    i32 dungeon_music_track_index;
+    MUSIC_CONTEXT music_context;
+    MUSIC_CONTEXT music_target_context;
+    float menu_music_mix;
+    float dungeon_music_mix;
+    bool music_transition_active;
 
     u64 dungeon_seed;
     u32 dungeon_floor_index;
@@ -696,6 +714,15 @@ static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y);
 static u64 game_next_dungeon_seed(Game *game);
 static void game_dungeon_clear_floor_reveal_cache(Game *game);
 static void game_dungeon_store_revealed_map_for_depth(Game *game, u32 depth);
+
+static const char *game_dungeon_music_paths[DUNGEON_MUSIC_TRACK_COUNT] = {
+    "assets/dungeon1.mp3", "assets/dungeon2.mp3", "assets/dungeon3.mp3",
+    "assets/dungeon4.mp3", "assets/dungeon5.mp3", "assets/dungeon6.mp3",
+};
+
+_Static_assert((sizeof(game_dungeon_music_paths) / sizeof(game_dungeon_music_paths[0])) ==
+                   DUNGEON_MUSIC_TRACK_COUNT,
+               "Dungeon music path count must match DUNGEON_MUSIC_TRACK_COUNT");
 
 static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
@@ -1027,6 +1054,189 @@ static bool game_class_menu_is_active(const Game *game)
     return !game_player_class_is_valid(game->player_class);
 }
 
+static void game_music_set_menu_mix(Game *game, float mix)
+{
+    mix = clamp(mix, 0.0f, 1.0f);
+    game->menu_music_mix = mix;
+    SetMusicVolume(game->menu_music, GAME_MUSIC_VOLUME * mix);
+}
+
+static void game_music_set_dungeon_mix(Game *game, float mix)
+{
+    assert(game->dungeon_music_track_index >= 0);
+    assert(game->dungeon_music_track_index < DUNGEON_MUSIC_TRACK_COUNT);
+
+    mix = clamp(mix, 0.0f, 1.0f);
+    game->dungeon_music_mix = mix;
+
+    Music track = game->dungeon_music[game->dungeon_music_track_index];
+    SetMusicVolume(track, GAME_MUSIC_VOLUME * mix);
+}
+
+static void game_music_start_dungeon_track(Game *game, i32 track_idx, bool restart)
+{
+    assert(track_idx >= 0);
+    assert(track_idx < DUNGEON_MUSIC_TRACK_COUNT);
+
+    i32 previous_track_idx = game->dungeon_music_track_index;
+    if (previous_track_idx != track_idx) {
+        Music previous_track = game->dungeon_music[previous_track_idx];
+        if (IsMusicStreamPlaying(previous_track))
+            StopMusicStream(previous_track);
+    }
+
+    game->dungeon_music_track_index = track_idx;
+
+    Music *track = &game->dungeon_music[track_idx];
+    track->looping = false;
+
+    if (restart) {
+        StopMusicStream(*track);
+        SeekMusicStream(*track, 0.0f);
+    } else if (!IsMusicStreamPlaying(*track)) {
+        SeekMusicStream(*track, 0.0f);
+    }
+
+    if (!IsMusicStreamPlaying(*track))
+        PlayMusicStream(*track);
+
+    SetMusicVolume(*track, GAME_MUSIC_VOLUME * game->dungeon_music_mix);
+}
+
+static void game_music_set_mode(Game *game, MUSIC_CONTEXT target_context)
+{
+    game->music_target_context = target_context;
+
+    if (target_context == MUSIC_CONTEXT_MENU) {
+        game->menu_music.looping = true;
+        if (!IsMusicStreamPlaying(game->menu_music)) {
+            StopMusicStream(game->menu_music);
+            SeekMusicStream(game->menu_music, 0.0f);
+            PlayMusicStream(game->menu_music);
+        }
+    } else {
+        game_music_start_dungeon_track(game, game->dungeon_music_track_index, false);
+    }
+
+    if (game->music_context == target_context && !game->music_transition_active) {
+        if (target_context == MUSIC_CONTEXT_MENU) {
+            game_music_set_menu_mix(game, 1.0f);
+            game_music_set_dungeon_mix(game, 0.0f);
+        } else {
+            game_music_set_menu_mix(game, 0.0f);
+            game_music_set_dungeon_mix(game, 1.0f);
+        }
+        return;
+    }
+
+    game->music_transition_active = true;
+}
+
+static void game_music_transition_to_menu(Game *game)
+{
+    game_music_set_mode(game, MUSIC_CONTEXT_MENU);
+}
+
+static void game_music_transition_to_new_dungeon_run(Game *game)
+{
+    game_music_start_dungeon_track(game, 0, true);
+    game_music_set_mode(game, MUSIC_CONTEXT_DUNGEON);
+}
+
+static bool game_music_track_is_finished(Music track)
+{
+    if (!IsMusicStreamPlaying(track))
+        return true;
+
+    float length = GetMusicTimeLength(track);
+    if (length <= 0.0f)
+        return false;
+
+    float played = GetMusicTimePlayed(track);
+    return played >= (length - GAME_MUSIC_TRACK_END_EPSILON_SECONDS);
+}
+
+static void game_music_update(Game *game)
+{
+    assert(game->dungeon_music_track_index >= 0);
+    assert(game->dungeon_music_track_index < DUNGEON_MUSIC_TRACK_COUNT);
+
+    UpdateMusicStream(game->menu_music);
+    UpdateMusicStream(game->dungeon_music[game->dungeon_music_track_index]);
+
+    if (game->music_target_context == MUSIC_CONTEXT_DUNGEON) {
+        Music active_track = game->dungeon_music[game->dungeon_music_track_index];
+        if (game_music_track_is_finished(active_track)) {
+            i32 next_track_idx = (game->dungeon_music_track_index + 1) % DUNGEON_MUSIC_TRACK_COUNT;
+            game_music_start_dungeon_track(game, next_track_idx, true);
+        }
+    }
+
+    if (!game->music_transition_active)
+        return;
+
+    float frame_time = GetFrameTime();
+    if (frame_time <= 0.0f)
+        frame_time = CAMERA_FALLBACK_FRAME_TIME;
+
+    float fade_duration = max(GAME_MUSIC_FADE_DURATION_SECONDS, 0.001f);
+    float fade_step = frame_time / fade_duration;
+
+    if (game->music_target_context == MUSIC_CONTEXT_DUNGEON) {
+        game_music_set_menu_mix(game, game->menu_music_mix - fade_step);
+        game_music_set_dungeon_mix(game, game->dungeon_music_mix + fade_step);
+
+        if (game->menu_music_mix <= 0.0f && game->dungeon_music_mix >= 1.0f) {
+            game->music_context = MUSIC_CONTEXT_DUNGEON;
+            game->music_transition_active = false;
+            StopMusicStream(game->menu_music);
+        }
+    } else {
+        game_music_set_menu_mix(game, game->menu_music_mix + fade_step);
+        game_music_set_dungeon_mix(game, game->dungeon_music_mix - fade_step);
+
+        if (game->menu_music_mix >= 1.0f && game->dungeon_music_mix <= 0.0f) {
+            game->music_context = MUSIC_CONTEXT_MENU;
+            game->music_transition_active = false;
+            StopMusicStream(game->dungeon_music[game->dungeon_music_track_index]);
+        }
+    }
+}
+
+static void game_music_init(Game *game)
+{
+    game->menu_music = LoadMusicStream(MENU_MUSIC_PATH);
+    assert(IsMusicValid(game->menu_music));
+    game->menu_music.looping = true;
+
+    for (i32 track_idx = 0; track_idx < DUNGEON_MUSIC_TRACK_COUNT; track_idx++) {
+        game->dungeon_music[track_idx] = LoadMusicStream(game_dungeon_music_paths[track_idx]);
+        assert(IsMusicValid(game->dungeon_music[track_idx]));
+        game->dungeon_music[track_idx].looping = false;
+    }
+
+    game->dungeon_music_track_index = 0;
+    game->music_context = MUSIC_CONTEXT_MENU;
+    game->music_target_context = MUSIC_CONTEXT_MENU;
+    game->music_transition_active = false;
+
+    game_music_set_menu_mix(game, 1.0f);
+    game_music_set_dungeon_mix(game, 0.0f);
+
+    PlayMusicStream(game->menu_music);
+}
+
+static void game_music_shutdown(Game *game)
+{
+    StopMusicStream(game->menu_music);
+    UnloadMusicStream(game->menu_music);
+
+    for (i32 track_idx = 0; track_idx < DUNGEON_MUSIC_TRACK_COUNT; track_idx++) {
+        StopMusicStream(game->dungeon_music[track_idx]);
+        UnloadMusicStream(game->dungeon_music[track_idx]);
+    }
+}
+
 static void game_open_class_menu(Game *game, bool show_game_title)
 {
     game->player_class = PLAYER_CLASS_NONE;
@@ -1037,6 +1247,7 @@ static void game_open_class_menu(Game *game, bool show_game_title)
 static void game_open_main_menu(Game *game)
 {
     game_open_class_menu(game, true);
+    game_music_transition_to_menu(game);
 }
 
 static void game_open_class_select_menu(Game *game)
@@ -11411,6 +11622,7 @@ static bool game_start_new_dungeon_run(Game *game)
 
     game_center_dungeon_camera_on_player(game);
     game->end_menu_state = END_MENU_NONE;
+    game_music_transition_to_new_dungeon_run(game);
     return true;
 }
 
@@ -11648,6 +11860,8 @@ void game_init(Mem mem, Font font, float font_spacing)
     assert(game->fx_texture.id != 0);
     SetTextureFilter(game->fx_texture, TEXTURE_FILTER_POINT);
 
+    game_music_init(game);
+
     game->show_dungeon_view = true;
     game->minimap_opacity_level = DUNGEON_MINIMAP_DEFAULT_OPACITY_LEVEL;
     game->end_menu_state = END_MENU_NONE;
@@ -11676,6 +11890,7 @@ void game_init(Mem mem, Font font, float font_spacing)
 void game_shutdown(Mem mem)
 {
     Game *game = arena_start(mem.perm, Game);
+    game_music_shutdown(game);
     if (game->units_texture.id != 0)
         UnloadTexture(game->units_texture);
     if (game->items_texture.id != 0)
@@ -11750,6 +11965,7 @@ void game_update(Mem mem)
     arena_clear(mem.tmp);
 
     game_input(game);
+    game_music_update(game);
 
     if (game_update_class_menu(game))
         return;

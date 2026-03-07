@@ -49,6 +49,12 @@ static bool game_app_init(void *user)
     MaximizeWindow();
 #endif
 
+    InitAudioDevice();
+    if (!IsAudioDeviceReady()) {
+        CloseWindow();
+        return false;
+    }
+
     ctx->framebuffer = LoadRenderTexture(VIRTUAL_W, VIRTUAL_H);
     SetTextureFilter(ctx->framebuffer.texture, TEXTURE_FILTER_BILINEAR);
 
@@ -135,6 +141,8 @@ static void game_app_shutdown(void *user)
     game_shutdown(ctx->game_mem);
     UnloadRenderTexture(ctx->framebuffer);
     UnloadFont(ctx->font);
+    if (IsAudioDeviceReady())
+        CloseAudioDevice();
     CloseWindow();
 }
 
