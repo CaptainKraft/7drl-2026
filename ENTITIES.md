@@ -6,20 +6,22 @@ Only one familiar can be alive at any given time, so the action bar should be di
 
 ## Effects
 
-Unless otherwise noted, these will wear off in 5 turns.
-
 ### Burn
 - take 1 dmg each turn for each stack
 - adding a stack of burn resets the time to wear off
+- wears off in 2 turns
 
 ### Disease
 - dmg reduced by 1
+- wears off in 10 turns
 
 ### Poison
 - take 1 dmg each turn
+- wears off in 2 turns
 
 ### Webbed
 - skip every other turn
+- wears off in 10 turns
 
 ### Troll Blood
 - come back to life 5 turns after death
@@ -139,6 +141,7 @@ Unless otherwise noted, these will wear off in 5 turns.
 - target: nearest enemy
 - basic ranged
 - applies increasing stacks of burn on attack
+- rises from the ashes after 10 turns
 
 ### Beholder
 - 5hp, 2dmg
@@ -157,7 +160,7 @@ Unless otherwise noted, these will wear off in 5 turns.
 - target: nearest enemy
 - basic melee
 - applies increasing stacks of burn on attack
-- rises from the ashes after 5 turns
+- rises from the ashes after 10 turns
 
 ### Treant
 - 10hp, 2dmg

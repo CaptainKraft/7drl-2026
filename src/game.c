@@ -145,13 +145,13 @@
 #define DUNGEON_ATTACK_ANIM_DURATION 0.12f
 #define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
 #define DUNGEON_DISEASED_DAMAGE_PENALTY 1
-#define DUNGEON_DISEASED_DURATION_TURNS 5
+#define DUNGEON_DISEASED_DURATION_TURNS 10
 #define DUNGEON_POISON_DAMAGE_PER_TURN 1
-#define DUNGEON_POISON_DURATION_TURNS 5
-#define DUNGEON_BURN_DURATION_TURNS 5
-#define DUNGEON_WEBBED_DURATION_TURNS 5
+#define DUNGEON_POISON_DURATION_TURNS 2
+#define DUNGEON_BURN_DURATION_TURNS 2
+#define DUNGEON_WEBBED_DURATION_TURNS 10
 #define DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS 5
-#define DUNGEON_PHOENIX_ASH_REVIVE_DELAY_TURNS 5
+#define DUNGEON_FAMILIAR_ASH_REVIVE_DELAY_TURNS 10
 #define DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE 3
 #define DUNGEON_BEETLE_KAMIKAZE_AREA_RADIUS ((DUNGEON_BEETLE_KAMIKAZE_AREA_SIZE - 1) / 2)
 #define DUNGEON_ALIGNED_RANGED_TOO_CLOSE_DISTANCE 2
@@ -497,6 +497,13 @@ typedef struct {
 } Dungeon_Revive_Entry;
 
 typedef struct {
+    UNIT_ART_KIND kind;
+    Unit_Stats stats;
+    bool is_alive;
+    bool is_summoned;
+} Familiar_State;
+
+typedef struct {
     i16 x;
     i16 y;
     i16 distance_to_player;
@@ -657,6 +664,7 @@ typedef struct {
     u8 player_webbed_turns_remaining;
     float player_webbed_particle_spawn_timer;
     bool player_skip_turn_once;
+    Familiar_State familiar_states[PLAYER_CLASS_FAMILIAR_COUNT];
     UNIT_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
     i32 player_active_action_bar_slot;
     u32 player_damage_event_count;
@@ -1805,21 +1813,6 @@ static bool game_dungeon_build_player_status_text(const Game *game, char *buffer
     return has_status;
 }
 
-static void game_dungeon_reset_familiar_for_new_floor(Dungeon_Unit *unit)
-{
-    assert(unit != 0);
-
-    unit->stats.health = unit->stats.max_health;
-    game_dungeon_clear_diseased_status(unit);
-    game_dungeon_clear_poisoned_status(unit);
-    game_dungeon_clear_burning_status(unit);
-    game_dungeon_clear_webbed_status(unit);
-    unit->shaman_heal_cooldown_turns = 0;
-    unit->dash_cooldown_turns = 0;
-    unit->treant_knockback_cooldown_turns = 0;
-    unit->is_returning_to_player = false;
-}
-
 static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -2017,6 +2010,89 @@ static UNIT_AI_KIND game_get_unit_ai_kind(UNIT_ART_KIND kind)
     default:
         return UNIT_AI_BASIC_MELEE;
     }
+}
+
+static i32 game_player_get_familiar_slot_for_kind(const Game *game, UNIT_ART_KIND kind)
+{
+    const UNIT_ART_KIND *familiar_unit_kinds = 0;
+    if (!game_player_class_get_familiar_unit_kinds(game->player_class, &familiar_unit_kinds))
+        return -1;
+
+    for (i32 slot_idx = 0; slot_idx < PLAYER_CLASS_FAMILIAR_COUNT; slot_idx++) {
+        if (familiar_unit_kinds[slot_idx] == kind)
+            return slot_idx;
+    }
+
+    return -1;
+}
+
+static Familiar_State *game_player_get_familiar_state_for_kind(Game *game, UNIT_ART_KIND kind)
+{
+    i32 slot_idx = game_player_get_familiar_slot_for_kind(game, kind);
+    if (slot_idx < 0 || slot_idx >= PLAYER_CLASS_FAMILIAR_COUNT)
+        return 0;
+
+    return &game->familiar_states[slot_idx];
+}
+
+static void game_player_sync_action_bar_from_familiar_states(Game *game)
+{
+    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
+        Familiar_State *state = &game->familiar_states[slot_idx];
+        bool can_summon = state->is_alive && !state->is_summoned &&
+                          game_action_bar_familiar_unit_is_valid(state->kind);
+        game->player_action_bar[slot_idx] = can_summon ? state->kind : UNIT_ART_NONE;
+    }
+
+    game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+}
+
+static void game_player_reset_familiar_states(Game *game)
+{
+    for (i32 slot_idx = 0; slot_idx < PLAYER_CLASS_FAMILIAR_COUNT; slot_idx++) {
+        game->familiar_states[slot_idx] = (Familiar_State){
+            .kind = UNIT_ART_NONE,
+            .stats = {0},
+            .is_alive = false,
+            .is_summoned = false,
+        };
+    }
+
+    const UNIT_ART_KIND *familiar_unit_kinds = 0;
+    if (!game_player_class_get_familiar_unit_kinds(game->player_class, &familiar_unit_kinds))
+        return;
+
+    for (i32 slot_idx = 0; slot_idx < PLAYER_CLASS_FAMILIAR_COUNT; slot_idx++) {
+        UNIT_ART_KIND familiar_kind = familiar_unit_kinds[slot_idx];
+        if (!game_action_bar_familiar_unit_is_valid(familiar_kind))
+            continue;
+
+        Unit_Stats base_stats = game_get_unit_base_stats(familiar_kind);
+        game->familiar_states[slot_idx] = (Familiar_State){
+            .kind = familiar_kind,
+            .stats = base_stats,
+            .is_alive = true,
+            .is_summoned = false,
+        };
+    }
+}
+
+static void game_player_set_familiar_state_from_unit(Game *game, const Dungeon_Unit *unit,
+                                                     bool is_alive, bool is_summoned)
+{
+    assert(game != 0);
+    assert(unit != 0);
+
+    Familiar_State *state = game_player_get_familiar_state_for_kind(game, unit->kind);
+    if (state == 0)
+        return;
+
+    state->kind = unit->kind;
+    state->stats = unit->stats;
+    if (!is_alive)
+        state->stats.health = 0;
+    state->is_alive = is_alive;
+    state->is_summoned = is_summoned;
 }
 
 static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, u8 orientation,
@@ -2951,6 +3027,21 @@ static void game_dungeon_remove_unit_at(Game *game, i32 unit_idx)
     game->unit_count--;
 }
 
+static void game_dungeon_return_familiar_to_player(Game *game, i32 unit_idx)
+{
+    assert(game != 0);
+    assert(unit_idx >= 0);
+    assert(unit_idx < game->unit_count);
+
+    const Dungeon_Unit returning_unit = game->units[unit_idx];
+    if (returning_unit.is_friendly) {
+        game_player_set_familiar_state_from_unit(game, &returning_unit, true, false);
+        game_player_sync_action_bar_from_familiar_states(game);
+    }
+
+    game_dungeon_remove_unit_at(game, unit_idx);
+}
+
 static bool game_dungeon_enqueue_revive(Game *game, const Dungeon_Unit *unit, u32 delay_turns)
 {
     assert(game != 0);
@@ -3094,14 +3185,19 @@ static bool game_dungeon_apply_damage_to_unit(Game *game, i32 unit_idx, i32 dama
     Dungeon_Unit defeated_unit = *unit;
     game_dungeon_remove_unit_at(game, unit_idx);
 
+    if (defeated_unit.is_friendly) {
+        game_player_set_familiar_state_from_unit(game, &defeated_unit, false, false);
+        game_player_sync_action_bar_from_familiar_states(game);
+    }
+
     if (defeated_unit.kind == UNIT_ART_SLIME && defeated_unit.stats.max_health > 1)
         game_dungeon_spawn_slime_children(game, &defeated_unit);
 
     if (defeated_unit.kind == UNIT_ART_TROLL && defeated_unit.has_troll_blood)
         game_dungeon_enqueue_revive(game, &defeated_unit, DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS);
 
-    if (defeated_unit.kind == UNIT_ART_PHOENIX)
-        game_dungeon_enqueue_revive(game, &defeated_unit, DUNGEON_PHOENIX_ASH_REVIVE_DELAY_TURNS);
+    if (defeated_unit.kind == UNIT_ART_PHOENIX || defeated_unit.kind == UNIT_ART_IMP)
+        game_dungeon_enqueue_revive(game, &defeated_unit, DUNGEON_FAMILIAR_ASH_REVIVE_DELAY_TURNS);
 
     return true;
 }
@@ -3339,7 +3435,7 @@ static u8 game_dungeon_capture_living_familiars(const Game *game,
 }
 
 static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon_Unit *familiars,
-                                                       u8 familiar_count)
+                                                       u8 familiar_count, bool heal_to_full)
 {
     assert(game != 0);
     assert(familiars != 0);
@@ -3365,6 +3461,8 @@ static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon
 
         Dungeon_Unit *restored = &game->units[game->unit_count - 1];
         restored->stats = saved->stats;
+        if (heal_to_full)
+            restored->stats.health = restored->stats.max_health;
         restored->has_troll_blood = saved->has_troll_blood;
         restored->shaman_heal_cooldown_turns = saved->shaman_heal_cooldown_turns;
         restored->dash_cooldown_turns = saved->dash_cooldown_turns;
@@ -3380,13 +3478,19 @@ static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon
         restored->skip_friendly_turn_once = true;
         restored->skip_enemy_turn_once = false;
         restored->is_returning_to_player = false;
+
+        game_player_set_familiar_state_from_unit(game, restored, true, true);
     }
+
+    game_player_sync_action_bar_from_familiar_states(game);
 }
 
 static Color game_dungeon_get_revive_skull_tint(UNIT_ART_KIND kind)
 {
     if (kind == UNIT_ART_PHOENIX)
         return (Color){240, 92, 74, 255};
+    if (kind == UNIT_ART_IMP)
+        return BLACK;
     return WHITE;
 }
 
@@ -3395,6 +3499,7 @@ static void game_dungeon_process_revives(Game *game)
     assert(game != 0);
 
     bool revived_unit = false;
+    bool revived_familiar = false;
     for (i32 idx = 0; idx < DUNGEON_MAX_UNITS; idx++) {
         Dungeon_Revive_Entry *entry = &game->revive_entries[idx];
         if (!entry->active)
@@ -3432,10 +3537,17 @@ static void game_dungeon_process_revives(Game *game)
         revived->dash_cooldown_turns = 0;
         revived->treant_knockback_cooldown_turns = 0;
         revived->skip_enemy_turn_once = !revived->is_friendly;
+        if (revived->is_friendly) {
+            game_player_set_familiar_state_from_unit(game, revived, true, true);
+            revived_familiar = true;
+        }
 
         entry->active = false;
         revived_unit = true;
     }
+
+    if (revived_familiar)
+        game_player_sync_action_bar_from_familiar_states(game);
 
     if (revived_unit)
         game_dungeon_rebuild_line_of_sight(game);
@@ -6055,7 +6167,7 @@ static void game_dungeon_take_friendly_unit_turn(
 
         if (game_dungeon_cells_are_cardinal_neighbors(start_x, start_y, game->player_x,
                                                       game->player_y)) {
-            game_dungeon_remove_unit_at(game, unit_idx);
+            game_dungeon_return_familiar_to_player(game, unit_idx);
             return;
         }
 
@@ -6070,7 +6182,7 @@ static void game_dungeon_take_friendly_unit_turn(
 
         if (game_dungeon_cells_are_cardinal_neighbors(current_unit->x, current_unit->y,
                                                       game->player_x, game->player_y)) {
-            game_dungeon_remove_unit_at(game, unit_idx);
+            game_dungeon_return_familiar_to_player(game, unit_idx);
         }
 
         return;
@@ -7523,11 +7635,6 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     if (transitioning_floors)
         carried_familiar_count = game_dungeon_capture_living_familiars(game, carried_familiars);
 
-    if (transitioning_floors && first_floor_visit) {
-        for (u8 familiar_idx = 0; familiar_idx < carried_familiar_count; familiar_idx++)
-            game_dungeon_reset_familiar_for_new_floor(&carried_familiars[familiar_idx]);
-    }
-
     u32 floor_index = 0;
     if (!game_dungeon_resolve_floor_index_for_depth(game, depth, &floor_index))
         return false;
@@ -7542,9 +7649,9 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     game->dungeon_depth = depth;
 
     if (transitioning_floors && first_floor_visit) {
+        game_player_clear_action_bar(game);
         game->player_stats.health = game->player_stats.max_health;
         game_dungeon_clear_all_player_statuses(game);
-        game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
     }
 
     if (arrival_role == WORLD_ART_ROLE_STAIRS_DOWN || arrival_role == WORLD_ART_ROLE_STAIRS_UP) {
@@ -7574,7 +7681,8 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
     game_dungeon_restore_revealed_map_for_depth(game, depth);
 
     if (transitioning_floors && carried_familiar_count > 0) {
-        game_dungeon_restore_familiars_near_player(game, carried_familiars, carried_familiar_count);
+        game_dungeon_restore_familiars_near_player(game, carried_familiars, carried_familiar_count,
+                                                   first_floor_visit);
     }
 
     game_dungeon_rebuild_line_of_sight(game);
@@ -9308,20 +9416,8 @@ static void game_draw_health_hearts(Game *game, Vector2 top_left, i32 health, i3
 
 static void game_player_clear_action_bar(Game *game)
 {
-    for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
-        game->player_action_bar[slot_idx] = UNIT_ART_NONE;
-    }
-
-    const UNIT_ART_KIND *familiar_unit_kinds = 0;
-    if (game_player_class_get_familiar_unit_kinds(game->player_class, &familiar_unit_kinds)) {
-        for (i32 slot_idx = 0; slot_idx < DUNGEON_ACTION_BAR_SLOT_COUNT; slot_idx++) {
-            UNIT_ART_KIND familiar_kind = familiar_unit_kinds[slot_idx];
-            if (game_action_bar_familiar_unit_is_valid(familiar_kind))
-                game->player_action_bar[slot_idx] = familiar_kind;
-        }
-    }
-
-    game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+    game_player_reset_familiar_states(game);
+    game_player_sync_action_bar_from_familiar_states(game);
 }
 
 static bool game_player_action_bar_slot_has_familiar(const Game *game, i32 slot_idx)
@@ -9381,12 +9477,32 @@ static bool game_player_try_summon_active_action_bar_familiar(Game *game)
         return false;
     }
 
+    Familiar_State *summon_state = game_player_get_familiar_state_for_kind(game, summon_unit_kind);
+    if (summon_state == 0 || !summon_state->is_alive || summon_state->is_summoned) {
+        game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+        return false;
+    }
+
     u8 summon_orientation = game_dungeon_get_orientation_from_positions(
         game->player_x, game->player_y, target_x, target_y, game->player_orientation);
     game_dungeon_add_unit(game, target_x, target_y, summon_unit_kind, summon_orientation, true);
     assert(game->unit_count > 0);
-    game->units[game->unit_count - 1].skip_friendly_turn_once = true;
-    game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
+
+    Dungeon_Unit *summoned = &game->units[game->unit_count - 1];
+    u8 summon_max_health = summon_state->stats.max_health;
+    if (summon_max_health == 0)
+        summon_max_health = summoned->stats.max_health;
+    summoned->stats.max_health = summon_max_health;
+    summoned->stats.damage = summon_state->stats.damage;
+
+    u8 summon_health = min(summon_state->stats.health, summoned->stats.max_health);
+    if (summon_health == 0)
+        summon_health = summoned->stats.max_health;
+    summoned->stats.health = summon_health;
+    summoned->skip_friendly_turn_once = true;
+
+    game_player_set_familiar_state_from_unit(game, summoned, true, true);
+    game_player_sync_action_bar_from_familiar_states(game);
     return true;
 }
 
@@ -10086,14 +10202,14 @@ static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, 
         return;
     case UNIT_ART_IMP:
         snprintf(buffer, buffer_cap,
-                 "Ranged familiar that stacks burn and refreshes it to 5 turns per hit");
+                 "Ranged familiar that stacks burn and rises from ashes in 10 turns");
         return;
     case UNIT_ART_REAPER:
         snprintf(buffer, buffer_cap, "Warlock familiar that cleaves all adjacent enemies");
         return;
     case UNIT_ART_PHOENIX:
         snprintf(buffer, buffer_cap,
-                 "Druid familiar that applies stacking burn and revives in 5 turns");
+                 "Druid familiar that applies stacking burn and revives in 10 turns");
         return;
     case UNIT_ART_TREANT:
         snprintf(buffer, buffer_cap,
