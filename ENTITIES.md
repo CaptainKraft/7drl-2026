@@ -65,7 +65,7 @@ Unless otherwise noted, these will wear off in 5 turns.
 
 ### Turret
 - does not move
-- attacks horizontally/vertically/diagonally aligned enemy within range
+- attacks horizontally/vertically aligned enemy within range
 
 ---
 

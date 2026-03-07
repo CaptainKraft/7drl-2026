@@ -3659,7 +3659,7 @@ static bool game_dungeon_cells_are_line_aligned(i32 a_x, i32 a_y, i32 b_x, i32 b
     if (dy < 0)
         dy = -dy;
 
-    return dx == 0 || dy == 0 || dx == dy;
+    return dx == 0 || dy == 0;
 }
 
 static bool game_dungeon_get_line_step_towards_cell(i32 start_x, i32 start_y, i32 target_x,
@@ -3675,7 +3675,7 @@ static bool game_dungeon_get_line_step_towards_cell(i32 start_x, i32 start_y, i3
 
     i32 abs_dx = dx < 0 ? -dx : dx;
     i32 abs_dy = dy < 0 ? -dy : dy;
-    if (!(abs_dx == 0 || abs_dy == 0 || abs_dx == abs_dy))
+    if (!(abs_dx == 0 || abs_dy == 0))
         return false;
 
     *out_step_x = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
