@@ -349,6 +349,7 @@ typedef enum {
 typedef enum {
     DEBUG_FEATURE_SHOW_SPAWN_TO_EXIT_PATH,
     DEBUG_FEATURE_REVEAL_MAP,
+    DEBUG_FEATURE_INVULNERABLE,
     NUM_DEBUG_FEATURES,
 } DEBUG_FEATURE;
 
@@ -369,11 +370,18 @@ static const Debug_Feature_Def game_debug_feature_defs[NUM_DEBUG_FEATURES] = {
         .name = "Reveal map",
         .default_enabled = false,
     },
+    {
+        .feature = DEBUG_FEATURE_INVULNERABLE,
+        .name = "Invulnerable",
+        .default_enabled = false,
+    },
 };
 
 typedef enum {
     DEBUG_ACTION_TOGGLE_TESTING_AREA,
     DEBUG_ACTION_TOGGLE_VIEW,
+    DEBUG_ACTION_SKIP_TO_NEXT_FLOOR,
+    DEBUG_ACTION_SKIP_TO_PREVIOUS_FLOOR,
     DEBUG_ACTION_TRIGGER_WIN,
     NUM_DEBUG_ACTIONS,
 } DEBUG_ACTION;
@@ -391,6 +399,14 @@ static const Debug_Action_Def game_debug_action_defs[NUM_DEBUG_ACTIONS] = {
     {
         .action = DEBUG_ACTION_TOGGLE_VIEW,
         .name = "Sprite Preview",
+    },
+    {
+        .action = DEBUG_ACTION_SKIP_TO_NEXT_FLOOR,
+        .name = "Next Floor",
+    },
+    {
+        .action = DEBUG_ACTION_SKIP_TO_PREVIOUS_FLOOR,
+        .name = "Previous Floor",
     },
     {
         .action = DEBUG_ACTION_TRIGGER_WIN,
@@ -1386,7 +1402,9 @@ static Rectangle game_debug_hud_next_button_rect(Rectangle panel, float *in_out_
     return button;
 }
 
-static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_rebuild_floor)
+static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_rebuild_floor,
+                                    bool *out_transition_requested, u32 *out_transition_floor_depth,
+                                    WORLD_ART_ROLE *out_transition_arrival_role)
 {
 #if GAME_DEBUG_FEATURES
     switch (action) {
@@ -1420,6 +1438,20 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
             *out_rebuild_floor = true;
         }
         break;
+    case DEBUG_ACTION_SKIP_TO_NEXT_FLOOR:
+        if (!game->debug_in_testing_area && game->dungeon_depth + 1 < DUNGEON_RUN_FLOOR_COUNT) {
+            *out_transition_requested = true;
+            *out_transition_floor_depth = game->dungeon_depth + 1;
+            *out_transition_arrival_role = WORLD_ART_ROLE_STAIRS_UP;
+        }
+        break;
+    case DEBUG_ACTION_SKIP_TO_PREVIOUS_FLOOR:
+        if (!game->debug_in_testing_area && game->dungeon_depth > 0) {
+            *out_transition_requested = true;
+            *out_transition_floor_depth = game->dungeon_depth - 1;
+            *out_transition_arrival_role = WORLD_ART_ROLE_STAIRS_DOWN;
+        }
+        break;
     case DEBUG_ACTION_TRIGGER_WIN:
         game_open_end_menu(game, END_MENU_WIN);
         break;
@@ -1430,6 +1462,9 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
     (void)game;
     (void)action;
     (void)out_rebuild_floor;
+    (void)out_transition_requested;
+    (void)out_transition_floor_depth;
+    (void)out_transition_arrival_role;
 #endif
 }
 
@@ -3700,6 +3735,9 @@ static bool game_dungeon_apply_damage_to_unit(Game *game, i32 unit_idx, i32 dama
 static bool game_dungeon_apply_damage_to_player(Game *game, i32 damage, bool show_damage_fx)
 {
     assert(game != 0);
+
+    if (game_debug_feature_is_enabled(game, DEBUG_FEATURE_INVULNERABLE))
+        return false;
 
     u8 health_before = game->player_stats.health;
     bool player_defeated = game_unit_stats_take_damage(&game->player_stats, damage);
@@ -12677,6 +12715,10 @@ void game_update(Mem mem)
             (u8)((game->minimap_opacity_level + 1) % DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT);
 
     bool rebuild_floor = false;
+    bool debug_floor_transition_requested = false;
+    u32 debug_floor_transition_depth = game->dungeon_depth;
+    WORLD_ART_ROLE debug_floor_transition_arrival_role = WORLD_ART_ROLE_FLOOR;
+    bool debug_floor_transition_applied = false;
     bool debug_hud_consumed_left_click = false;
 
     if (GAME_DEBUG_FEATURES && game->debug_hud_visible && game->input.pressed[INPUT_MOUSE_LEFT]) {
@@ -12693,7 +12735,10 @@ void game_update(Mem mem)
                 if (handled_click || !game_point_in_rect(mouse, button))
                     continue;
 
-                game_debug_apply_action(game, game_debug_action_defs[idx].action, &rebuild_floor);
+                game_debug_apply_action(game, game_debug_action_defs[idx].action, &rebuild_floor,
+                                        &debug_floor_transition_requested,
+                                        &debug_floor_transition_depth,
+                                        &debug_floor_transition_arrival_role);
                 handled_click = true;
             }
 
@@ -12724,6 +12769,14 @@ void game_update(Mem mem)
 
     if (game_update_end_menu(game))
         return;
+
+    if (debug_floor_transition_requested) {
+        if (game_build_test_dungeon_for_depth(game, debug_floor_transition_depth,
+                                              debug_floor_transition_arrival_role)) {
+            game_center_dungeon_camera_on_player(game);
+            debug_floor_transition_applied = true;
+        }
+    }
 
     bool debug_testing_consumed_left_click =
         game_debug_testing_try_select_unit_from_action_bars(game, debug_hud_consumed_left_click);
@@ -12767,7 +12820,8 @@ void game_update(Mem mem)
     }
 
     bool player_took_turn = false;
-    bool skipped_player_update_for_debug_action = placed_debug_testing_unit;
+    bool skipped_player_update_for_debug_action =
+        placed_debug_testing_unit || debug_floor_transition_applied;
 
     if (game_debug_testing_unit_placement_is_active(game) && game->input.pressed[INPUT_BACK]) {
         game->debug_testing_unit_placement_active = false;
