@@ -7645,6 +7645,15 @@ static u32 game_dungeon_clamp_run_depth(u32 depth)
     return depth;
 }
 
+static u32 game_dungeon_get_return_wave_table_index_for_depth(u32 depth)
+{
+    u32 depth_idx = game_dungeon_clamp_run_depth(depth);
+    if (depth_idx >= DUNGEON_FINAL_FLOOR_DEPTH)
+        return 0;
+
+    return (DUNGEON_FINAL_FLOOR_DEPTH - 1) - depth_idx;
+}
+
 static i32 game_dungeon_enemy_spawn_count_for_depth(u32 depth)
 {
     u32 depth_idx = game_dungeon_clamp_run_depth(depth);
@@ -7713,8 +7722,41 @@ static UNIT_ART_KIND game_dungeon_pick_shaman_companion_kind_for_depth(RNG *rng,
     return UNIT_ART_GOBLIN_GRUNT;
 }
 
-static void game_dungeon_spawn_enemy_group(Game *game, RNG *rng, u32 enemy_depth,
-                                           i32 enemy_spawn_count, i32 stairs_up_x, i32 stairs_up_y)
+static UNIT_ART_KIND game_dungeon_pick_return_wave_enemy_kind_for_depth(RNG *rng, u32 depth)
+{
+    static const u8 return_enemy_kind_weights[DUNGEON_RUN_FLOOR_COUNT -
+                                              1][TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT] = {
+        {3, 6, 9, 6, 9, 9, 10, 14, 16, 18},  {2, 5, 8, 6, 8, 9, 11, 15, 16, 20},
+        {2, 4, 7, 6, 7, 9, 11, 16, 17, 21},  {1, 4, 6, 6, 6, 10, 12, 16, 18, 21},
+        {1, 3, 5, 6, 5, 10, 12, 17, 19, 22}, {1, 2, 4, 6, 4, 10, 12, 18, 20, 23},
+        {0, 2, 3, 6, 4, 10, 12, 18, 21, 24}, {0, 1, 3, 5, 3, 10, 12, 18, 22, 26},
+        {0, 1, 2, 5, 3, 10, 12, 18, 22, 27},
+    };
+
+    u32 table_idx = game_dungeon_get_return_wave_table_index_for_depth(depth);
+    i32 enemy_kind_idx = game_pick_weighted_index(rng, return_enemy_kind_weights[table_idx],
+                                                  TESTING_AREA_IMPLEMENTED_ENEMY_KIND_COUNT);
+    return game_testing_area_enemy_unit_kinds[enemy_kind_idx];
+}
+
+static UNIT_ART_KIND game_dungeon_pick_return_wave_shaman_companion_kind_for_depth(RNG *rng,
+                                                                                   u32 depth)
+{
+    static const u8 return_goblin_companion_weights[DUNGEON_RUN_FLOOR_COUNT - 1][2] = {
+        {6, 39}, {5, 40}, {4, 41}, {3, 42}, {2, 43}, {2, 44}, {1, 45}, {1, 46}, {0, 47},
+    };
+
+    u32 table_idx = game_dungeon_get_return_wave_table_index_for_depth(depth);
+    i32 companion_kind_idx =
+        game_pick_weighted_index(rng, return_goblin_companion_weights[table_idx], 2);
+
+    if (companion_kind_idx == 1)
+        return UNIT_ART_GOBLIN_WARRIOR;
+    return UNIT_ART_GOBLIN_GRUNT;
+}
+
+static void game_dungeon_spawn_enemy_group(Game *game, RNG *rng, u32 depth, i32 enemy_spawn_count,
+                                           i32 stairs_up_x, i32 stairs_up_y, bool is_return_wave)
 {
     assert(game != 0);
     assert(rng != 0);
@@ -7728,11 +7770,15 @@ static void game_dungeon_spawn_enemy_group(Game *game, RNG *rng, u32 enemy_depth
             break;
 
         u8 orientation = (u8)ck_rand_int(rng, 0, UNIT_ART_ORIENTATION_COUNT);
-        UNIT_ART_KIND enemy_kind = game_dungeon_pick_enemy_kind_for_depth(rng, enemy_depth);
+        UNIT_ART_KIND enemy_kind =
+            is_return_wave ? game_dungeon_pick_return_wave_enemy_kind_for_depth(rng, depth)
+                           : game_dungeon_pick_enemy_kind_for_depth(rng, depth);
 
         if (enemy_kind == UNIT_ART_GOBLIN_SHAMAN) {
             UNIT_ART_KIND companion_kind =
-                game_dungeon_pick_shaman_companion_kind_for_depth(rng, enemy_depth);
+                is_return_wave
+                    ? game_dungeon_pick_return_wave_shaman_companion_kind_for_depth(rng, depth)
+                    : game_dungeon_pick_shaman_companion_kind_for_depth(rng, depth);
             bool can_spawn_companion =
                 enemy_idx + 1 < enemy_spawn_count && game->unit_count + 1 < DUNGEON_MAX_UNITS;
             i16 companion_x = -1;
@@ -7758,19 +7804,10 @@ static void game_dungeon_spawn_enemy_group(Game *game, RNG *rng, u32 enemy_depth
     }
 }
 
-static u32 game_dungeon_get_return_wave_enemy_depth(u32 floor_depth)
-{
-    u32 return_depth = floor_depth + 1;
-    if (return_depth > DUNGEON_FINAL_FLOOR_DEPTH)
-        return DUNGEON_FINAL_FLOOR_DEPTH;
-    return return_depth;
-}
-
 static void game_dungeon_spawn_return_enemy_wave(Game *game, u32 depth, i32 entry_x, i32 entry_y)
 {
-    u32 enemy_depth = game_dungeon_get_return_wave_enemy_depth(depth);
-    game_dungeon_spawn_enemy_group(game, &game->dungeon_populate_rng, enemy_depth,
-                                   DUNGEON_RETURN_ENEMY_WAVE_COUNT, entry_x, entry_y);
+    game_dungeon_spawn_enemy_group(game, &game->dungeon_populate_rng, depth,
+                                   DUNGEON_RETURN_ENEMY_WAVE_COUNT, entry_x, entry_y, true);
 }
 
 static bool game_dungeon_cell_is_in_los_range_from_origin(const Game *game, i32 origin_x,
@@ -8112,7 +8149,7 @@ static bool game_dungeon_populate_test_entities(Game *game, u32 depth, bool incl
     }
 
     game_dungeon_spawn_enemy_group(game, &game->dungeon_populate_rng, depth, enemy_spawn_count,
-                                   stairs_up_x, stairs_up_y);
+                                   stairs_up_x, stairs_up_y, false);
 
     return true;
 }
