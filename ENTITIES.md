@@ -37,9 +37,16 @@ Unless otherwise noted, these will wear off in 5 turns.
 - move toward target
 - attack target when adjacent
 
-### Defend Melee
-- use follow behavior when no enemies are near target
-- basic melee behavior targeting nearest enemy when any enemies are near defense target
+### Dash
+- move away from target when too close
+- move towards closest tile with an aligned enemy
+- if target starts/ends turn aligned, dash to current/last position to attack
+
+### Dash Through
+- move towards closest tile with an aligned enemy
+- dash to last tile at range, dealing damage to all enemies aligned
+- if any tile in path of dash is blocked, end at the tile before the first blocked tile
+- if target tile is occupied, move other unit to nearest open tile
 
 ### Basic Ranged
 - move toward target when out of range
@@ -47,14 +54,10 @@ Unless otherwise noted, these will wear off in 5 turns.
 - attack target when in range
 - range is defined by lower and upper bounds
 
-### Defend Ranged
-- use follow behavior when no enemies are near target
-- basic ranged behavior targeting nearest enemy when any enemies are near defense target
-
-### Dash
+### Aligned Ranged
 - move away from target when too close
 - move towards the closest tile that is within a straight line of the target
-- if target starts/ends turn aligned, dash to current/last position to attack
+- attack aligned target within range
 
 ### Kamikaze
 - move toward target
@@ -95,7 +98,7 @@ Unless otherwise noted, these will wear off in 5 turns.
 - 2hp, 2dmg
 - target: nearest aligned enemy
 - can move up to 2 tiles per turn
-- dash, cooldown: 5 turns
+- dash: range5, cooldown5
 
 ### Beetle
 - 1hp, 3dmg
@@ -132,19 +135,20 @@ Unless otherwise noted, these will wear off in 5 turns.
 ## Warlock Familiars
 
 ### Imp
-- 5hp, 3dmg
+- 3hp, 1dmg
 - target: nearest enemy
 - basic ranged
-- applies increasing stacks of burn on each attack
+- applies increasing stacks of burn on attack
 
 ### Beholder
-- 10hp, 2dmg
+- 5hp, 2dmg
 - target: nearest aligned enemy
-- turrent 10range
+- aligned ranged: 7range
 
 ### Reaper
-- 5hp, 3dmg
+- 10hp, 4dmg
 - target: nearest enemy
+- attacks all adjacent tiles
 
 ## Druid Familiars
 
@@ -152,16 +156,19 @@ Unless otherwise noted, these will wear off in 5 turns.
 - 5hp, 3dmg
 - target: nearest enemy
 - basic melee
+- applies increasing stacks of burn on attack
 
 ### Treant
-- 5hp, 3dmg
+- 10hp, 2dmg
 - target: nearest enemy
 - basic melee
+- knocks back target on attack
 
 ### Griffon
-- 5hp, 3dmg
+- 7hp, 5dmg
 - target: nearest enemy
-- basic melee
+- dash through: range5, cooldown7
+- basic melee when dash on cooldown
 
 ---
 
