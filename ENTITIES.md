@@ -6,18 +6,21 @@ Only one familiar can be alive at any given time, so the action bar should be di
 
 ## Effects
 
+Status effects will not have an effect on the turn they are applied. For example, if a unit becomes burned, it will
+take the first point of fire dmg on the turn after it was applied.
+
 ### Burn
-- take 1 dmg each turn for each stack
+- take 1 dmg every other turn for each stack
 - adding a stack of burn resets the time to wear off
-- wears off in 2 turns
+- wears off in 4 turns
 
 ### Disease
 - dmg reduced by 1
 - wears off in 10 turns
 
 ### Poison
-- take 1 dmg each turn
-- wears off in 2 turns
+- take 1 dmg every other turn
+- wears off in 4 turns
 
 ### Webbed
 - skip every other turn
