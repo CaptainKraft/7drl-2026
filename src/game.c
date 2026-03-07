@@ -6405,8 +6405,11 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
             continue;
         }
 
-        if (unit->poisoned_applied_this_turn)
+        if (unit->poisoned_applied_this_turn) {
             unit->poisoned_applied_this_turn = false;
+            unit_idx++;
+            continue;
+        }
 
         if (game_dungeon_apply_damage_to_unit(game, unit_idx, DUNGEON_POISON_DAMAGE_PER_TURN,
                                               DAMAGE_KIND_NORMAL, false)) {
@@ -6431,8 +6434,10 @@ static void game_dungeon_apply_player_poison_turn_damage(Game *game)
         return;
     }
 
-    if (game->player_poisoned_applied_this_turn)
+    if (game->player_poisoned_applied_this_turn) {
         game->player_poisoned_applied_this_turn = false;
+        return;
+    }
 
     game_dungeon_apply_damage_to_player(game, DUNGEON_POISON_DAMAGE_PER_TURN, false);
 
@@ -6483,11 +6488,14 @@ static void game_dungeon_apply_burn_turn_damage(Game *game)
             continue;
         }
 
-        if (unit->burning_applied_this_turn)
-            unit->burning_applied_this_turn = false;
-
         if (unit->burn_turns_remaining == 0) {
             game_dungeon_clear_burning_status(unit);
+            unit_idx++;
+            continue;
+        }
+
+        if (unit->burning_applied_this_turn) {
+            unit->burning_applied_this_turn = false;
             unit_idx++;
             continue;
         }
@@ -6514,8 +6522,10 @@ static void game_dungeon_apply_player_burn_turn_damage(Game *game)
         return;
     }
 
-    if (game->player_burning_applied_this_turn)
+    if (game->player_burning_applied_this_turn) {
         game->player_burning_applied_this_turn = false;
+        return;
+    }
 
     i32 burn_damage = max((i32)game->player_burn_turns_active, 1);
     game_dungeon_apply_damage_to_player(game, burn_damage, false);
