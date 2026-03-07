@@ -4373,6 +4373,11 @@ static bool game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
     };
 
     i32 preferred_distance = (desired_min_distance + desired_max_distance) / 2;
+    bool prefer_player_alignment =
+        unit->is_friendly && game_dungeon_cell_in_bounds(game->player_x, game->player_y);
+    i32 to_player_x = game->player_x - start_x;
+    i32 to_player_y = game->player_y - start_y;
+
     bool has_best = false;
     i32 best_x = start_x;
     i32 best_y = start_y;
@@ -4380,6 +4385,13 @@ static bool game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
     i16 best_nearest_enemy_distance = 0;
     i32 best_anchor_error = 0;
     i32 best_center_error = 0;
+    i32 best_player_alignment = 0;
+    i32 best_player_distance_sq = 0;
+    if (prefer_player_alignment) {
+        i32 dx_to_player = start_x - game->player_x;
+        i32 dy_to_player = start_y - game->player_y;
+        best_player_distance_sq = dx_to_player * dx_to_player + dy_to_player * dy_to_player;
+    }
 
     for (i32 candidate_idx = 0; candidate_idx < 5; candidate_idx++) {
         i32 nx = start_x + candidate_offsets[candidate_idx][0];
@@ -4412,6 +4424,18 @@ static bool game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
         if (center_error < 0)
             center_error = -center_error;
 
+        i32 player_alignment = 0;
+        i32 player_distance_sq = 0;
+        if (prefer_player_alignment) {
+            i32 step_x = nx - start_x;
+            i32 step_y = ny - start_y;
+            player_alignment = step_x * to_player_x + step_y * to_player_y;
+
+            i32 dx_to_player = nx - game->player_x;
+            i32 dy_to_player = ny - game->player_y;
+            player_distance_sq = dx_to_player * dx_to_player + dy_to_player * dy_to_player;
+        }
+
         bool is_better = false;
         if (!has_best) {
             is_better = true;
@@ -4423,6 +4447,10 @@ static bool game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
             is_better = anchor_error < best_anchor_error;
         } else if (center_error != best_center_error) {
             is_better = center_error < best_center_error;
+        } else if (prefer_player_alignment && player_alignment != best_player_alignment) {
+            is_better = player_alignment > best_player_alignment;
+        } else if (prefer_player_alignment && player_distance_sq != best_player_distance_sq) {
+            is_better = player_distance_sq < best_player_distance_sq;
         }
 
         if (!is_better)
@@ -4435,6 +4463,10 @@ static bool game_dungeon_try_move_basic_ranged_familiar_to_distance_range(
         best_nearest_enemy_distance = nearest_enemy_distance;
         best_anchor_error = anchor_error;
         best_center_error = center_error;
+        if (prefer_player_alignment) {
+            best_player_alignment = player_alignment;
+            best_player_distance_sq = player_distance_sq;
+        }
     }
 
     if (!has_best)
@@ -4504,6 +4536,17 @@ static bool game_dungeon_try_move_unit_away_from_cell(Game *game, i32 unit_idx, 
     i32 best_x = start_x;
     i32 best_y = start_y;
     i16 best_distance = current_distance;
+    bool prefer_player_alignment =
+        unit->is_friendly && game_dungeon_cell_in_bounds(game->player_x, game->player_y);
+    i32 to_player_x = game->player_x - start_x;
+    i32 to_player_y = game->player_y - start_y;
+    i32 best_player_alignment = 0;
+    i32 best_player_distance_sq = 0;
+    if (prefer_player_alignment) {
+        i32 dx_to_player = start_x - game->player_x;
+        i32 dy_to_player = start_y - game->player_y;
+        best_player_distance_sq = dx_to_player * dx_to_player + dy_to_player * dy_to_player;
+    }
 
     for (i32 n = 0; n < 4; n++) {
         i32 nx = start_x + neighbor_offsets[n][0];
@@ -4518,12 +4561,41 @@ static bool game_dungeon_try_move_unit_away_from_cell(Game *game, i32 unit_idx, 
         i16 next_distance = distance_to_target[ny][nx];
         if (next_distance < 0 || next_distance >= DUNGEON_PATH_UNREACHABLE)
             continue;
-        if (next_distance <= best_distance)
+
+        i32 player_alignment = 0;
+        i32 player_distance_sq = 0;
+        if (prefer_player_alignment) {
+            i32 step_x = nx - start_x;
+            i32 step_y = ny - start_y;
+            player_alignment = step_x * to_player_x + step_y * to_player_y;
+
+            i32 dx_to_player = nx - game->player_x;
+            i32 dy_to_player = ny - game->player_y;
+            player_distance_sq = dx_to_player * dx_to_player + dy_to_player * dy_to_player;
+        }
+
+        bool is_better = false;
+        if (next_distance > best_distance) {
+            is_better = true;
+        } else if (next_distance == best_distance && prefer_player_alignment) {
+            if (player_alignment > best_player_alignment)
+                is_better = true;
+            else if (player_alignment == best_player_alignment &&
+                     player_distance_sq < best_player_distance_sq) {
+                is_better = true;
+            }
+        }
+
+        if (!is_better)
             continue;
 
         best_distance = next_distance;
         best_x = nx;
         best_y = ny;
+        if (prefer_player_alignment) {
+            best_player_alignment = player_alignment;
+            best_player_distance_sq = player_distance_sq;
+        }
     }
 
     if (best_x == start_x && best_y == start_y)
