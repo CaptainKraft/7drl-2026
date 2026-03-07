@@ -129,7 +129,9 @@
 #define DUNGEON_ATTACK_ANIM_DURATION 0.12f
 #define DUNGEON_ATTACK_DASH_DISTANCE_TILES 0.26f
 #define DUNGEON_DISEASED_DAMAGE_PENALTY 1
+#define DUNGEON_DISEASED_DURATION_TURNS 5
 #define DUNGEON_POISON_DAMAGE_PER_TURN 1
+#define DUNGEON_POISON_DURATION_TURNS 5
 #define DUNGEON_BURN_DURATION_TURNS 5
 #define DUNGEON_WEBBED_DURATION_TURNS 5
 #define DUNGEON_TROLL_BLOOD_REVIVE_DELAY_TURNS 5
@@ -232,6 +234,7 @@ typedef enum {
     INPUT_ACTION_SLOT_4,
     INPUT_ACTION_SLOT_5,
     INPUT_FAMILIAR_WAIT,
+    INPUT_FAMILIAR_ENRAGE,
     INPUT_FAMILIAR_RETURN,
     INPUT_BACK,
     INPUT_CONFIRM,
@@ -252,6 +255,7 @@ typedef struct {
 typedef enum {
     FAMILIAR_TURN_COMMAND_NONE,
     FAMILIAR_TURN_COMMAND_WAIT,
+    FAMILIAR_TURN_COMMAND_ENRAGE,
     FAMILIAR_TURN_COMMAND_RETURN,
 } FAMILIAR_TURN_COMMAND;
 
@@ -381,18 +385,22 @@ typedef struct {
     bool is_awake;
     u8 turns_out_of_player_los;
     bool is_diseased;
+    u8 diseased_turns_remaining;
     float diseased_particle_spawn_timer;
     bool is_poisoned;
+    u8 poisoned_turns_remaining;
     bool poisoned_applied_this_turn;
     float poisoned_particle_spawn_timer;
     bool is_burning;
     bool burning_applied_this_turn;
     u8 burn_turns_active;
     u8 burn_turns_remaining;
+    float burning_particle_spawn_timer;
     bool is_webbed;
     bool webbed_applied_this_turn;
     bool webbed_skip_next_turn;
     u8 webbed_turns_remaining;
+    float webbed_particle_spawn_timer;
     bool has_troll_blood;
     u8 shaman_heal_cooldown_turns;
     u32 last_damaged_player_event;
@@ -422,6 +430,7 @@ typedef struct {
     float elapsed;
     float duration;
     float delay;
+    Color color;
     bool active;
 } Dungeon_Web_Projectile;
 
@@ -582,10 +591,23 @@ typedef struct {
     u8 player_orientation;
     PLAYER_CLASS player_class;
     Unit_Stats player_stats;
+    bool player_is_diseased;
+    u8 player_diseased_turns_remaining;
+    float player_diseased_particle_spawn_timer;
+    bool player_is_poisoned;
+    bool player_poisoned_applied_this_turn;
+    u8 player_poisoned_turns_remaining;
+    float player_poisoned_particle_spawn_timer;
+    bool player_is_burning;
+    bool player_burning_applied_this_turn;
+    u8 player_burn_turns_active;
+    u8 player_burn_turns_remaining;
+    float player_burning_particle_spawn_timer;
     bool player_is_webbed;
     bool player_webbed_applied_this_turn;
     bool player_webbed_skip_next_turn;
     u8 player_webbed_turns_remaining;
+    float player_webbed_particle_spawn_timer;
     UNIT_ART_KIND player_action_bar[DUNGEON_ACTION_BAR_SLOT_COUNT];
     i32 player_active_action_bar_slot;
     u32 player_damage_event_count;
@@ -607,6 +629,7 @@ static void game_player_clear_action_bar(Game *game);
 static bool game_dungeon_cell_is_occupied(const Game *game, i32 x, i32 y);
 static u64 game_next_dungeon_seed(Game *game);
 static void game_dungeon_clear_floor_reveal_cache(Game *game);
+static void game_dungeon_store_revealed_map_for_depth(Game *game, u32 depth);
 
 static const Dungeon_HBW_Template_Def game_dungeon_hbw_templates[] = {
     {.path = "assets/herringbone_templates/template_simple_caves_2_wide.png",
@@ -1011,6 +1034,11 @@ static void game_debug_apply_action(Game *game, DEBUG_ACTION action, bool *out_r
 #if GAME_DEBUG_FEATURES
     switch (action) {
     case DEBUG_ACTION_TOGGLE_TESTING_AREA:
+        if (!game->debug_in_testing_area && game->dungeon_floor_seed_count > game->dungeon_depth &&
+            game->dungeon_depth < DUNGEON_MAX_FLOOR_DEPTH) {
+            game_dungeon_store_revealed_map_for_depth(game, game->dungeon_depth);
+        }
+
         game->debug_in_testing_area = !game->debug_in_testing_area;
         game->debug_testing_unit_placement_active = false;
         game->debug_testing_unit_placement_is_friendly = false;
@@ -1435,6 +1463,55 @@ static bool game_unit_stats_heal(Unit_Stats *stats, i32 amount)
     return did_heal;
 }
 
+static void game_dungeon_clear_diseased_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    unit->is_diseased = false;
+    unit->diseased_turns_remaining = 0;
+    unit->diseased_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_clear_poisoned_status(Dungeon_Unit *unit)
+{
+    assert(unit != 0);
+
+    unit->is_poisoned = false;
+    unit->poisoned_turns_remaining = 0;
+    unit->poisoned_applied_this_turn = false;
+    unit->poisoned_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_clear_player_diseased_status(Game *game)
+{
+    assert(game != 0);
+
+    game->player_is_diseased = false;
+    game->player_diseased_turns_remaining = 0;
+    game->player_diseased_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_clear_player_poisoned_status(Game *game)
+{
+    assert(game != 0);
+
+    game->player_is_poisoned = false;
+    game->player_poisoned_applied_this_turn = false;
+    game->player_poisoned_turns_remaining = 0;
+    game->player_poisoned_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_clear_player_burning_status(Game *game)
+{
+    assert(game != 0);
+
+    game->player_is_burning = false;
+    game->player_burning_applied_this_turn = false;
+    game->player_burn_turns_active = 0;
+    game->player_burn_turns_remaining = 0;
+    game->player_burning_particle_spawn_timer = 0.0f;
+}
+
 static void game_dungeon_clear_webbed_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
@@ -1443,6 +1520,7 @@ static void game_dungeon_clear_webbed_status(Dungeon_Unit *unit)
     unit->webbed_applied_this_turn = false;
     unit->webbed_skip_next_turn = false;
     unit->webbed_turns_remaining = 0;
+    unit->webbed_particle_spawn_timer = 0.0f;
 }
 
 static void game_dungeon_clear_player_webbed_status(Game *game)
@@ -1453,6 +1531,17 @@ static void game_dungeon_clear_player_webbed_status(Game *game)
     game->player_webbed_applied_this_turn = false;
     game->player_webbed_skip_next_turn = false;
     game->player_webbed_turns_remaining = 0;
+    game->player_webbed_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_clear_all_player_statuses(Game *game)
+{
+    assert(game != 0);
+
+    game_dungeon_clear_player_diseased_status(game);
+    game_dungeon_clear_player_poisoned_status(game);
+    game_dungeon_clear_player_burning_status(game);
+    game_dungeon_clear_player_webbed_status(game);
 }
 
 static void game_dungeon_clear_burning_status(Dungeon_Unit *unit)
@@ -1463,16 +1552,15 @@ static void game_dungeon_clear_burning_status(Dungeon_Unit *unit)
     unit->burning_applied_this_turn = false;
     unit->burn_turns_active = 0;
     unit->burn_turns_remaining = 0;
+    unit->burning_particle_spawn_timer = 0.0f;
 }
 
 static void game_dungeon_apply_diseased_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
 
-    if (unit->is_diseased)
-        return;
-
     unit->is_diseased = true;
+    unit->diseased_turns_remaining = DUNGEON_DISEASED_DURATION_TURNS;
     unit->diseased_particle_spawn_timer = 0.0f;
 }
 
@@ -1480,12 +1568,39 @@ static void game_dungeon_apply_poisoned_status(Dungeon_Unit *unit)
 {
     assert(unit != 0);
 
-    if (unit->is_poisoned)
+    if (unit->is_poisoned) {
+        unit->poisoned_turns_remaining = DUNGEON_POISON_DURATION_TURNS;
         return;
+    }
 
     unit->is_poisoned = true;
+    unit->poisoned_turns_remaining = DUNGEON_POISON_DURATION_TURNS;
     unit->poisoned_applied_this_turn = true;
     unit->poisoned_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_apply_player_diseased_status(Game *game)
+{
+    assert(game != 0);
+
+    game->player_is_diseased = true;
+    game->player_diseased_turns_remaining = DUNGEON_DISEASED_DURATION_TURNS;
+    game->player_diseased_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_apply_player_poisoned_status(Game *game)
+{
+    assert(game != 0);
+
+    if (game->player_is_poisoned) {
+        game->player_poisoned_turns_remaining = DUNGEON_POISON_DURATION_TURNS;
+        return;
+    }
+
+    game->player_is_poisoned = true;
+    game->player_poisoned_applied_this_turn = true;
+    game->player_poisoned_turns_remaining = DUNGEON_POISON_DURATION_TURNS;
+    game->player_poisoned_particle_spawn_timer = 0.0f;
 }
 
 static void game_dungeon_apply_burning_status(Dungeon_Unit *unit)
@@ -1497,6 +1612,19 @@ static void game_dungeon_apply_burning_status(Dungeon_Unit *unit)
     if (unit->burn_turns_active < 255)
         unit->burn_turns_active++;
     unit->burn_turns_remaining = DUNGEON_BURN_DURATION_TURNS;
+    unit->burning_particle_spawn_timer = 0.0f;
+}
+
+static void game_dungeon_apply_player_burning_status(Game *game)
+{
+    assert(game != 0);
+
+    game->player_is_burning = true;
+    game->player_burning_applied_this_turn = true;
+    if (game->player_burn_turns_active < 255)
+        game->player_burn_turns_active++;
+    game->player_burn_turns_remaining = DUNGEON_BURN_DURATION_TURNS;
+    game->player_burning_particle_spawn_timer = 0.0f;
 }
 
 static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
@@ -1505,8 +1633,9 @@ static void game_dungeon_apply_webbed_status(Dungeon_Unit *unit)
 
     unit->is_webbed = true;
     unit->webbed_applied_this_turn = true;
-    unit->webbed_skip_next_turn = true;
+    unit->webbed_skip_next_turn = false;
     unit->webbed_turns_remaining = DUNGEON_WEBBED_DURATION_TURNS;
+    unit->webbed_particle_spawn_timer = 0.0f;
 }
 
 static void game_dungeon_apply_player_webbed_status(Game *game)
@@ -1515,8 +1644,9 @@ static void game_dungeon_apply_player_webbed_status(Game *game)
 
     game->player_is_webbed = true;
     game->player_webbed_applied_this_turn = true;
-    game->player_webbed_skip_next_turn = true;
+    game->player_webbed_skip_next_turn = false;
     game->player_webbed_turns_remaining = DUNGEON_WEBBED_DURATION_TURNS;
+    game->player_webbed_particle_spawn_timer = 0.0f;
 }
 
 static void game_status_text_append(char *buffer, u32 buffer_cap, bool *in_out_has_status,
@@ -1546,10 +1676,18 @@ static bool game_dungeon_build_unit_status_text(const Dungeon_Unit *unit, char *
     buffer[0] = '\0';
     bool has_status = false;
 
-    if (unit->is_diseased)
-        game_status_text_append(buffer, buffer_cap, &has_status, "Diseased");
-    if (unit->is_poisoned)
-        game_status_text_append(buffer, buffer_cap, &has_status, "Poisoned");
+    if (unit->is_diseased) {
+        char diseased_label[28];
+        snprintf(diseased_label, sizeof(diseased_label), "Diseased (%dt)",
+                 (i32)unit->diseased_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, diseased_label);
+    }
+    if (unit->is_poisoned) {
+        char poisoned_label[28];
+        snprintf(poisoned_label, sizeof(poisoned_label), "Poisoned (%dt)",
+                 (i32)unit->poisoned_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, poisoned_label);
+    }
     if (unit->is_burning) {
         char burn_label[40];
         i32 burn_stacks = max((i32)unit->burn_turns_active, 1);
@@ -1576,9 +1714,31 @@ static bool game_dungeon_build_player_status_text(const Game *game, char *buffer
     buffer[0] = '\0';
     bool has_status = false;
 
+    if (game->player_is_diseased) {
+        char diseased_label[28];
+        snprintf(diseased_label, sizeof(diseased_label), "Diseased: %d",
+                 (i32)game->player_diseased_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, diseased_label);
+    }
+
+    if (game->player_is_poisoned) {
+        char poisoned_label[28];
+        snprintf(poisoned_label, sizeof(poisoned_label), "Poisoned: %d",
+                 (i32)game->player_poisoned_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, poisoned_label);
+    }
+
+    if (game->player_is_burning) {
+        char burn_label[32];
+        i32 burn_stacks = max((i32)game->player_burn_turns_active, 1);
+        snprintf(burn_label, sizeof(burn_label), "Burn x%d: %d", burn_stacks,
+                 (i32)game->player_burn_turns_remaining);
+        game_status_text_append(buffer, buffer_cap, &has_status, burn_label);
+    }
+
     if (game->player_is_webbed) {
-        char webbed_label[28];
-        snprintf(webbed_label, sizeof(webbed_label), "Webbed (%dt)",
+        char webbed_label[24];
+        snprintf(webbed_label, sizeof(webbed_label), "Webbed: %d",
                  (i32)game->player_webbed_turns_remaining);
         game_status_text_append(buffer, buffer_cap, &has_status, webbed_label);
     }
@@ -1591,11 +1751,8 @@ static void game_dungeon_reset_familiar_for_new_floor(Dungeon_Unit *unit)
     assert(unit != 0);
 
     unit->stats.health = unit->stats.max_health;
-    unit->is_diseased = false;
-    unit->diseased_particle_spawn_timer = 0.0f;
-    unit->is_poisoned = false;
-    unit->poisoned_applied_this_turn = false;
-    unit->poisoned_particle_spawn_timer = 0.0f;
+    game_dungeon_clear_diseased_status(unit);
+    game_dungeon_clear_poisoned_status(unit);
     game_dungeon_clear_burning_status(unit);
     game_dungeon_clear_webbed_status(unit);
     unit->shaman_heal_cooldown_turns = 0;
@@ -1609,6 +1766,17 @@ static i32 game_dungeon_get_unit_attack_damage(const Dungeon_Unit *unit)
 
     i32 damage = (i32)unit->stats.damage;
     if (unit->is_diseased)
+        damage = max(0, damage - DUNGEON_DISEASED_DAMAGE_PENALTY);
+
+    return damage;
+}
+
+static i32 game_dungeon_get_player_attack_damage(const Game *game)
+{
+    assert(game != 0);
+
+    i32 damage = (i32)game->player_stats.damage;
+    if (game->player_is_diseased)
         damage = max(0, damage - DUNGEON_DISEASED_DAMAGE_PENALTY);
 
     return damage;
@@ -1816,18 +1984,22 @@ static void game_dungeon_add_unit(Game *game, i32 x, i32 y, UNIT_ART_KIND kind, 
         .is_awake = false,
         .turns_out_of_player_los = 0,
         .is_diseased = false,
+        .diseased_turns_remaining = 0,
         .diseased_particle_spawn_timer = 0.0f,
         .is_poisoned = false,
+        .poisoned_turns_remaining = 0,
         .poisoned_applied_this_turn = false,
         .poisoned_particle_spawn_timer = 0.0f,
         .is_burning = false,
         .burning_applied_this_turn = false,
         .burn_turns_active = 0,
         .burn_turns_remaining = 0,
+        .burning_particle_spawn_timer = 0.0f,
         .is_webbed = false,
         .webbed_applied_this_turn = false,
         .webbed_skip_next_turn = false,
         .webbed_turns_remaining = 0,
+        .webbed_particle_spawn_timer = 0.0f,
         .has_troll_blood = kind == UNIT_ART_TROLL,
         .shaman_heal_cooldown_turns = 0,
         .move_anim_active = false,
@@ -3003,11 +3175,8 @@ static void game_dungeon_restore_familiars_near_player(Game *game, const Dungeon
         restored->dash_cooldown_turns = saved->dash_cooldown_turns;
         restored->is_awake = false;
         restored->turns_out_of_player_los = 0;
-        restored->is_diseased = false;
-        restored->diseased_particle_spawn_timer = 0.0f;
-        restored->is_poisoned = false;
-        restored->poisoned_applied_this_turn = false;
-        restored->poisoned_particle_spawn_timer = 0.0f;
+        game_dungeon_clear_diseased_status(restored);
+        game_dungeon_clear_poisoned_status(restored);
         game_dungeon_clear_burning_status(restored);
         restored->last_damaged_player_event = 0;
         game_dungeon_clear_webbed_status(restored);
@@ -3044,11 +3213,8 @@ static void game_dungeon_process_troll_blood_revives(Game *game)
         Dungeon_Unit *revived = &game->units[game->unit_count - 1];
         revived->is_awake = false;
         revived->turns_out_of_player_los = 0;
-        revived->is_diseased = false;
-        revived->diseased_particle_spawn_timer = 0.0f;
-        revived->is_poisoned = false;
-        revived->poisoned_applied_this_turn = false;
-        revived->poisoned_particle_spawn_timer = 0.0f;
+        game_dungeon_clear_diseased_status(revived);
+        game_dungeon_clear_poisoned_status(revived);
         game_dungeon_clear_burning_status(revived);
         game_dungeon_clear_webbed_status(revived);
         revived->has_troll_blood = true;
@@ -3303,7 +3469,7 @@ static void game_dungeon_begin_player_attack_animation(Game *game, i32 start_x, 
 }
 
 static void game_dungeon_spawn_web_projectile(Game *game, i32 start_x, i32 start_y, i32 target_x,
-                                              i32 target_y, float start_delay)
+                                              i32 target_y, float start_delay, Color color)
 {
     assert(game != 0);
 
@@ -3319,6 +3485,7 @@ static void game_dungeon_spawn_web_projectile(Game *game, i32 start_x, i32 start
         .elapsed = 0.0f,
         .duration = DUNGEON_WEB_PROJECTILE_DURATION,
         .delay = max(0.0f, start_delay),
+        .color = color,
         .active = true,
     };
 }
@@ -4409,6 +4576,13 @@ static void game_dungeon_take_basic_melee_turn(Game *game, i32 unit_idx,
                 game->player_damage_event_count = 1;
             unit->last_damaged_player_event = game->player_damage_event_count;
 
+            if (unit->kind == UNIT_ART_RAT)
+                game_dungeon_apply_player_diseased_status(game);
+            else if (unit->kind == UNIT_ART_COBRA)
+                game_dungeon_apply_player_poisoned_status(game);
+            else if (unit->kind == UNIT_ART_IMP)
+                game_dungeon_apply_player_burning_status(game);
+
             game_unit_stats_take_damage(&game->player_stats, attack_damage);
             return;
         }
@@ -4483,12 +4657,21 @@ static void game_dungeon_take_basic_ranged_turn(Game *game, i32 unit_idx,
         game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
                                                  attack_delay);
 
+        if (unit->kind == UNIT_ART_IMP) {
+            game_dungeon_spawn_web_projectile(game, start_x, start_y, target_x, target_y,
+                                              attack_delay, (Color){244, 80, 66, 232});
+        }
+
         i32 attack_damage = game_dungeon_get_unit_attack_damage(unit);
         if (target->target_is_player) {
             game->player_damage_event_count++;
             if (game->player_damage_event_count == 0)
                 game->player_damage_event_count = 1;
             unit->last_damaged_player_event = game->player_damage_event_count;
+
+            if (unit->kind == UNIT_ART_IMP)
+                game_dungeon_apply_player_burning_status(game);
+
             game_unit_stats_take_damage(&game->player_stats, attack_damage);
             return;
         }
@@ -4736,7 +4919,8 @@ static void game_dungeon_take_spider_turn(Game *game, i32 unit_idx)
         game_dungeon_unit_can_see_cell(game, start_x, start_y, target_x, target_y)) {
         game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, target_x, target_y,
                                                  attack_delay);
-        game_dungeon_spawn_web_projectile(game, start_x, start_y, target_x, target_y, attack_delay);
+        game_dungeon_spawn_web_projectile(game, start_x, start_y, target_x, target_y, attack_delay,
+                                          (Color){244, 247, 255, 232});
         if (target_unit != 0 && unit->is_friendly && !target_unit->is_friendly) {
             target_unit->is_awake = true;
             target_unit->turns_out_of_player_los = 0;
@@ -4910,6 +5094,16 @@ static bool game_dungeon_unit_should_skip_webbed_turn(Dungeon_Unit *unit)
 
     if (unit->webbed_applied_this_turn) {
         unit->webbed_applied_this_turn = false;
+
+        if (unit->webbed_turns_remaining == 0) {
+            game_dungeon_clear_webbed_status(unit);
+            return false;
+        }
+
+        unit->webbed_turns_remaining--;
+        if (unit->webbed_turns_remaining == 0)
+            game_dungeon_clear_webbed_status(unit);
+
         return true;
     }
 
@@ -4936,6 +5130,16 @@ static bool game_dungeon_player_should_skip_webbed_turn(Game *game)
 
     if (game->player_webbed_applied_this_turn) {
         game->player_webbed_applied_this_turn = false;
+
+        if (game->player_webbed_turns_remaining == 0) {
+            game_dungeon_clear_player_webbed_status(game);
+            return false;
+        }
+
+        game->player_webbed_turns_remaining--;
+        if (game->player_webbed_turns_remaining == 0)
+            game_dungeon_clear_player_webbed_status(game);
+
         return true;
     }
 
@@ -5067,7 +5271,7 @@ static void game_dungeon_take_friendly_unit_turn(
                 game_dungeon_begin_unit_attack_animation(unit, start_x, start_y, enemy_x, enemy_y,
                                                          attack_delay);
                 game_dungeon_spawn_web_projectile(game, start_x, start_y, enemy_x, enemy_y,
-                                                  attack_delay);
+                                                  attack_delay, (Color){244, 247, 255, 232});
                 target_enemy->is_awake = true;
                 target_enemy->turns_out_of_player_los = 0;
                 game_dungeon_apply_webbed_status(target_enemy);
@@ -5225,19 +5429,79 @@ static void game_dungeon_apply_poison_turn_damage(Game *game)
             continue;
         }
 
-        if (unit->poisoned_applied_this_turn) {
-            unit->poisoned_applied_this_turn = false;
+        if (unit->poisoned_turns_remaining == 0) {
+            game_dungeon_clear_poisoned_status(unit);
             unit_idx++;
             continue;
         }
+
+        if (unit->poisoned_applied_this_turn)
+            unit->poisoned_applied_this_turn = false;
 
         if (game_dungeon_apply_damage_to_unit(game, unit_idx, DUNGEON_POISON_DAMAGE_PER_TURN,
                                               DAMAGE_KIND_NORMAL)) {
             continue;
         }
 
+        unit->poisoned_turns_remaining--;
+        if (unit->poisoned_turns_remaining == 0)
+            game_dungeon_clear_poisoned_status(unit);
+
         unit_idx++;
     }
+}
+
+static void game_dungeon_apply_player_poison_turn_damage(Game *game)
+{
+    if (!game->player_is_poisoned)
+        return;
+
+    if (game->player_poisoned_turns_remaining == 0) {
+        game_dungeon_clear_player_poisoned_status(game);
+        return;
+    }
+
+    if (game->player_poisoned_applied_this_turn)
+        game->player_poisoned_applied_this_turn = false;
+
+    game_unit_stats_take_damage(&game->player_stats, DUNGEON_POISON_DAMAGE_PER_TURN);
+
+    game->player_poisoned_turns_remaining--;
+    if (game->player_poisoned_turns_remaining == 0)
+        game_dungeon_clear_player_poisoned_status(game);
+}
+
+static void game_dungeon_update_diseased_status(Game *game)
+{
+    for (u8 unit_idx = 0; unit_idx < game->unit_count; unit_idx++) {
+        Dungeon_Unit *unit = &game->units[unit_idx];
+        if (!unit->is_diseased)
+            continue;
+
+        if (unit->diseased_turns_remaining == 0) {
+            game_dungeon_clear_diseased_status(unit);
+            continue;
+        }
+
+        unit->diseased_turns_remaining--;
+        if (unit->diseased_turns_remaining == 0)
+            game_dungeon_clear_diseased_status(unit);
+    }
+}
+
+static void game_dungeon_update_player_diseased_status(Game *game)
+{
+    if (!game->player_is_diseased)
+        return;
+
+    if (game->player_diseased_turns_remaining == 0) {
+        game_dungeon_clear_player_diseased_status(game);
+        return;
+    }
+
+    game->player_diseased_turns_remaining--;
+    if (game->player_diseased_turns_remaining == 0)
+        game_dungeon_clear_player_diseased_status(game);
 }
 
 static void game_dungeon_apply_burn_turn_damage(Game *game)
@@ -5249,11 +5513,8 @@ static void game_dungeon_apply_burn_turn_damage(Game *game)
             continue;
         }
 
-        if (unit->burning_applied_this_turn) {
+        if (unit->burning_applied_this_turn)
             unit->burning_applied_this_turn = false;
-            unit_idx++;
-            continue;
-        }
 
         if (unit->burn_turns_remaining == 0) {
             game_dungeon_clear_burning_status(unit);
@@ -5261,7 +5522,8 @@ static void game_dungeon_apply_burn_turn_damage(Game *game)
             continue;
         }
 
-        if (game_dungeon_apply_damage_to_unit(game, unit_idx, 1, DAMAGE_KIND_FIRE))
+        i32 burn_damage = max((i32)unit->burn_turns_active, 1);
+        if (game_dungeon_apply_damage_to_unit(game, unit_idx, burn_damage, DAMAGE_KIND_FIRE))
             continue;
 
         unit->burn_turns_remaining--;
@@ -5272,10 +5534,39 @@ static void game_dungeon_apply_burn_turn_damage(Game *game)
     }
 }
 
+static void game_dungeon_apply_player_burn_turn_damage(Game *game)
+{
+    if (!game->player_is_burning)
+        return;
+
+    if (game->player_burn_turns_remaining == 0) {
+        game_dungeon_clear_player_burning_status(game);
+        return;
+    }
+
+    if (game->player_burning_applied_this_turn)
+        game->player_burning_applied_this_turn = false;
+
+    i32 burn_damage = max((i32)game->player_burn_turns_active, 1);
+    game_unit_stats_take_damage(&game->player_stats, burn_damage);
+
+    game->player_burn_turns_remaining--;
+    if (game->player_burn_turns_remaining == 0)
+        game_dungeon_clear_player_burning_status(game);
+}
+
 static void game_dungeon_take_enemy_turns(Game *game)
 {
+    game_dungeon_update_player_diseased_status(game);
+    game_dungeon_apply_player_burn_turn_damage(game);
+    game_dungeon_apply_player_poison_turn_damage(game);
+
+    game_dungeon_update_diseased_status(game);
     game_dungeon_apply_burn_turn_damage(game);
     game_dungeon_apply_poison_turn_damage(game);
+
+    if ((i32)game->player_stats.health <= 0)
+        return;
 
     if (game->unit_count <= 0)
         return;
@@ -6221,10 +6512,7 @@ static bool game_build_test_dungeon_candidate(Game *game, u32 depth, u32 floor_i
     game->player_move_anim_active = false;
     game->player_attack_anim_active = false;
     game->player_orientation = PLAYER_START_ORIENTATION;
-    game->player_is_webbed = false;
-    game->player_webbed_applied_this_turn = false;
-    game->player_webbed_skip_next_turn = false;
-    game->player_webbed_turns_remaining = 0;
+    game_dungeon_clear_all_player_statuses(game);
     game->player_damage_event_count = 0;
     game->player_spawn_x = -1;
     game->player_spawn_y = -1;
@@ -6338,7 +6626,8 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
 {
     bool first_floor_visit = depth >= game->dungeon_floor_seed_count;
 
-    if (game->dungeon_floor_seed_count > 0 && game->dungeon_depth < DUNGEON_MAX_FLOOR_DEPTH)
+    if (depth != game->dungeon_depth && game->dungeon_floor_seed_count > game->dungeon_depth &&
+        game->dungeon_depth < DUNGEON_MAX_FLOOR_DEPTH)
         game_dungeon_store_revealed_map_for_depth(game, game->dungeon_depth);
 
     bool transitioning_floors =
@@ -6369,7 +6658,7 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
 
     if (transitioning_floors && first_floor_visit) {
         game->player_stats.health = game->player_stats.max_health;
-        game_dungeon_clear_player_webbed_status(game);
+        game_dungeon_clear_all_player_statuses(game);
         game->player_active_action_bar_slot = DUNGEON_ACTION_BAR_NO_SLOT;
     }
 
@@ -6397,13 +6686,13 @@ static bool game_build_test_dungeon_for_depth(Game *game, u32 depth, WORLD_ART_R
         game_dungeon_rebuild_line_of_sight(game);
     }
 
-    bool restored_revealed_map = game_dungeon_restore_revealed_map_for_depth(game, depth);
+    game_dungeon_restore_revealed_map_for_depth(game, depth);
 
     if (transitioning_floors && carried_familiar_count > 0) {
         game_dungeon_restore_familiars_near_player(game, carried_familiars, carried_familiar_count);
-        if (!restored_revealed_map)
-            game_dungeon_rebuild_line_of_sight(game);
     }
+
+    game_dungeon_rebuild_line_of_sight(game);
 
     return true;
 }
@@ -6437,10 +6726,7 @@ static bool game_build_debug_testing_area(Game *game)
     game->player_attack_anim_active = false;
     game->player_orientation = PLAYER_START_ORIENTATION;
     game->player_stats = game_get_player_base_stats();
-    game->player_is_webbed = false;
-    game->player_webbed_applied_this_turn = false;
-    game->player_webbed_skip_next_turn = false;
-    game->player_webbed_turns_remaining = 0;
+    game_dungeon_clear_all_player_statuses(game);
     game_player_clear_action_bar(game);
     game->player_damage_event_count = 0;
     game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
@@ -7087,9 +7373,11 @@ static Vector2 game_dungeon_get_origin(void)
     float tile_size = WORLD_ART_TILE_SIZE * DUNGEON_TILE_SCALE;
     float map_w = (float)DUNGEON_COL_COUNT * tile_size;
     float map_h = (float)DUNGEON_ROW_COUNT * tile_size;
+    float origin_x = (screen_w - map_w) * 0.5f;
+    float origin_y = (screen_h - map_h) * 0.5f;
     return (Vector2){
-        .x = (screen_w - map_w) * 0.5f,
-        .y = (screen_h - map_h) * 0.5f,
+        .x = roundf(origin_x),
+        .y = roundf(origin_y),
     };
 }
 
@@ -7465,6 +7753,78 @@ static void game_dungeon_update_status_particles(Game *game)
                 unit->poisoned_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
             }
         }
+
+        if (unit->is_burning) {
+            unit->burning_particle_spawn_timer -= frame_time;
+            while (unit->burning_particle_spawn_timer <= 0.0f) {
+                if (game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
+                    Vector2 unit_center =
+                        game_dungeon_get_unit_draw_feet_position(unit, dungeon_origin, tile_size);
+                    game_dungeon_emit_status_particle(game, unit_center, tile_size,
+                                                      (Color){236, 78, 62, 255});
+                }
+
+                unit->burning_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+            }
+        }
+
+        if (unit->is_webbed) {
+            unit->webbed_particle_spawn_timer -= frame_time;
+            while (unit->webbed_particle_spawn_timer <= 0.0f) {
+                if (game_dungeon_cell_is_visible(game, unit->x, unit->y)) {
+                    Vector2 unit_center =
+                        game_dungeon_get_unit_draw_feet_position(unit, dungeon_origin, tile_size);
+                    game_dungeon_emit_status_particle(game, unit_center, tile_size,
+                                                      (Color){244, 247, 255, 255});
+                }
+
+                unit->webbed_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+            }
+        }
+    }
+
+    if (game->player_is_diseased) {
+        game->player_diseased_particle_spawn_timer -= frame_time;
+        while (game->player_diseased_particle_spawn_timer <= 0.0f) {
+            Vector2 player_center =
+                game_dungeon_get_player_draw_feet_position(game, dungeon_origin, tile_size);
+            game_dungeon_emit_status_particle(game, player_center, tile_size,
+                                              (Color){0, 0, 0, 255});
+            game->player_diseased_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+        }
+    }
+
+    if (game->player_is_poisoned) {
+        game->player_poisoned_particle_spawn_timer -= frame_time;
+        while (game->player_poisoned_particle_spawn_timer <= 0.0f) {
+            Vector2 player_center =
+                game_dungeon_get_player_draw_feet_position(game, dungeon_origin, tile_size);
+            game_dungeon_emit_status_particle(game, player_center, tile_size,
+                                              (Color){83, 203, 102, 255});
+            game->player_poisoned_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+        }
+    }
+
+    if (game->player_is_burning) {
+        game->player_burning_particle_spawn_timer -= frame_time;
+        while (game->player_burning_particle_spawn_timer <= 0.0f) {
+            Vector2 player_center =
+                game_dungeon_get_player_draw_feet_position(game, dungeon_origin, tile_size);
+            game_dungeon_emit_status_particle(game, player_center, tile_size,
+                                              (Color){236, 78, 62, 255});
+            game->player_burning_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+        }
+    }
+
+    if (game->player_is_webbed) {
+        game->player_webbed_particle_spawn_timer -= frame_time;
+        while (game->player_webbed_particle_spawn_timer <= 0.0f) {
+            Vector2 player_center =
+                game_dungeon_get_player_draw_feet_position(game, dungeon_origin, tile_size);
+            game_dungeon_emit_status_particle(game, player_center, tile_size,
+                                              (Color){244, 247, 255, 255});
+            game->player_webbed_particle_spawn_timer += DUNGEON_DISEASED_PARTICLE_SPAWN_INTERVAL;
+        }
     }
 }
 
@@ -7522,7 +7882,7 @@ static void game_draw_web_projectiles(const Game *game, Vector2 origin, float ti
         float y = roundf((center.y - (projectile_size * 0.5f)) / pixel_size) * pixel_size;
 
         Rectangle projectile_rect = {x, y, projectile_size, projectile_size};
-        DrawRectangleRec(projectile_rect, (Color){244, 247, 255, 232});
+        DrawRectangleRec(projectile_rect, projectile->color);
     }
 }
 
@@ -8173,11 +8533,11 @@ static Rectangle game_familiar_command_panel_rect(const Game *game)
 static void game_draw_familiar_command_bar(Game *game)
 {
     static const char *labels[DUNGEON_FAMILIAR_COMMAND_COUNT] = {
-        "Wait [Space]",
-        "Return [R]",
+        "[E]nrage",
+        "[R]eturn",
     };
     static const FAMILIAR_TURN_COMMAND commands[DUNGEON_FAMILIAR_COMMAND_COUNT] = {
-        FAMILIAR_TURN_COMMAND_WAIT,
+        FAMILIAR_TURN_COMMAND_ENRAGE,
         FAMILIAR_TURN_COMMAND_RETURN,
     };
 
@@ -8324,8 +8684,7 @@ static void game_draw_testing_unit_action_bars(Game *game)
 static Rectangle game_draw_floor_info_panel(Game *game)
 {
     char floor_line[32];
-    snprintf(floor_line, sizeof(floor_line), "Floor %u/%d", game->dungeon_depth + 1,
-             DUNGEON_RUN_FLOOR_COUNT);
+    snprintf(floor_line, sizeof(floor_line), "Floor: %u", game->dungeon_depth + 1);
 
     float floor_size = 17.0f;
     Vector2 floor_measure = MeasureTextEx(game->font, floor_line, floor_size, game->font_spacing);
@@ -8352,14 +8711,15 @@ static Rectangle game_draw_floor_info_panel(Game *game)
 static Rectangle game_draw_player_stats_panel(Game *game, Rectangle floor_panel)
 {
     char damage_line[24];
-    snprintf(damage_line, sizeof(damage_line), "DMG %d", (i32)game->player_stats.damage);
+    snprintf(damage_line, sizeof(damage_line), "DMG: %d",
+             game_dungeon_get_player_attack_damage(game));
 
     char status_text[128];
     bool has_status = game_dungeon_build_player_status_text(game, status_text, sizeof(status_text));
     char status_line[160];
     status_line[0] = '\0';
     if (has_status)
-        snprintf(status_line, sizeof(status_line), "Status: %s", status_text);
+        snprintf(status_line, sizeof(status_line), "%s", status_text);
 
     float damage_size = 17.0f;
     float status_size = 15.0f;
@@ -8625,7 +8985,7 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle floor_panel,
     }
 
     char stats_line[48];
-    snprintf(stats_line, sizeof(stats_line), "HP %d/%d, DMG %d", (i32)hovered.stats.health,
+    snprintf(stats_line, sizeof(stats_line), "HP %d/%d, DMG: %d", (i32)hovered.stats.health,
              (i32)hovered.stats.max_health, hovered.damage);
 
     char status_line[160];
@@ -8948,12 +9308,20 @@ static bool game_update_player(Game *game)
         return game_player_try_summon_active_action_bar_familiar(game);
     }
 
+    if (game->input.pressed[INPUT_FAMILIAR_WAIT]) {
+        if (game_dungeon_player_should_skip_webbed_turn(game))
+            return true;
+
+        game->familiar_turn_command = FAMILIAR_TURN_COMMAND_WAIT;
+        return true;
+    }
+
     if (game_dungeon_has_living_familiar(game)) {
-        if (game->input.pressed[INPUT_FAMILIAR_WAIT]) {
+        if (game->input.pressed[INPUT_FAMILIAR_ENRAGE]) {
             if (game_dungeon_player_should_skip_webbed_turn(game))
                 return true;
 
-            game->familiar_turn_command = FAMILIAR_TURN_COMMAND_WAIT;
+            game->familiar_turn_command = FAMILIAR_TURN_COMMAND_ENRAGE;
             return true;
         }
 
@@ -9011,7 +9379,8 @@ static bool game_update_player(Game *game)
             target_unit->is_awake = true;
             target_unit->turns_out_of_player_los = 0;
 
-            game_dungeon_apply_damage_to_unit(game, target_unit_idx, game->player_stats.damage,
+            i32 attack_damage = game_dungeon_get_player_attack_damage(game);
+            game_dungeon_apply_damage_to_unit(game, target_unit_idx, attack_damage,
                                               DAMAGE_KIND_NORMAL);
             return true;
         }
@@ -9590,10 +9959,7 @@ static bool game_start_new_dungeon_run(Game *game)
     game->dungeon_floor_seed_count = 0;
     game_dungeon_clear_floor_reveal_cache(game);
     game->player_stats = game_get_player_base_stats();
-    game->player_is_webbed = false;
-    game->player_webbed_applied_this_turn = false;
-    game->player_webbed_skip_next_turn = false;
-    game->player_webbed_turns_remaining = 0;
+    game_dungeon_clear_all_player_statuses(game);
     game_player_clear_action_bar(game);
     game->familiar_turn_command = FAMILIAR_TURN_COMMAND_NONE;
     game->show_dungeon_view = true;
@@ -9901,6 +10267,7 @@ static void game_input(Game *game)
     input->down[INPUT_MOVE_RIGHT] =
         IsKeyDown(KEY_D) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
     input->down[INPUT_FAMILIAR_WAIT] = IsKeyDown(KEY_SPACE);
+    input->down[INPUT_FAMILIAR_ENRAGE] = IsKeyDown(KEY_E);
     input->down[INPUT_FAMILIAR_RETURN] = IsKeyDown(KEY_R);
     input->down[INPUT_CONFIRM] = IsKeyDown(KEY_ENTER) || IsKeyDown(KEY_KP_ENTER) ||
                                  IsKeyDown(KEY_SPACE) ||
@@ -9926,6 +10293,7 @@ static void game_input(Game *game)
     input->pressed[INPUT_ACTION_SLOT_4] = IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_KP_4);
     input->pressed[INPUT_ACTION_SLOT_5] = IsKeyPressed(KEY_FIVE) || IsKeyPressed(KEY_KP_5);
     input->pressed[INPUT_FAMILIAR_WAIT] = IsKeyPressed(KEY_SPACE);
+    input->pressed[INPUT_FAMILIAR_ENRAGE] = IsKeyPressed(KEY_E);
     input->pressed[INPUT_FAMILIAR_RETURN] = IsKeyPressed(KEY_R);
     input->pressed[INPUT_MOUSE_LEFT] = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
     input->pressed[INPUT_MOUSE_RIGHT] = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
