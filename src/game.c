@@ -148,7 +148,6 @@
 #define DUNGEON_MINIMAP_MAX_WIDTH 640.0f
 #define DUNGEON_MINIMAP_MAX_HEIGHT 440.0f
 #define DUNGEON_MINIMAP_SCREEN_WIDTH_FRACTION 0.48f
-#define DUNGEON_MINIMAP_MARGIN 18.0f
 #define DUNGEON_MINIMAP_OPACITY_LEVEL_COUNT 5
 #define DUNGEON_MINIMAP_DEFAULT_OPACITY_LEVEL 2
 
@@ -9562,8 +9561,8 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
         minimap_width_fraction = 0.36f;
 
     float map_w = min(DUNGEON_MINIMAP_MAX_WIDTH, screen_w * minimap_width_fraction);
-    float map_h = min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h - (DUNGEON_MINIMAP_MARGIN * 2.0f));
-    map_w = min(map_w, screen_w - (DUNGEON_MINIMAP_MARGIN * 2.0f));
+    float map_h = min(DUNGEON_MINIMAP_MAX_HEIGHT, screen_h);
+    map_w = min(map_w, screen_w);
     map_w = max(map_w, 1.0f);
     map_h = max(map_h, 1.0f);
 
@@ -9573,12 +9572,12 @@ static Rectangle game_draw_dungeon_minimap(Game *game)
 
     float cell_size = (float)minimap_cell_px;
     Rectangle viewport = {
-        .x = screen_w - DUNGEON_MINIMAP_MARGIN - map_w,
-        .y = DUNGEON_MINIMAP_MARGIN,
+        .x = screen_w - map_w,
+        .y = 0.0f,
         .width = map_w,
         .height = map_h,
     };
-    viewport.x = max(viewport.x, DUNGEON_MINIMAP_MARGIN);
+    viewport.x = max(viewport.x, 0.0f);
 
     Vector2 viewport_center = {
         .x = viewport.x + viewport.width * 0.5f,
