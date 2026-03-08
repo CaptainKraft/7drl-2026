@@ -239,6 +239,7 @@
 #define DUNGEON_FAMILIAR_COMMAND_PANEL_GAP 8.0f
 
 #define DUNGEON_HOVER_PANEL_PADDING 10.0f
+#define DUNGEON_HOVER_TEXT_WRAP_CHARS 50
 
 #define DEBUG_HUD_PANEL_MARGIN 18.0f
 #define DEBUG_HUD_PANEL_PADDING 12.0f
@@ -11617,6 +11618,81 @@ static void game_fill_hovered_unit_from_world_unit(Dungeon_Hovered_Unit *hovered
                                                                       sizeof(hovered->status_line));
 }
 
+static void game_wrap_text_by_char_count(const char *source, u32 max_chars_per_line, char *dest,
+                                         u32 dest_cap)
+{
+    assert(source != 0);
+    assert(dest != 0);
+    assert(max_chars_per_line > 0);
+    assert(dest_cap > 0);
+
+    u32 dest_idx = 0;
+    u32 line_chars = 0;
+    const char *cursor = source;
+
+    while (*cursor != '\0' && dest_idx + 1 < dest_cap) {
+        if (*cursor == '\n') {
+            dest[dest_idx++] = '\n';
+            line_chars = 0;
+            cursor++;
+            continue;
+        }
+
+        if (*cursor == ' ') {
+            cursor++;
+            continue;
+        }
+
+        const char *word_start = cursor;
+        u32 word_len = 0;
+        while (word_start[word_len] != '\0' && word_start[word_len] != ' ' &&
+               word_start[word_len] != '\n') {
+            word_len++;
+        }
+        cursor = word_start + word_len;
+
+        while (word_len > 0 && dest_idx + 1 < dest_cap) {
+            if (line_chars == max_chars_per_line) {
+                dest[dest_idx++] = '\n';
+                line_chars = 0;
+            }
+
+            if (line_chars > 0) {
+                if (line_chars + 1 > max_chars_per_line) {
+                    dest[dest_idx++] = '\n';
+                    line_chars = 0;
+                } else {
+                    dest[dest_idx++] = ' ';
+                    line_chars++;
+                }
+            }
+
+            u32 remaining_cap = dest_cap - dest_idx - 1;
+            if (remaining_cap == 0)
+                break;
+
+            u32 available_chars = max_chars_per_line - line_chars;
+            if (available_chars == 0)
+                continue;
+
+            u32 chunk = min(word_len, min(available_chars, remaining_cap));
+            memcpy(dest + dest_idx, word_start, chunk);
+
+            dest_idx += chunk;
+            line_chars += chunk;
+            word_start += chunk;
+            word_len -= chunk;
+
+            if (word_len > 0 && dest_idx + 1 < dest_cap) {
+                dest[dest_idx++] = '\n';
+                line_chars = 0;
+            }
+        }
+    }
+
+    dest[dest_idx] = '\0';
+}
+
 static void game_get_hovered_unit_description(UNIT_ART_KIND kind, char *buffer, u32 buffer_cap)
 {
     assert(buffer != 0);
@@ -11771,14 +11847,22 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle floor_panel,
     snprintf(stats_line, sizeof(stats_line), "HP %d/%d, DMG: %d", (i32)hovered.stats.health,
              (i32)hovered.stats.max_health, hovered.damage);
 
-    char status_line[160];
+    char status_line_raw[160];
+    char status_line[192];
     status_line[0] = '\0';
     bool has_status_line = hovered.has_status_effects;
-    if (has_status_line)
-        snprintf(status_line, sizeof(status_line), "Status: %s", hovered.status_line);
+    if (has_status_line) {
+        snprintf(status_line_raw, sizeof(status_line_raw), "Status: %s", hovered.status_line);
+        game_wrap_text_by_char_count(status_line_raw, DUNGEON_HOVER_TEXT_WRAP_CHARS, status_line,
+                                     sizeof(status_line));
+    }
 
-    char description_line[192];
-    game_get_hovered_unit_description(hovered.kind, description_line, sizeof(description_line));
+    char description_line_raw[192];
+    game_get_hovered_unit_description(hovered.kind, description_line_raw,
+                                      sizeof(description_line_raw));
+    char description_line[224];
+    game_wrap_text_by_char_count(description_line_raw, DUNGEON_HOVER_TEXT_WRAP_CHARS,
+                                 description_line, sizeof(description_line));
 
     float title_size = 19.0f;
     float stats_size = 16.0f;
@@ -11787,11 +11871,11 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle floor_panel,
     float line_gap = 4.0f;
 
     Vector2 title_measure = MeasureTextEx(game->font, hovered.name, title_size, game->font_spacing);
+    Vector2 stats_measure = MeasureTextEx(game->font, stats_line, stats_size, game->font_spacing);
     Vector2 description_measure =
         MeasureTextEx(game->font, description_line, description_size, game->font_spacing);
 
     float panel_w = max(title_measure.x, description_measure.x);
-    Vector2 stats_measure = MeasureTextEx(game->font, stats_line, stats_size, game->font_spacing);
     panel_w = max(panel_w, stats_measure.x);
     Vector2 status_measure = {0.0f, 0.0f};
     if (has_status_line) {
@@ -11800,10 +11884,10 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle floor_panel,
     }
     panel_w += DUNGEON_HOVER_PANEL_PADDING * 2.0f;
 
-    float panel_h = (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_size + 8.0f + stats_size +
-                    line_gap + description_size;
+    float panel_h = (DUNGEON_HOVER_PANEL_PADDING * 2.0f) + title_measure.y + 8.0f +
+                    stats_measure.y + line_gap + description_measure.y;
     if (has_status_line)
-        panel_h += status_size + line_gap;
+        panel_h += status_measure.y + line_gap;
 
     Vector2 mouse_screen = GetMousePosition();
     Rectangle panel = {
@@ -11836,15 +11920,15 @@ static void game_draw_hovered_unit_tooltip(Game *game, Rectangle floor_panel,
     };
     DrawTextEx(game->font, hovered.name, text_pos, title_size, game->font_spacing, title_color);
 
-    text_pos.y += title_size + 8.0f;
+    text_pos.y += title_measure.y + 8.0f;
     DrawTextEx(game->font, stats_line, text_pos, stats_size, game->font_spacing,
                (Color){233, 233, 233, 255});
-    text_pos.y += stats_size + line_gap;
+    text_pos.y += stats_measure.y + line_gap;
 
     if (has_status_line) {
         DrawTextEx(game->font, status_line, text_pos, status_size, game->font_spacing,
                    (Color){218, 218, 218, 255});
-        text_pos.y += status_size + line_gap;
+        text_pos.y += status_measure.y + line_gap;
     }
 
     DrawTextEx(game->font, description_line, text_pos, description_size, game->font_spacing,
@@ -13070,7 +13154,7 @@ static void game_draw_class_menu(Game *game)
             "Place familiar: click an open tile",
             "Recall familiar: R key or click Recall",
             "Wait a turn: Space key or click Wait",
-            "Win: reach the bottom, claim the amulet, return to the surface",
+            "Win: claim the Amulet of Yendor and return to the surface",
         };
 
         Rectangle back_button = game_class_menu_action_button_rect(panel);
