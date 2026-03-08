@@ -148,8 +148,8 @@ take the first point of fire dmg on the turn after it was applied.
 
 ### Beholder
 - 5hp, 2dmg
-- target: nearest aligned enemy
-- aligned + diagonal, piercing ranged: 10range
+- target: nearest enemy
+- piercing ranged: 10range
 
 ### Reaper
 - 10hp, 4dmg
@@ -177,7 +177,7 @@ take the first point of fire dmg on the turn after it was applied.
 ### Griffon
 - 7hp, 5dmg
 - target: nearest enemy
-- dash through: range5, cooldown7
+- dash through at any angle: range5, cooldown7
 - basic melee when dash on cooldown
 
 ---
