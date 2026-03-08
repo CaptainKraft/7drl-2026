@@ -60,6 +60,24 @@
 #define FX_PREVIEW_SPRITE_SCALE 3.0f
 #define FX_PREVIEW_ROW_COUNT FX_ART_ROW_COUNT
 
+#define FONT_PREVIEW_PANEL_PADDING_X 16.0f
+#define FONT_PREVIEW_PANEL_PADDING_Y 12.0f
+#define FONT_PREVIEW_TITLE_SIZE 22.0f
+#define FONT_PREVIEW_TITLE_GAP 10.0f
+#define FONT_PREVIEW_ROW_GAP 8.0f
+#define FONT_PREVIEW_LABEL_SIZE 16.0f
+#define FONT_PREVIEW_COLUMN_GAP 20.0f
+#define FONT_PREVIEW_SIZE_COUNT 10
+
+static const i32 game_font_preview_sizes[FONT_PREVIEW_SIZE_COUNT] = {
+    14, 15, 16, 17, 18, 19, 20, 22, 26, 34,
+};
+static const char *game_font_preview_sample_text = "HP 12/12 DMG 7 Status: Poisoned";
+
+_Static_assert((sizeof(game_font_preview_sizes) / sizeof(game_font_preview_sizes[0])) ==
+                   FONT_PREVIEW_SIZE_COUNT,
+               "Font preview size count must match FONT_PREVIEW_SIZE_COUNT");
+
 #define CAMERA_FOLLOW_SPEED_NEAR 2.0f
 #define CAMERA_FOLLOW_SPEED_FAR 20.0f
 #define CAMERA_FOLLOW_ACCEL_DISTANCE_TILES 10.0f
@@ -9867,12 +9885,108 @@ static void game_draw_fx_art_preview(Game *game, Vector2 origin)
     }
 }
 
+static Vector2 game_get_font_preview_size(Game *game)
+{
+    Vector2 title_size =
+        MeasureTextEx(game->font, "Font Size Preview", FONT_PREVIEW_TITLE_SIZE, game->font_spacing);
+
+    float max_label_width = 0.0f;
+    float max_sample_width = 0.0f;
+    float rows_height = 0.0f;
+    for (i32 idx = 0; idx < FONT_PREVIEW_SIZE_COUNT; idx++) {
+        i32 font_size = game_font_preview_sizes[idx];
+        char size_label[16];
+        snprintf(size_label, sizeof(size_label), "%2d px", font_size);
+
+        Vector2 label_size =
+            MeasureTextEx(game->font, size_label, FONT_PREVIEW_LABEL_SIZE, game->font_spacing);
+        Vector2 sample_size = MeasureTextEx(game->font, game_font_preview_sample_text,
+                                            (float)font_size, game->font_spacing);
+
+        max_label_width = max(max_label_width, label_size.x);
+        max_sample_width = max(max_sample_width, sample_size.x);
+        rows_height += max(label_size.y, sample_size.y);
+    }
+
+    rows_height += (float)(FONT_PREVIEW_SIZE_COUNT - 1) * FONT_PREVIEW_ROW_GAP;
+
+    float body_width = max_label_width + FONT_PREVIEW_COLUMN_GAP + max_sample_width;
+    float content_width = max(body_width, title_size.x);
+    float content_height = title_size.y + FONT_PREVIEW_TITLE_GAP + rows_height;
+
+    return (Vector2){
+        .x = content_width,
+        .y = content_height,
+    };
+}
+
+static void game_draw_font_preview(Game *game, Vector2 origin)
+{
+    Vector2 content_size = game_get_font_preview_size(game);
+
+    Rectangle panel = {
+        .x = origin.x - FONT_PREVIEW_PANEL_PADDING_X,
+        .y = origin.y - FONT_PREVIEW_PANEL_PADDING_Y,
+        .width = content_size.x + (FONT_PREVIEW_PANEL_PADDING_X * 2.0f),
+        .height = content_size.y + (FONT_PREVIEW_PANEL_PADDING_Y * 2.0f),
+    };
+    DrawRectangleRec(panel, (Color){20, 33, 38, 255});
+
+    Vector2 title_size =
+        MeasureTextEx(game->font, "Font Size Preview", FONT_PREVIEW_TITLE_SIZE, game->font_spacing);
+    Vector2 title_pos = {
+        .x = origin.x + (content_size.x - title_size.x) * 0.5f,
+        .y = origin.y,
+    };
+    DrawTextEx(game->font, "Font Size Preview", title_pos, FONT_PREVIEW_TITLE_SIZE,
+               game->font_spacing, RAYWHITE);
+
+    float max_label_width = 0.0f;
+    for (i32 idx = 0; idx < FONT_PREVIEW_SIZE_COUNT; idx++) {
+        char size_label[16];
+        snprintf(size_label, sizeof(size_label), "%2d px", game_font_preview_sizes[idx]);
+        Vector2 label_size =
+            MeasureTextEx(game->font, size_label, FONT_PREVIEW_LABEL_SIZE, game->font_spacing);
+        max_label_width = max(max_label_width, label_size.x);
+    }
+
+    float row_y = title_pos.y + title_size.y + FONT_PREVIEW_TITLE_GAP;
+    for (i32 idx = 0; idx < FONT_PREVIEW_SIZE_COUNT; idx++) {
+        i32 font_size = game_font_preview_sizes[idx];
+        char size_label[16];
+        snprintf(size_label, sizeof(size_label), "%2d px", font_size);
+
+        Vector2 label_size =
+            MeasureTextEx(game->font, size_label, FONT_PREVIEW_LABEL_SIZE, game->font_spacing);
+        Vector2 sample_size = MeasureTextEx(game->font, game_font_preview_sample_text,
+                                            (float)font_size, game->font_spacing);
+        float row_height = max(label_size.y, sample_size.y);
+
+        Vector2 label_pos = {
+            .x = origin.x,
+            .y = row_y + (row_height - label_size.y) * 0.5f,
+        };
+        DrawTextEx(game->font, size_label, label_pos, FONT_PREVIEW_LABEL_SIZE, game->font_spacing,
+                   (Color){184, 192, 196, 255});
+
+        Vector2 sample_pos = {
+            .x = origin.x + max_label_width + FONT_PREVIEW_COLUMN_GAP,
+            .y = row_y + (row_height - sample_size.y) * 0.5f,
+        };
+        DrawTextEx(game->font, game_font_preview_sample_text, sample_pos, (float)font_size,
+                   game->font_spacing, (Color){235, 235, 235, 255});
+
+        row_y += row_height + FONT_PREVIEW_ROW_GAP;
+    }
+}
+
 static void game_draw_art_previews(Game *game)
 {
     Vector2 unit_preview_size = game_get_unit_art_preview_size(game);
     Vector2 item_preview_size = game_get_item_art_preview_size(game);
     Vector2 world_preview_size = game_get_world_art_preview_size(game);
     Vector2 fx_preview_size = game_get_fx_art_preview_size(game);
+    Vector2 font_preview_size = game_get_font_preview_size(game);
     float screen_w = (float)GetScreenWidth();
 
     Vector2 unit_origin = {
@@ -9895,10 +10009,16 @@ static void game_draw_art_previews(Game *game)
         .y = world_origin.y + world_preview_size.y + PREVIEW_SECTION_GAP_Y,
     };
 
+    Vector2 font_origin = {
+        .x = (screen_w - font_preview_size.x) * 0.5f,
+        .y = fx_origin.y + fx_preview_size.y + PREVIEW_SECTION_GAP_Y,
+    };
+
     game_draw_unit_art_preview(game, unit_origin);
     game_draw_item_art_preview(game, item_origin);
     game_draw_world_art_preview(game, world_origin);
     game_draw_fx_art_preview(game, fx_origin);
+    game_draw_font_preview(game, font_origin);
 }
 
 static Vector2 game_dungeon_get_origin(void)
