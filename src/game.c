@@ -219,6 +219,16 @@
 #define DUNGEON_CLASS_MENU_CARD_ICON_SIZE DUNGEON_ACTION_BAR_ITEM_SIZE
 #define DUNGEON_CLASS_MENU_FAMILIAR_ICON_SIZE DUNGEON_ACTION_BAR_ITEM_SIZE
 #define DUNGEON_CLASS_MENU_FAMILIAR_ICON_GAP 8.0f
+#define DUNGEON_CLASS_MENU_ACTION_BUTTON_WIDTH_MIN 180.0f
+#define DUNGEON_CLASS_MENU_ACTION_BUTTON_WIDTH_MAX 320.0f
+#define DUNGEON_CLASS_MENU_ACTION_BUTTON_HEIGHT_MIN 38.0f
+#define DUNGEON_CLASS_MENU_ACTION_BUTTON_HEIGHT_MAX 48.0f
+#define DUNGEON_CLASS_MENU_ACTION_BUTTON_BOTTOM_MARGIN 22.0f
+
+#define DUNGEON_CLASS_MENU_INSTRUCTIONS_PANEL_MARGIN_X 24.0f
+#define DUNGEON_CLASS_MENU_INSTRUCTIONS_PANEL_BOTTOM_GAP 16.0f
+#define DUNGEON_CLASS_MENU_INSTRUCTIONS_TEXT_PADDING 8.0f
+#define DUNGEON_CLASS_MENU_INSTRUCTIONS_LINE_GAP 3.0f
 
 #define GAME_MAIN_MENU_TITLE "A Familiar Rogue"
 
@@ -316,12 +326,12 @@ typedef struct {
 static const Dungeon_Familiar_Command_Def
     game_dungeon_familiar_command_defs[DUNGEON_FAMILIAR_COMMAND_COUNT] = {
         {
-            .label = "[ ] Wait",
+            .label = "[ ]Wait",
             .command = FAMILIAR_TURN_COMMAND_WAIT,
             .requires_living_familiar = false,
         },
         {
-            .label = "[R]eturn",
+            .label = "[R]ecall",
             .command = FAMILIAR_TURN_COMMAND_RETURN,
             .requires_living_familiar = true,
         },
@@ -433,6 +443,11 @@ typedef enum {
     END_MENU_ACTION_PLAY_AGAIN,
     END_MENU_ACTION_MAIN_MENU,
 } END_MENU_ACTION;
+
+typedef enum {
+    CLASS_MENU_VIEW_CLASS_SELECT,
+    CLASS_MENU_VIEW_INSTRUCTIONS,
+} CLASS_MENU_VIEW;
 
 typedef enum {
     MUSIC_CONTEXT_MENU,
@@ -653,6 +668,7 @@ typedef struct {
     u8 minimap_opacity_level;
     END_MENU_STATE end_menu_state;
     bool class_menu_show_game_title;
+    CLASS_MENU_VIEW class_menu_view;
     bool debug_hud_visible;
     u32 debug_feature_mask;
     bool debug_in_testing_area;
@@ -1330,6 +1346,7 @@ static void game_open_class_menu(Game *game, bool show_game_title)
 {
     game->player_class = PLAYER_CLASS_NONE;
     game->class_menu_show_game_title = show_game_title;
+    game->class_menu_view = CLASS_MENU_VIEW_CLASS_SELECT;
     game->end_menu_state = END_MENU_NONE;
 }
 
@@ -11444,8 +11461,7 @@ static void game_draw_testing_unit_action_bars(Game *game)
 static Rectangle game_draw_floor_info_panel(Game *game)
 {
     char floor_line[40];
-    snprintf(floor_line, sizeof(floor_line), "Floor: %u / %u", game->dungeon_depth + 1,
-             (u32)DUNGEON_RUN_FLOOR_COUNT);
+    snprintf(floor_line, sizeof(floor_line), "Floor: %u", game->dungeon_depth + 1);
 
     float floor_size = 17.0f;
     Vector2 floor_measure = MeasureTextEx(game->font, floor_line, floor_size, game->font_spacing);
@@ -12890,16 +12906,42 @@ static Rectangle game_class_menu_panel_rect(void)
     };
 }
 
+static bool game_class_menu_has_instructions_button(const Game *game)
+{
+    assert(game != 0);
+    return game->class_menu_show_game_title;
+}
+
+static Rectangle game_class_menu_action_button_rect(Rectangle panel)
+{
+    float button_w = min(panel.width - 56.0f, DUNGEON_CLASS_MENU_ACTION_BUTTON_WIDTH_MAX);
+    button_w = max(button_w, DUNGEON_CLASS_MENU_ACTION_BUTTON_WIDTH_MIN);
+    float button_h = clamp(panel.height * 0.105f, DUNGEON_CLASS_MENU_ACTION_BUTTON_HEIGHT_MIN,
+                           DUNGEON_CLASS_MENU_ACTION_BUTTON_HEIGHT_MAX);
+
+    return (Rectangle){
+        .x = panel.x + (panel.width - button_w) * 0.5f,
+        .y = panel.y + panel.height - button_h - DUNGEON_CLASS_MENU_ACTION_BUTTON_BOTTOM_MARGIN,
+        .width = button_w,
+        .height = button_h,
+    };
+}
+
 static Rectangle game_class_menu_class_card_rect(const Game *game, Rectangle panel, i32 class_idx)
 {
     assert(game != 0);
     assert(class_idx >= 0 && class_idx < PLAYER_CLASS_COUNT);
 
+    float card_gap = 64.0f;
     float cards_top = panel.y + 190.0f;
     float cards_bottom = panel.y + panel.height - 34.0f;
-    float available_h = max(80.0f, cards_bottom - cards_top);
+    if (game_class_menu_has_instructions_button(game)) {
+        cards_top = panel.y + clamp(panel.height * 0.34f, 122.0f, 190.0f);
+        Rectangle action_button = game_class_menu_action_button_rect(panel);
+        cards_bottom = min(cards_bottom, action_button.y - card_gap);
+    }
+    float available_h = max(56.0f, cards_bottom - cards_top);
 
-    float card_gap = 64.0f;
     float available_w = max(180.0f, panel.width - 32.0f);
     float card_size_from_w =
         (available_w - (float)(PLAYER_CLASS_COUNT - 1) * card_gap) / (float)PLAYER_CLASS_COUNT;
@@ -12951,10 +12993,33 @@ static bool game_update_class_menu(Game *game)
     if (!game_class_menu_is_active(game))
         return false;
 
+    Rectangle panel = game_class_menu_panel_rect();
+    Vector2 mouse = GetMousePosition();
+
+    if (game->class_menu_view == CLASS_MENU_VIEW_INSTRUCTIONS) {
+        if (game->input.pressed[INPUT_BACK] || game->input.pressed[INPUT_CONFIRM]) {
+            game->class_menu_view = CLASS_MENU_VIEW_CLASS_SELECT;
+            return true;
+        }
+
+        if (game->input.pressed[INPUT_MOUSE_LEFT]) {
+            Rectangle back_button = game_class_menu_action_button_rect(panel);
+            if (game_point_in_rect(mouse, back_button))
+                game->class_menu_view = CLASS_MENU_VIEW_CLASS_SELECT;
+        }
+
+        return true;
+    }
+
     PLAYER_CLASS selected_class = PLAYER_CLASS_NONE;
     if (game->input.pressed[INPUT_MOUSE_LEFT]) {
-        Rectangle panel = game_class_menu_panel_rect();
-        Vector2 mouse = GetMousePosition();
+        if (game_class_menu_has_instructions_button(game)) {
+            Rectangle instructions_button = game_class_menu_action_button_rect(panel);
+            if (game_point_in_rect(mouse, instructions_button)) {
+                game->class_menu_view = CLASS_MENU_VIEW_INSTRUCTIONS;
+                return true;
+            }
+        }
 
         for (i32 class_idx = 0; class_idx < PLAYER_CLASS_COUNT; class_idx++) {
             Rectangle card = game_class_menu_class_card_rect(game, panel, class_idx);
@@ -12986,6 +13051,8 @@ static void game_draw_class_menu(Game *game)
 
     const char *title =
         game->class_menu_show_game_title ? GAME_MAIN_MENU_TITLE : "Choose Your Class";
+    if (game->class_menu_view == CLASS_MENU_VIEW_INSTRUCTIONS)
+        title = "Instructions";
     float title_size = clamp(panel.height * 0.115f, 34.0f, 56.0f);
     Vector2 title_measure = MeasureTextEx(game->font, title, title_size, game->font_spacing);
     Vector2 title_pos = {
@@ -12994,6 +13061,56 @@ static void game_draw_class_menu(Game *game)
     };
     DrawTextEx(game->font, title, title_pos, title_size, game->font_spacing,
                (Color){239, 227, 198, 255});
+
+    if (game->class_menu_view == CLASS_MENU_VIEW_INSTRUCTIONS) {
+        static const char *instruction_lines[] = {
+            "Move: WASD",
+            "Attack: walk into enemies",
+            "Select familiar: click action bar or 1-3",
+            "Place familiar: click an open tile",
+            "Recall familiar: R key or click Recall",
+            "Wait a turn: Space key or click Wait",
+            "Win: reach the bottom, claim the amulet, return to the surface",
+        };
+
+        Rectangle back_button = game_class_menu_action_button_rect(panel);
+        float text_panel_top = panel.y + clamp(panel.height * 0.20f, 82.0f, 120.0f);
+        Rectangle text_panel = {
+            .x = panel.x + DUNGEON_CLASS_MENU_INSTRUCTIONS_PANEL_MARGIN_X,
+            .y = text_panel_top,
+            .width = panel.width - DUNGEON_CLASS_MENU_INSTRUCTIONS_PANEL_MARGIN_X * 2.0f,
+            .height =
+                back_button.y - DUNGEON_CLASS_MENU_INSTRUCTIONS_PANEL_BOTTOM_GAP - text_panel_top,
+        };
+        game_draw_dungeon_ui_panel(text_panel, (Color){55, 55, 55, 255}, (Color){66, 66, 66, 255});
+
+        i32 line_count = (i32)(sizeof(instruction_lines) / sizeof(instruction_lines[0]));
+        float available_text_h = text_panel.height -
+                                 DUNGEON_CLASS_MENU_INSTRUCTIONS_TEXT_PADDING * 2.0f -
+                                 DUNGEON_CLASS_MENU_INSTRUCTIONS_LINE_GAP * (float)(line_count - 1);
+        float line_text_size = clamp(available_text_h / (float)line_count, 11.0f, 22.0f);
+        float text_y = text_panel.y + DUNGEON_CLASS_MENU_INSTRUCTIONS_TEXT_PADDING;
+        float text_x = text_panel.x + DUNGEON_CLASS_MENU_INSTRUCTIONS_TEXT_PADDING;
+        for (i32 line_idx = 0; line_idx < line_count; line_idx++) {
+            DrawTextEx(game->font, instruction_lines[line_idx], (Vector2){text_x, text_y},
+                       line_text_size, game->font_spacing, (Color){233, 230, 222, 255});
+            text_y += line_text_size + DUNGEON_CLASS_MENU_INSTRUCTIONS_LINE_GAP;
+        }
+
+        bool back_hovered = game_point_in_rect(mouse, back_button);
+        game_draw_gray_menu_panel(back_button, back_hovered);
+
+        float back_text_size = clamp(back_button.height * 0.44f, 16.0f, 24.0f);
+        Vector2 back_text_measure =
+            MeasureTextEx(game->font, "Back", back_text_size, game->font_spacing);
+        Vector2 back_text_pos = {
+            .x = back_button.x + (back_button.width - back_text_measure.x) * 0.5f,
+            .y = back_button.y + (back_button.height - back_text_measure.y) * 0.5f,
+        };
+        DrawTextEx(game->font, "Back", back_text_pos, back_text_size, game->font_spacing,
+                   (Color){241, 236, 226, 255});
+        return;
+    }
 
     for (i32 class_idx = 0; class_idx < PLAYER_CLASS_COUNT; class_idx++) {
         const Player_Class_Def *class_def = &game_player_class_defs[class_idx];
@@ -13049,6 +13166,24 @@ static void game_draw_class_menu(Game *game)
             game_draw_unit_tile(game, class_def->familiar_unit_kinds[familiar_idx],
                                 PLAYER_START_ORIENTATION, icon_pos, familiar_icon_size, anim_frame);
         }
+    }
+
+    if (game_class_menu_has_instructions_button(game)) {
+        Rectangle instructions_button = game_class_menu_action_button_rect(panel);
+        bool instructions_hovered = game_point_in_rect(mouse, instructions_button);
+        game_draw_gray_menu_panel(instructions_button, instructions_hovered);
+
+        float instructions_text_size = clamp(instructions_button.height * 0.44f, 16.0f, 24.0f);
+        Vector2 instructions_text_measure =
+            MeasureTextEx(game->font, "Instructions", instructions_text_size, game->font_spacing);
+        Vector2 instructions_text_pos = {
+            .x = instructions_button.x +
+                 (instructions_button.width - instructions_text_measure.x) * 0.5f,
+            .y = instructions_button.y +
+                 (instructions_button.height - instructions_text_measure.y) * 0.5f,
+        };
+        DrawTextEx(game->font, "Instructions", instructions_text_pos, instructions_text_size,
+                   game->font_spacing, (Color){241, 236, 226, 255});
     }
 }
 
@@ -13111,6 +13246,7 @@ void game_init(Mem mem, Font font, float font_spacing)
     game->minimap_opacity_level = DUNGEON_MINIMAP_DEFAULT_OPACITY_LEVEL;
     game->end_menu_state = END_MENU_NONE;
     game->class_menu_show_game_title = true;
+    game->class_menu_view = CLASS_MENU_VIEW_CLASS_SELECT;
     game->debug_hud_visible = false;
     game->debug_in_testing_area = false;
     game->debug_testing_unit_placement_active = false;
